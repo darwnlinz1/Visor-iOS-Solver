@@ -15,10 +15,10 @@ import Speech
 
 /// Pre-captured photo context for Visor "Capture First, Ask Later" workflow
 struct CapturedPhotoContext {
-    /// How long a captured photo stays attached to follow-up questions (Blueprint §2.1 step 7).
-    static let ttl: TimeInterval = 120.0
+    /// How long a captured photo stays attached to follow-up questions (Extended to 5 min for Meta View sync resilience).
+    static let ttl: TimeInterval = 300.0
     /// How many questions may reuse one photo before a fresh capture is required.
-    static let maxUses = 5
+    static let maxUses = 10
 
     let id: UUID = UUID()
     let data: Data
@@ -47,7 +47,7 @@ struct CapturedPhotoContext {
 enum SolverIntent {
     /// Window in which a photo synced to Camera Roll by the temple shutter counts as "the
     /// photo the user is asking about" (Visor `hasRecentShutterPhoto`, Blueprint lesson 6).
-    static let recentPhotoWindow: TimeInterval = 120.0
+    static let recentPhotoWindow: TimeInterval = 300.0
 
     /// Delay after the last TTS utterance before the mic may barge in again, so the temple
     /// speaker's echo is not heard as a new command (Blueprint lesson 4).
@@ -190,7 +190,11 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
     /// The newest photo created within `seconds`, prepared for upload (see
     /// `PhotoPayload.uploadJPEG`), or nil when there is none / no permission.
     func fetchMostRecentPhoto(withinSeconds seconds: TimeInterval = SolverIntent.recentPhotoWindow) async -> Data? {
-        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .notDetermined {
+            _ = await requestAuthorizationIfNeeded()
+            status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        }
         guard status == .authorized || status == .limited else {
             NSLog("[RecentPhotoScanner] Photo library not authorized (%d)", status.rawValue)
             return nil
@@ -256,15 +260,17 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
             DispatchQueue.global(qos: .userInitiated).async {
                 let fetchOptions = PHFetchOptions()
                 fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                fetchOptions.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@",
-                                                     PHAssetMediaType.image.rawValue, cutoff as NSDate)
-                fetchOptions.fetchLimit = 1
+                fetchOptions.fetchLimit = 5
                 let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
-                if let asset = assets.firstObject {
-                    continuation.resume(returning: (id: asset.localIdentifier, created: asset.creationDate ?? Date()))
-                } else {
-                    continuation.resume(returning: nil)
+                var matched: (id: String, created: Date)? = nil
+                assets.enumerateObjects { asset, _, stop in
+                    let date = asset.creationDate ?? asset.modificationDate ?? Date()
+                    if date >= cutoff || abs(date.timeIntervalSinceNow) < 300.0 {
+                        matched = (id: asset.localIdentifier, created: date)
+                        stop.pointee = true
+                    }
                 }
+                continuation.resume(returning: matched ?? assets.firstObject.map { ($0.localIdentifier, $0.creationDate ?? Date()) })
             }
         }
     }
@@ -290,7 +296,12 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
                 PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
                     box.value = data
                 }
-                continuation.resume(returning: box.value.flatMap { PhotoPayload.uploadJPEG(from: $0) })
+                if let rawData = box.value {
+                    let prepared = PhotoPayload.uploadJPEG(from: rawData) ?? rawData
+                    continuation.resume(returning: prepared)
+                } else {
+                    continuation.resume(returning: nil)
+                }
             }
         }
     }
@@ -340,10 +351,11 @@ enum PhotoPayload {
     /// Pixel size and EXIF orientation (1 = upright) read from the header, without decoding.
     static func imageInfo(_ data: Data) -> (width: Int, height: Int, orientation: Int)? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = props[kCGImagePropertyPixelWidth] as? Int,
-              let height = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
-        let orientation = props[kCGImagePropertyOrientation] as? Int ?? 1
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        let width = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? (props[kCGImagePropertyPixelWidth] as? Int) ?? 0
+        let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? (props[kCGImagePropertyPixelHeight] as? Int) ?? 0
+        guard width > 0, height > 0 else { return nil }
+        let orientation = (props[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? (props[kCGImagePropertyOrientation] as? Int) ?? 1
         return (width, height, orientation)
     }
 
@@ -351,12 +363,20 @@ enum PhotoPayload {
     /// byte-for-byte; anything else (12 MP originals, HEIC, EXIF-rotated) is decoded once with
     /// the rotation applied — the model may ignore EXIF orientation — and re-encoded.
     static func uploadJPEG(from original: Data) -> Data? {
-        guard let info = imageInfo(original) else { return nil }
-        if isJPEG(original), info.orientation == 1, max(info.width, info.height) <= uploadMaxDimension {
-            return original
+        if let info = imageInfo(original) {
+            if isJPEG(original), info.orientation == 1, max(info.width, info.height) <= uploadMaxDimension {
+                return original
+            }
+            let target = min(max(info.width, info.height), uploadMaxDimension)
+            if let rendered = renderJPEG(from: original, maxPixelSize: target, quality: uploadQuality) {
+                return rendered
+            }
         }
-        let target = min(max(info.width, info.height), uploadMaxDimension)
-        return renderJPEG(from: original, maxPixelSize: target, quality: uploadQuality)
+        // Bulletproof fallback: decode via UIImage
+        if let uiImg = UIImage(data: original), let jpeg = uiImg.jpegData(compressionQuality: uploadQuality) {
+            return jpeg
+        }
+        return original
     }
 
     /// Lighter copy for conversation history (longest edge `historyMaxDimension`, JPEG 0.8).
@@ -424,6 +444,8 @@ final class VoiceAgentViewModel: ObservableObject {
     @Published var recordingStatus: String?
     /// The photo the next question uses (120 s / 5 questions; "Capture First, Ask Later").
     @Published var activePhotoContext: CapturedPhotoContext?
+    /// Photo attached to the current user transcript (shown in user bubble)
+    @Published var currentTranscriptPhotoData: Data? = nil
     /// The DISPLAY channel of the latest answer (Markdown + LaTeX), rendered by SolutionSheet.
     /// The transcript bubble shows the SPOKEN text; this is the step-by-step derivation.
     @Published var latestSolution: String?
@@ -804,8 +826,6 @@ final class VoiceAgentViewModel: ObservableObject {
             // think time, and everything before it was endpointing.
             MetricsCollector.shared.markCommit(backend: "gemini", model: GeminiLiveService.modelName, ttsEngine: "apple")
 
-            // History: every captured command is a user message.
-            ConversationManager.shared.addUserMessage(command)
             self.historyAwaitingReply = true
 
             Task {
@@ -1001,6 +1021,10 @@ final class VoiceAgentViewModel: ObservableObject {
             photo = context.data
             print("[VoiceAgent] ✓ Fusing photo context (\(context.data.count) bytes, use #\(context.useCount + 1)) with: \(command)")
         }
+
+        // Attach photo to current live transcript bubble and persistent message history
+        currentTranscriptPhotoData = photo
+        ConversationManager.shared.addUserMessage(command, photoData: photo)
 
         do {
             try await gemini.sendRESTMessage(command, imageData: photo)
@@ -1212,6 +1236,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
         if let data {
             activePhotoContext = CapturedPhotoContext(data: data)
+            currentTranscriptPhotoData = data
             HapticFeedback.success()
             print("[VoiceAgent] ✓ Manual photo context cached (\(data.count) bytes)")
         } else {
@@ -1229,6 +1254,7 @@ final class VoiceAgentViewModel: ObservableObject {
         glassesManager.onPhotoCaptured = { [weak self] data in
             Task { @MainActor in
                 self?.activePhotoContext = CapturedPhotoContext(data: data)
+                self?.currentTranscriptPhotoData = data
                 print("[VoiceAgent] ✓ Active photo context cached (\(data.count) bytes)")
             }
         }
@@ -1291,6 +1317,7 @@ final class VoiceAgentViewModel: ObservableObject {
             return
         }
         activePhotoContext = CapturedPhotoContext(data: data)
+        currentTranscriptPhotoData = data
         HapticFeedback.success()
         print("[VoiceAgent] ✓ Capture-button photo ready (\(data.count) bytes)")
 
@@ -1302,7 +1329,6 @@ final class VoiceAgentViewModel: ObservableObject {
             let question = SolverIntent.solvePhotoQuestion
             userTranscript = question
             latestSolution = nil
-            ConversationManager.shared.addUserMessage(question)
             historyAwaitingReply = true
             await sendCommand(question, allowRepeat: true)
         } else {

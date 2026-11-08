@@ -225,11 +225,7 @@ final class GeminiLiveService: ObservableObject {
         }
         let fullUpload = prepared
 
-        // Same photo as one the model already has in this conversation? Don't upload it again.
-        if let data = prepared, historyContainsImage, imageFingerprintInHistory == PhotoPayload.fingerprint(data) {
-            prepared = nil
-            NSLog("[GeminiLive] Photo already in conversation history — not re-uploading")
-        }
+        // When imageData is explicitly provided, always attach it to ensure model sees the latest captured context
         if let data = prepared {
             NSLog("[GeminiLive] Attached image payload: %ld bytes (%@)", data.count, PhotoPayload.mimeType(for: data))
         }

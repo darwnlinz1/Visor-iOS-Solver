@@ -40,18 +40,29 @@ struct TranscriptBubble: View {
     let text: String
     let isUser: Bool
     let isStreaming: Bool
+    var photoData: Data? = nil
 
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 48) }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 5) {
-                Text(isUser ? "Bạn" : "Vision")
+                Text(isUser ? "You" : "Vision")
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(isUser ? Theme.accent.opacity(0.9) : Theme.heading.opacity(0.85))
                     .textCase(.uppercase)
                     .tracking(1.2)
+
+                if isUser, let photoData, let uiImage = UIImage(data: photoData) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: 180, maxHeight: 130)
+                        .cornerRadius(12)
+                        .clipped()
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.accent.opacity(0.4), lineWidth: 1))
+                }
 
                 Text(text)
                     .font(.callout)
@@ -96,11 +107,12 @@ struct TranscriptView: View {
     let userText: String
     let aiText: String
     let isAIStreaming: Bool
+    var userPhotoData: Data? = nil
 
     var body: some View {
         VStack(spacing: 10) {
             if !userText.isEmpty {
-                TranscriptBubble(text: userText, isUser: true, isStreaming: false)
+                TranscriptBubble(text: userText, isUser: true, isStreaming: false, photoData: userPhotoData)
                     .transition(.asymmetric(
                         insertion: .move(edge: .trailing).combined(with: .opacity),
                         removal: .opacity
@@ -115,7 +127,7 @@ struct TranscriptView: View {
                     }
                     .frame(maxHeight: 190)
                     .fixedSize(horizontal: false, vertical: aiFitsWithoutScrolling)
-                    .onChange(of: aiText) { _, _ in
+                    .onChange(of: aiText) { _ in
                         // Follow the newest text as it streams in.
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo("reply", anchor: .bottom)

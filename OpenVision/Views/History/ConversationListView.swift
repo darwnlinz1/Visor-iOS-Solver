@@ -195,6 +195,15 @@ struct MessageBubble: View {
             }
 
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
+                if let photoData = message.photoData, let uiImage = UIImage(data: photoData) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: 220, maxHeight: 160)
+                        .cornerRadius(12)
+                        .clipped()
+                }
+
                 Text(message.content)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
