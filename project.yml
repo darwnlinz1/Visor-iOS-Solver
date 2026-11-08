@@ -1,0 +1,135 @@
+name: OpenVision
+options:
+  bundleIdPrefix: com.openvision
+  # iOS 18+: the target devices (iPhone 15 Pro / Pro Max) and Meta DAT (needs 17.2+).
+  deploymentTarget:
+    iOS: "18.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    MARKETING_VERSION: "2.14.0"
+    CURRENT_PROJECT_VERSION: "15"
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    CODE_SIGN_STYLE: Automatic
+    INFOPLIST_FILE: OpenVision/Resources/Info.plist
+    PRODUCT_BUNDLE_IDENTIFIER: ${PRODUCT_BUNDLE_IDENTIFIER}
+    META_APP_ID: ${META_APP_ID}
+    CLIENT_TOKEN: ${CLIENT_TOKEN}
+    APP_LINK_URL_SCHEME: ${APP_LINK_URL_SCHEME}
+
+configs:
+  Debug:
+    settings:
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+  Release:
+    settings:
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+
+targets:
+  OpenVisionTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: OpenVisionTests
+    dependencies:
+      - target: OpenVision
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+  OpenVision:
+    type: application
+    platform: iOS
+    sources:
+      - path: OpenVision
+        excludes:
+          - "**/*.example"
+    resources:
+      - path: OpenVision/Resources
+        excludes:
+          - "**/*.plist"
+          - "SolutionRenderer/**"
+      # Offline KaTeX + marked for the DISPLAY channel. A FOLDER reference keeps fonts/ next to
+      # katex.min.css (a flattened copy would break the relative font URLs).
+      - path: OpenVision/Resources/SolutionRenderer
+        type: folder
+    settings:
+      base:
+        INFOPLIST_FILE: OpenVision/Resources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: false
+        ENABLE_PREVIEWS: true
+        CODE_SIGN_ENTITLEMENTS: OpenVision/OpenVision.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: OpenVision/OpenVision-Bridging-Header.h
+    dependencies:
+      - package: meta-wearables-dat-ios
+        products:
+          - MWDATCore
+          - MWDATCamera
+          - MWDATInputs   # capture-button events (experimental, 1.0.0+)
+      # Acoustic voice-activity detection for end-of-turn (see SpeechActivityDetector).
+      - package: FluidAudio
+        products:
+          - FluidAudio
+    preBuildScripts:
+      - name: "Check Config Files"
+        script: |
+          if [ ! -f "${PROJECT_DIR}/Config.xcconfig" ]; then
+            echo "error: Config.xcconfig not found. Copy Config.xcconfig.example to Config.xcconfig"
+            exit 1
+          fi
+        basedOnDependencyAnalysis: false
+
+packages:
+  meta-wearables-dat-ios:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    # Pinned EXACTLY — this SDK rewrites its API most releases, so never float (`from:`).
+    #
+    # 0.5.0 -> 0.9.0: device support gates on SDK version. "Blayzer Optics" glasses (issue #55)
+    # enumerate as 0 devices on 0.5.0, which predates that hardware; support for the newer
+    # frames landed in 0.6.0 (Ray-Ban Meta Optics) and 0.8.0 (Meta Glasses). 0.9.0 is the
+    # camera-consolidation API: DeviceSession.addCamera(config:) -> Camera -> camera.stream
+    # (StreamSession/addStream are gone). Requires iOS 17.2+.
+    # MUST be regression-tested on Gen 1/2 glasses (register + stream + HFP mic) before merge.
+    # 0.9.0 -> 1.0.1: adds MWDATInputs (capture-button events) and camera.photo (standalone
+    # full-resolution stills). Breaking renames (StreamError thermal/power cases, removed
+    # Wearables.deviceStateStream) don't touch this app. Both new features are experimental.
+    exactVersion: "1.0.1"
+  # CoreML Silero VAD (Apache 2.0). Gives us ACOUSTIC end-of-speech detection: the endpoint
+  # countdown can start when the mic actually goes quiet instead of when SFSpeechRecognizer stops
+  # emitting partials (which it does in bursts with ~1s gaps mid-sentence, so transcript timing
+  # can't distinguish "still talking" from "done"). Runs on the Neural Engine, off the CPU.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    from: "0.15.5"
+
+schemes:
+  OpenVision:
+    build:
+      targets:
+        OpenVision: all
+    run:
+      config: Debug
+      commandLineArguments:
+        "-FIRDebugEnabled": false
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - OpenVisionTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
