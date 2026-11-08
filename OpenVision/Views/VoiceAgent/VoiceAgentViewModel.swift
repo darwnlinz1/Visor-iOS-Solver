@@ -240,6 +240,26 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         return data
     }
 
+    /// Wait asynchronously for a fresh Ray-Ban Meta glasses photo to arrive in the Photo Library (e.g. during Meta View Wi-Fi sync).
+    func waitForRecentGlassesPhoto(timeout: TimeInterval = 6.0) async -> Data? {
+        let startTime = Date()
+        // Fast path: already synced and available
+        if let immediate = await fetchMostRecentPhoto(withinSeconds: SolverIntent.recentPhotoWindow) {
+            return immediate
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if let synced = await fetchMostRecentPhoto(withinSeconds: SolverIntent.recentPhotoWindow) {
+                NSLog("[RecentPhotoScanner] Detected glasses photo arrived after %.2fs", Date().timeIntervalSince(startTime))
+                return synced
+            }
+        }
+        NSLog("[RecentPhotoScanner] Timed out waiting for glasses photo after %.1fs", timeout)
+        return nil
+    }
+
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
         Task { @MainActor in
             // Coalesce bursts of change notifications (iCloud, Meta View writing metadata).
@@ -255,22 +275,113 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
     // MARK: - Background PhotoKit work
 
     /// Newest image asset created at/after `cutoff` — (localIdentifier, creationDate).
+    /// Strictly filters for Ray-Ban Meta smart glasses photos (Meta View / Meta AI albums, EXIF tags),
+    /// and rejects iPhone camera roll photos, screenshots, or unrelated device captures.
     private nonisolated static func newestImageAsset(since cutoff: Date) async -> (id: String, created: Date)? {
         await withCheckedContinuation { (continuation: CheckedContinuation<(id: String, created: Date)?, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                let fetchOptions = PHFetchOptions()
-                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                fetchOptions.fetchLimit = 5
-                let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
-                var matched: (id: String, created: Date)? = nil
-                assets.enumerateObjects { asset, _, stop in
-                    let date = asset.creationDate ?? asset.modificationDate ?? Date()
-                    if date >= cutoff || abs(date.timeIntervalSinceNow) < 300.0 {
-                        matched = (id: asset.localIdentifier, created: date)
-                        stop.pointee = true
+                // Priority 1: Check dedicated Meta View / Ray-Ban albums
+                let albumCollections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+                var metaAlbums: [PHAssetCollection] = []
+                albumCollections.enumerateObjects { col, _, _ in
+                    let title = col.localizedTitle?.lowercased() ?? ""
+                    if title.contains("meta") || title.contains("ray-ban") || title.contains("stories") {
+                        metaAlbums.append(col)
                     }
                 }
-                continuation.resume(returning: matched ?? assets.firstObject.map { ($0.localIdentifier, $0.creationDate ?? Date()) })
+
+                for album in metaAlbums {
+                    let fetchOpts = PHFetchOptions()
+                    fetchOpts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                    fetchOpts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+                    fetchOpts.fetchLimit = 3
+                    let albumAssets = PHAsset.fetchAssets(in: album, options: fetchOpts)
+                    if let first = albumAssets.firstObject {
+                        let date = first.creationDate ?? first.modificationDate ?? Date()
+                        if date >= cutoff {
+                            continuation.resume(returning: (id: first.localIdentifier, created: date))
+                            return
+                        }
+                    }
+                }
+
+                // Priority 2: General library query with strict Ray-Ban Meta validation
+                let fetchOptions = PHFetchOptions()
+                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+                fetchOptions.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@", PHAssetMediaType.image.rawValue, cutoff as NSDate)
+                fetchOptions.fetchLimit = 15
+                let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+
+                var matched: (id: String, created: Date)? = nil
+                assets.enumerateObjects { asset, _, stop in
+                    // Discard screenshots immediately
+                    if asset.mediaSubtypes.contains(.photoScreenshot) { return }
+
+                    // Check if asset is contained in any Meta collection
+                    let containing = PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil)
+                    var inMetaAlbum = false
+                    containing.enumerateObjects { col, _, stopCol in
+                        let title = col.localizedTitle?.lowercased() ?? ""
+                        if title.contains("meta") || title.contains("ray-ban") || title.contains("stories") {
+                            inMetaAlbum = true
+                            stopCol.pointee = true
+                        }
+                    }
+
+                    if inMetaAlbum {
+                        let date = asset.creationDate ?? asset.modificationDate ?? Date()
+                        matched = (id: asset.localIdentifier, created: date)
+                        stop.pointee = true
+                        return
+                    }
+
+                    // Inspect EXIF metadata for hardware provenance
+                    let options = PHImageRequestOptions()
+                    options.isSynchronous = true
+                    options.deliveryMode = .fastFormat
+                    options.version = .current
+                    let box = DataBox()
+                    PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
+                        box.value = data
+                    }
+
+                    if let data = box.value,
+                       let source = CGImageSourceCreateWithData(data as CFData, nil),
+                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+                        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+                        let make = (tiff[kCGImagePropertyTIFFMake] as? String)?.lowercased() ?? ""
+                        let model = (tiff[kCGImagePropertyTIFFModel] as? String)?.lowercased() ?? ""
+                        let software = (tiff[kCGImagePropertyTIFFSoftware] as? String)?.lowercased() ?? ""
+
+                        // Reject iPhone Camera captures (not from glasses)
+                        if make.contains("apple") || model.contains("iphone") {
+                            return
+                        }
+
+                        // Accept Meta / Ray-Ban hardware tags
+                        if make.contains("meta") || make.contains("luxottica") ||
+                           model.contains("ray-ban") || model.contains("meta") ||
+                           software.contains("meta") {
+                            let date = asset.creationDate ?? asset.modificationDate ?? Date()
+                            matched = (id: asset.localIdentifier, created: date)
+                            stop.pointee = true
+                            return
+                        }
+
+                        // Also accept if non-Apple and matches Ray-Ban Meta portrait 12MP ratio (3024x4032 or 4032x3024)
+                        let width = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
+                        let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
+                        if (width == 3024 && height == 4032) || (width == 4032 && height == 3024) {
+                            let date = asset.creationDate ?? asset.modificationDate ?? Date()
+                            matched = (id: asset.localIdentifier, created: date)
+                            stop.pointee = true
+                            return
+                        }
+                    }
+                }
+
+                // Strictly return genuine match; NEVER fall back to unrelated camera roll photos!
+                continuation.resume(returning: matched)
             }
         }
     }
@@ -321,9 +432,9 @@ private final class DataBox: @unchecked Sendable {
 /// 4-5x the bytes (seconds on mobile uplink). Detail is requested with media resolution instead
 /// (GeminiLiveService), and the photo is sent upright, long edge <= `uploadMaxDimension`.
 enum PhotoPayload {
-    /// Long edge of the uploaded photo.
-    static let uploadMaxDimension = 3072
-    static let uploadQuality: CGFloat = 0.85
+    /// Long edge of the uploaded photo (4032 px keeps full 12 MP Ray-Ban Meta resolution).
+    static let uploadMaxDimension = 4032
+    static let uploadQuality: CGFloat = 0.92
 
     /// Long edge of the copy kept in conversation history: follow-up questions re-send the
     /// whole history, so they carry this lighter copy.
@@ -1007,10 +1118,18 @@ final class VoiceAgentViewModel: ObservableObject {
 
         agentState = .thinking
 
-        // Visor parity: the photo taken with the glasses just before asking.
+        // 1. If glasses hardware is currently capturing/transferring photo, wait for it
+        if glassesManager.isTakingPhoto {
+            let waitDeadline = Date().addingTimeInterval(8.0)
+            while glassesManager.isTakingPhoto, Date() < waitDeadline {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+
+        // 2. Visor parity: wait for the high-res glasses photo taken just before asking.
         if activePhotoContext?.isFresh != true {
-            if let recentPhoto = await RecentPhotoScanner.shared.fetchMostRecentPhoto(withinSeconds: SolverIntent.recentPhotoWindow) {
-                print("[VoiceAgent] ✓ Fetched recent glasses photo from library (\(recentPhoto.count) bytes)")
+            if let recentPhoto = await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 5.0) {
+                print("[VoiceAgent] ✓ Fetched fresh glasses photo from library (\(recentPhoto.count) bytes)")
                 activePhotoContext = CapturedPhotoContext(data: recentPhoto)
             }
         }
@@ -1209,7 +1328,7 @@ final class VoiceAgentViewModel: ObservableObject {
             return full
         }
         if let streamStill = await takeGlassesPhoto() { return streamStill }
-        return await RecentPhotoScanner.shared.fetchMostRecentPhoto(withinSeconds: SolverIntent.recentPhotoWindow)
+        return await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 5.0)
     }
 
     /// The model needs to see and no photo is in the conversation: take one. The new photo also
