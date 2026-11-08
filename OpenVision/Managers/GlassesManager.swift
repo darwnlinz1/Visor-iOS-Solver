@@ -437,12 +437,18 @@ final class GlassesManager: ObservableObject {
     /// stopped (a running stream makes the still fail), and the capture is fired. The camera
     /// is switched off again afterwards — "Click & Go" — and the button link, which a still
     /// takes down (it crosses on the file-transfer channel), is attached again.
+    func resetPhotoFailures() {
+        fullPhotoFailures = 0
+    }
+
     func captureFullResolutionPhoto(fullResolution: Bool, timeout: TimeInterval = 25) async -> Data? {
         guard !isTakingPhoto else { return nil }
         guard isRegistered, connectedDevice != nil else { return nil }
         // A recording owns the stream; the stream still is the right tool then.
         guard !isStreaming else { return nil }
-        guard fullPhotoFailures < 2 else { return nil }
+
+        // Reset lockout on explicit capture requests
+        fullPhotoFailures = 0
 
         isTakingPhoto = true
         let startedAt = Date()

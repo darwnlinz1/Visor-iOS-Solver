@@ -184,6 +184,8 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
     @Published private(set) var latestPhotoDate: Date?
     @Published private(set) var latestThumbnail: UIImage?
     @Published private(set) var isWaitingForPhoto = false
+    /// Callback when a new photo arrives from Camera Roll
+    var onPhotoArrived: ((Data) -> Void)?
 
     /// Full-resolution bytes of the newest asset we loaded, keyed by its local identifier.
     private var cache: (assetID: String, created: Date, data: Data)?
@@ -261,6 +263,7 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         if cache?.assetID == newest.id {
             latestThumbnail = thumbnail.flatMap { UIImage(data: $0) }
         }
+        onPhotoArrived?(data)
         return data
     }
 
@@ -409,43 +412,67 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         }
     }
 
-    /// Load full-resolution image data (guaranteeing >= 100 KB, rejecting low-res previews).
+    /// Load full-resolution image data (guaranteeing original high-res bytes, rejecting low-res previews).
     private nonisolated static func loadFullResolution(assetID: String) async -> Data? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
-                guard let asset = assets.firstObject else {
-                    continuation.resume(returning: nil)
+            let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetID], options: nil)
+            guard let asset = assets.firstObject else {
+                continuation.resume(returning: nil)
+                return
+            }
+
+            let options = PHImageRequestOptions()
+            options.isSynchronous = false
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+            options.version = .current
+
+            var didResume = false
+            let lock = NSLock()
+
+            let resumeOnce: (Data?) -> Void = { result in
+                lock.lock()
+                defer { lock.unlock() }
+                if !didResume {
+                    didResume = true
+                    continuation.resume(returning: result)
+                }
+            }
+
+            // Fallback timeout after 15 seconds if PhotoKit download stalls
+            Task.detached {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                resumeOnce(nil)
+            }
+
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, info in
+                if let isDegraded = info?[PHImageResultIsDegradedKey] as? NSNumber, isDegraded.boolValue {
+                    return // Wait for the full-resolution non-degraded callback
+                }
+                if let error = info?[PHImageErrorKey] as? Error {
+                    NSLog("[RecentPhotoScanner] PhotoKit requestImageData error: %@", error.localizedDescription)
+                    resumeOnce(nil)
                     return
                 }
-                let options = PHImageRequestOptions()
-                options.isSynchronous = true
-                options.deliveryMode = .highQualityFormat
-                options.isNetworkAccessAllowed = true
-                options.version = .current
-
-                let box = DataBox()
-                PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
-                    box.value = data
-                }
-                if let rawData = box.value, rawData.count >= 100_000 {
+                if let rawData = data, !rawData.isEmpty {
                     let prepared = PhotoPayload.uploadJPEG(from: rawData) ?? rawData
-                    continuation.resume(returning: prepared)
-                } else if let rawData = box.value {
-                    // Raw data is small (< 100KB), request high-quality image directly
+                    resumeOnce(prepared)
+                } else {
+                    // Fallback to high-quality image render if raw bytes unavailable
                     let imgOptions = PHImageRequestOptions()
-                    imgOptions.isSynchronous = true
+                    imgOptions.isSynchronous = false
                     imgOptions.deliveryMode = .highQualityFormat
                     imgOptions.isNetworkAccessAllowed = true
-                    var fullData: Data? = nil
-                    PHImageManager.default().requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: imgOptions) { img, _ in
-                        if let img = img {
-                            fullData = img.jpegData(compressionQuality: PhotoPayload.uploadQuality)
+                    PHImageManager.default().requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: imgOptions) { img, imgInfo in
+                        if let isImgDegraded = imgInfo?[PHImageResultIsDegradedKey] as? NSNumber, isImgDegraded.boolValue {
+                            return
+                        }
+                        if let img = img, let fullData = img.jpegData(compressionQuality: PhotoPayload.uploadQuality) {
+                            resumeOnce(fullData)
+                        } else {
+                            resumeOnce(nil)
                         }
                     }
-                    continuation.resume(returning: fullData ?? rawData)
-                } else {
-                    continuation.resume(returning: nil)
                 }
             }
         }
@@ -1176,23 +1203,23 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         }
 
-        // 2. Visor parity: Adaptive wait loop for the high-res glasses photo taken just before or during asking.
+        // 2. Active capture & adaptive wait for high-res glasses photo ("tự bấm nút chụp" / acquireGlassesPhoto)
         let isVisual = SolverIntent.requiresAttachedPhoto(command)
         let hasExistingFreshPhoto = (activePhotoContext != nil && activePhotoContext?.isFresh == true) || currentTranscriptPhotoData != nil
 
         if isVisual && !hasExistingFreshPhoto {
-            print("[VoiceAgent] Visual command detected ('\(command)'). Waiting up to 30s for high-res photo from Ray-Ban glasses...")
+            print("[VoiceAgent] Visual command detected ('\(command)'). Triggering glasses photo capture...")
             agentState = .thinking
-            statusMessage = "Đang chờ ảnh chất lượng cao từ kính Ray-Ban..."
+            statusMessage = "Đang chụp và lấy ảnh từ kính Ray-Ban..."
 
-            // Adaptive wait loop up to 30 seconds for the full 12MP photo to finish syncing/uploading
-            if let fullResPhoto = await RecentPhotoScanner.shared.waitForFullResolutionGlassesPhoto(timeout: 30.0) {
-                print("[VoiceAgent] [OK] Full resolution glasses photo acquired (\(fullResPhoto.count) bytes)")
-                activePhotoContext = CapturedPhotoContext(data: fullResPhoto)
-                currentTranscriptPhotoData = fullResPhoto
+            // Actively trigger glasses camera ("tự bấm nút chụp") or wait for recent sync!
+            if let photoData = await acquireGlassesPhoto() {
+                print("[VoiceAgent] [OK] High-resolution glasses photo acquired (\(photoData.count) bytes)")
+                activePhotoContext = CapturedPhotoContext(data: photoData)
+                currentTranscriptPhotoData = photoData
                 statusMessage = nil
             } else {
-                print("[VoiceAgent] Timed out waiting for photo after 30s — blocking API server call")
+                print("[VoiceAgent] Timed out acquiring photo after 30s — blocking API server call")
                 statusMessage = nil
                 let message = SolverIntent.missingPhotoMessage(for: command)
                 errorMessage = message
@@ -1453,6 +1480,14 @@ final class VoiceAgentViewModel: ObservableObject {
                 self?.activePhotoContext = CapturedPhotoContext(data: data)
                 self?.currentTranscriptPhotoData = data
                 print("[VoiceAgent] ✓ Active photo context cached (\(data.count) bytes)")
+            }
+        }
+        // PhotoKit scanner detects when glasses photo arrives in Camera Roll (via Meta View app)
+        RecentPhotoScanner.shared.onPhotoArrived = { [weak self] data in
+            Task { @MainActor in
+                self?.activePhotoContext = CapturedPhotoContext(data: data)
+                self?.currentTranscriptPhotoData = data
+                print("[VoiceAgent] RecentPhotoScanner auto-synced photo to transcript (\(data.count) bytes)")
             }
         }
         // The glasses' own capture button, routed to the app (DAT 1.0 Inputs).
