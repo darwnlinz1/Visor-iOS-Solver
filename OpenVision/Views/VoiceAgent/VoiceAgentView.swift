@@ -27,6 +27,10 @@ struct VoiceAgentView: View {
     /// The solution open in the sheet — frozen when opened, so a new question doesn't blank it.
     @State private var openSolution: SolutionItem?
 
+    /// Typed prompt input for keyboard composer ("nhập prompt")
+    @State private var typedPrompt: String = ""
+    @FocusState private var isPromptFocused: Bool
+
     // MARK: - Body
 
     var body: some View {
@@ -38,24 +42,26 @@ struct VoiceAgentView: View {
             ParticleEffect(particleCount: 30)
                 .opacity(0.5)
 
-            // Main content — the orb stays vertically centered and STABLE. The transcript is a
-            // separate overlay (below) so it can never push the orb around.
+            // Main content — the orb stays vertically centered and STABLE.
             VStack(spacing: 0) {
                 topBar
                     .padding(.top, 8)
                 Spacer()
                 centerContent
                 Spacer()
+
+                // Bottom prompt composer bar ("nhập prompt")
+                promptComposerBar
+                    .padding(.bottom, 8)
             }
 
-            // Transcript floats over the bottom; growing text stays inside its own card and doesn't
-            // move the orb.
+            // Transcript floats above composer; appears immediately when a photo is attached or text flows.
             if settingsManager.settings.showTranscripts
-                && (!viewModel.userTranscript.isEmpty || !viewModel.aiTranscript.isEmpty || viewModel.agentState == .thinking) {
+                && (!viewModel.userTranscript.isEmpty || !viewModel.aiTranscript.isEmpty || viewModel.currentTranscriptPhotoData != nil || viewModel.agentState == .thinking) {
                 VStack {
                     Spacer()
                     transcriptArea
-                        .padding(.bottom, 28)
+                        .padding(.bottom, 68)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -227,7 +233,8 @@ struct VoiceAgentView: View {
                 userText: viewModel.userTranscript,
                 aiText: viewModel.aiTranscript,
                 isAIStreaming: viewModel.agentState == .speaking,
-                userPhotoData: viewModel.currentTranscriptPhotoData
+                userPhotoData: viewModel.currentTranscriptPhotoData,
+                onDetachPhoto: { viewModel.detachPhoto() }
             )
             if let solution = viewModel.latestSolution {
                 SolutionButton { openSolution = SolutionItem(markdown: solution) }
@@ -236,6 +243,72 @@ struct VoiceAgentView: View {
         }
         .padding(.horizontal, 20)
         .animation(.easeInOut(duration: 0.25), value: viewModel.latestSolution == nil)
+    }
+
+    // MARK: - Prompt Composer Bar
+
+    private var promptComposerBar: some View {
+        HStack(spacing: 10) {
+            // Camera snap button
+            Button {
+                Task { await viewModel.snapPhotoFromGlasses() }
+            } label: {
+                Image(systemName: viewModel.currentTranscriptPhotoData != nil ? "camera.fill" : "camera")
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundColor(viewModel.currentTranscriptPhotoData != nil ? Theme.accent : Theme.textPrimary)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(.ultraThinMaterial))
+                    .overlay(Circle().stroke(Theme.accent.opacity(viewModel.currentTranscriptPhotoData != nil ? 0.8 : 0.2), lineWidth: 1))
+            }
+            .accessibilityLabel("Chụp ảnh bằng kính")
+
+            // Text input field for typing prompt
+            TextField("Nhập prompt hoặc đọc qua mic kính...", text: $typedPrompt)
+                .font(.subheadline)
+                .foregroundColor(Theme.textPrimary)
+                .focused($isPromptFocused)
+                .submitLabel(.send)
+                .onSubmit {
+                    submitPrompt()
+                }
+
+            // Send button or mic listening indicator
+            if !typedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    submitPrompt()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundColor(Theme.accent)
+                }
+                .transition(.scale.combined(with: .opacity))
+            } else if viewModel.agentState == .listening {
+                Image(systemName: "waveform")
+                    .font(.system(size: 18))
+                    .foregroundColor(Theme.accent)
+                    .padding(.horizontal, 6)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
+        )
+        .padding(.horizontal, 16)
+    }
+
+    private func submitPrompt() {
+        let text = typedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        typedPrompt = ""
+        isPromptFocused = false
+        viewModel.sendTypedCommand(text)
     }
 
     // MARK: - Photo badge

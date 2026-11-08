@@ -133,6 +133,19 @@ enum SolverIntent {
             ? "Không tìm thấy ảnh chụp bài tập từ kính Ray-Ban. Bạn hãy bấm nút chụp trên gọng kính rồi hỏi lại nhé."
             : "No photo found from Ray-Ban glasses. Please press the temple capture button and ask again."
     }
+
+    /// Whether the user's prompt is a visual / solving command that requires a glasses photo attachment.
+    /// General conversational questions run text-only without requiring a photo.
+    static func requiresAttachedPhoto(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        let visualPhrases = [
+            "ảnh", "hình", "bài này", "câu này", "trong ảnh", "trong hình",
+            "giải bài", "giải câu", "đây là gì", "cái này là gì", "đáp án là gì",
+            "đáp án câu", "xem giúp", "nhìn giúp", "chụp", "photo", "image",
+            "picture", "solve this", "solve problem", "what is this", "in this photo", "in this picture"
+        ]
+        return visualPhrases.contains { lower.contains($0) }
+    }
 }
 
 // MARK: - Recent Photo Scanner (Visor Parity)
@@ -1094,6 +1107,26 @@ final class VoiceAgentViewModel: ObservableObject {
 
     // MARK: - Command routing
 
+    /// Submit a typed prompt from the iPhone keyboard composer bar (supports "nhập prompt" workflow).
+    func sendTypedCommand(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        userTranscript = trimmed
+        aiTranscript = ""
+        latestSolution = nil
+        Task {
+            await sendCommand(trimmed, allowRepeat: true)
+        }
+    }
+
+    /// Detach the currently attached photo if the user cancels or wants to retake.
+    func detachPhoto() {
+        activePhotoContext = nil
+        currentTranscriptPhotoData = nil
+        HapticFeedback.light()
+        print("[VoiceAgent] Photo detached by user")
+    }
+
     /// Send the wearer's words — verbatim, any language — to Gemini, with the current glasses
     /// photo when there is one. Gemini decides whether the photo matters, and asks for one
     /// ([[CAPTURE]]) when it must see something and has none.
@@ -1131,7 +1164,21 @@ final class VoiceAgentViewModel: ObservableObject {
             if let recentPhoto = await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 5.0) {
                 print("[VoiceAgent] ✓ Fetched fresh glasses photo from library (\(recentPhoto.count) bytes)")
                 activePhotoContext = CapturedPhotoContext(data: recentPhoto)
+                currentTranscriptPhotoData = recentPhoto
             }
+        }
+
+        // 3. Workflow gate: If the prompt requires an attached photo, check presence.
+        // If not attached, DO NOT send to the API key server!
+        let needsPhoto = SolverIntent.requiresAttachedPhoto(command)
+        let hasPhoto = (activePhotoContext != nil && activePhotoContext?.isFresh == true) || currentTranscriptPhotoData != nil
+        if needsPhoto && !hasPhoto {
+            print("[VoiceAgent] Prompt requires attached photo, but no photo is attached — blocking API server call")
+            let message = SolverIntent.missingPhotoMessage(for: command)
+            errorMessage = message
+            speakResponse(message)
+            agentState = isSessionActive ? .listening : .idle
+            return
         }
 
         var photo: Data?
@@ -1139,6 +1186,8 @@ final class VoiceAgentViewModel: ObservableObject {
             activePhotoContext?.useCount += 1
             photo = context.data
             print("[VoiceAgent] ✓ Fusing photo context (\(context.data.count) bytes, use #\(context.useCount + 1)) with: \(command)")
+        } else if let pending = currentTranscriptPhotoData {
+            photo = pending
         }
 
         // Attach photo to current live transcript bubble and persistent message history

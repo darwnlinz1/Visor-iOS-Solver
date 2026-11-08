@@ -108,9 +108,59 @@ struct TranscriptView: View {
     let aiText: String
     let isAIStreaming: Bool
     var userPhotoData: Data? = nil
+    var onDetachPhoto: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 10) {
+            // Attached photo preview while waiting for prompt (Capture First, Ask Later workflow)
+            if userText.isEmpty, let photoData = userPhotoData, let uiImage = UIImage(data: photoData) {
+                HStack {
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Theme.success).frame(width: 8, height: 8)
+                            Text("ẢNH KÍNH ĐÃ ĐÍNH KÈM")
+                                .font(.caption2.weight(.bold))
+                                .foregroundColor(Theme.accent)
+                                .textCase(.uppercase)
+                                .tracking(1.0)
+                            if let onDetach = onDetachPhoto {
+                                Button(action: onDetach) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.caption)
+                                        .foregroundColor(Theme.textSecondary)
+                                }
+                                .padding(.leading, 4)
+                            }
+                        }
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: 180, maxHeight: 130)
+                            .cornerRadius(12)
+                            .clipped()
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.accent, lineWidth: 1.5))
+                            .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 2)
+                        Text("Đã đính kèm ảnh kính. Nhập hoặc đọc câu hỏi...")
+                            .font(.caption2)
+                            .foregroundColor(Theme.textSecondary)
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Theme.bgElevated.opacity(0.92))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Theme.accent.opacity(0.3), lineWidth: 1)
+                            )
+                    )
+                }
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
             if !userText.isEmpty {
                 TranscriptBubble(text: userText, isUser: true, isStreaming: false, photoData: userPhotoData)
                     .transition(.asymmetric(
@@ -149,6 +199,7 @@ struct TranscriptView: View {
         // Animate bubble appear/disappear only — not every streamed token.
         .animation(.easeInOut(duration: 0.3), value: userText.isEmpty)
         .animation(.easeInOut(duration: 0.3), value: aiText.isEmpty)
+        .animation(.easeInOut(duration: 0.3), value: userPhotoData != nil)
     }
 
     /// Short replies size to content (no dead space); long ones cap at maxHeight and scroll.
