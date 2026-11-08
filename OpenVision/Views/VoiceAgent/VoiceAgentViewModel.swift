@@ -47,7 +47,7 @@ struct CapturedPhotoContext {
 enum SolverIntent {
     /// Window in which a photo synced to Camera Roll by the temple shutter counts as "the
     /// photo the user is asking about" (Visor `hasRecentShutterPhoto`, Blueprint lesson 6).
-    static let recentPhotoWindow: TimeInterval = 300.0
+    static let recentPhotoWindow: TimeInterval = 120.0
 
     /// Delay after the last TTS utterance before the mic may barge in again, so the temple
     /// speaker's echo is not heard as a new command (Blueprint lesson 4).
