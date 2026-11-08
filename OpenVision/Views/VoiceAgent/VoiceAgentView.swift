@@ -58,8 +58,29 @@ struct VoiceAgentView: View {
             // Transcript floats above composer; appears immediately when a photo is attached or text flows.
             if settingsManager.settings.showTranscripts
                 && (!viewModel.userTranscript.isEmpty || !viewModel.aiTranscript.isEmpty || viewModel.currentTranscriptPhotoData != nil || viewModel.agentState == .thinking) {
-                VStack {
+                VStack(spacing: 8) {
                     Spacer()
+
+                    // Visor parity: Status indicator while waiting for high-resolution photo transfer
+                    if let status = viewModel.statusMessage {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: Theme.accent))
+                                .scaleEffect(0.8)
+                            Text(status)
+                                .font(.caption.bold())
+                                .foregroundColor(.white)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(Color.black.opacity(0.75))
+                                .overlay(Capsule().stroke(Theme.accent.opacity(0.6), lineWidth: 1))
+                        )
+                        .transition(.scale.combined(with: .opacity))
+                    }
+
                     transcriptArea
                         .padding(.bottom, 68)
                 }

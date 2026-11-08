@@ -138,11 +138,24 @@ enum SolverIntent {
     /// General conversational questions run text-only without requiring a photo.
     static func requiresAttachedPhoto(_ text: String) -> Bool {
         let lower = text.lowercased()
+
+        // Status queries ("có ảnh chưa", "có ảnh không") are conversational checks, not visual solving commands
+        let statusPhrases = ["có ảnh chưa", "có ảnh không", "nhận được ảnh chưa", "thấy ảnh chưa", "đã có ảnh"]
+        if statusPhrases.contains(where: { lower.contains($0) }) {
+            return false
+        }
+
         let visualPhrases = [
-            "ảnh", "hình", "bài này", "câu này", "trong ảnh", "trong hình",
-            "giải bài", "giải câu", "đây là gì", "cái này là gì", "đáp án là gì",
-            "đáp án câu", "xem giúp", "nhìn giúp", "chụp", "photo", "image",
-            "picture", "solve this", "solve problem", "what is this", "in this photo", "in this picture"
+            // Visor parity: Comprehensive visual & STEM solving keywords (accented & unaccented)
+            "đây là cái gì", "đây là gì", "cái này là gì", "cái gì đây", "gì đây", "đây là ai",
+            "kia là cái gì", "đó là cái gì", "câu này", "bài này", "đáp án", "đề bài",
+            "giải giúp", "giải hộ", "giải bài", "giải câu", "tính câu này", "làm câu này", "chọn đáp án",
+            "trong ảnh", "trong hình", "ảnh này", "hình này", "bức ảnh", "bức hình",
+            "xem giúp", "nhìn giúp", "đọc giúp", "trước mặt", "chụp",
+            "day la cai gi", "day la gi", "cai nay la gi", "cai gi day", "giai bai", "giai cau",
+            "dap an", "de bai", "cau nay", "bai nay", "anh nay", "trong anh", "chup",
+            "photo", "image", "picture", "solve this", "solve problem", "what is this", "what is that",
+            "in this photo", "in this picture", "what do you see", "describe what you see"
         ]
         return visualPhrases.contains { lower.contains($0) }
     }
@@ -170,6 +183,7 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
     /// "photo ready" indicator. Also shows on a real device how long Camera Roll import takes.
     @Published private(set) var latestPhotoDate: Date?
     @Published private(set) var latestThumbnail: UIImage?
+    @Published private(set) var isWaitingForPhoto = false
 
     /// Full-resolution bytes of the newest asset we loaded, keyed by its local identifier.
     private var cache: (assetID: String, created: Date, data: Data)?
@@ -200,8 +214,8 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         return status == .authorized || status == .limited
     }
 
-    /// The newest photo created within `seconds`, prepared for upload (see
-    /// `PhotoPayload.uploadJPEG`), or nil when there is none / no permission.
+    /// The newest photo created within `seconds`, prepared for upload (see `PhotoPayload.uploadJPEG`),
+    /// or nil when there is none / no permission.
     func fetchMostRecentPhoto(withinSeconds seconds: TimeInterval = SolverIntent.recentPhotoWindow) async -> Data? {
         var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if status == .notDetermined {
@@ -215,12 +229,10 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
 
         let cutoffDate = Date().addingTimeInterval(-seconds)
         guard let newest = await Self.newestImageAsset(since: cutoffDate) else {
-            NSLog("[RecentPhotoScanner] No photos found created after %@", cutoffDate.description)
             return nil
         }
 
         if let cached = cache, cached.assetID == newest.id {
-            NSLog("[RecentPhotoScanner] Using prefetched photo (%d bytes)", cached.data.count)
             return cached.data
         }
 
@@ -228,7 +240,6 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         if let running = inFlight, running.assetID == newest.id {
             load = running.task
         } else {
-            NSLog("[RecentPhotoScanner] Found asset created at: %@", newest.created.description)
             let assetID = newest.id
             load = Task.detached(priority: .userInitiated) { await Self.loadFullResolution(assetID: assetID) }
             inFlight = (assetID: assetID, task: load)
@@ -239,7 +250,7 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
             NSLog("[RecentPhotoScanner] Could not load image data for newest asset")
             return nil
         }
-        NSLog("[RecentPhotoScanner] Loaded photo (%ld bytes), taken %.1fs ago", data.count, Date().timeIntervalSince(newest.created))
+
         cache = (assetID: newest.id, created: newest.created, data: data)
         lastScannedPhotoData = data
         lastScannedTimestamp = Date()
@@ -253,19 +264,29 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         return data
     }
 
-    /// Wait asynchronously for a fresh Ray-Ban Meta glasses photo to arrive in the Photo Library (e.g. during Meta View Wi-Fi sync).
-    func waitForRecentGlassesPhoto(timeout: TimeInterval = 6.0) async -> Data? {
+    /// Visor parity: Adaptive wait loop for the high-res glasses photo taken just before or during asking.
+    /// Polls every 300ms for up to `timeout` seconds (default 30s).
+    func waitForFullResolutionGlassesPhoto(timeout: TimeInterval = 30.0, since: Date? = nil) async -> Data? {
         let startTime = Date()
+        let cutoff = since ?? Date().addingTimeInterval(-SolverIntent.recentPhotoWindow)
+        NSLog("[RecentPhotoScanner] Starting adaptive photo wait loop (timeout: %.1fs, cutoff: %@)...", timeout, cutoff.description)
+        isWaitingForPhoto = true
+        defer { isWaitingForPhoto = false }
+
         // Fast path: already synced and available
-        if let immediate = await fetchMostRecentPhoto(withinSeconds: SolverIntent.recentPhotoWindow) {
+        let initialWindow = max(Date().timeIntervalSince(cutoff), 10.0)
+        if let immediate = await fetchMostRecentPhoto(withinSeconds: initialWindow) {
+            NSLog("[RecentPhotoScanner] [OK] Photo already available immediately (%ld bytes)", immediate.count)
             return immediate
         }
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            if let synced = await fetchMostRecentPhoto(withinSeconds: SolverIntent.recentPhotoWindow) {
-                NSLog("[RecentPhotoScanner] Detected glasses photo arrived after %.2fs", Date().timeIntervalSince(startTime))
+            try? await Task.sleep(nanoseconds: 300_000_000) // 300ms polling
+            let currentWindow = max(Date().timeIntervalSince(cutoff), 10.0)
+            if let synced = await fetchMostRecentPhoto(withinSeconds: currentWindow) {
+                NSLog("[RecentPhotoScanner] [OK] Detected full-res photo arrived after %.2fs (%ld bytes)",
+                      Date().timeIntervalSince(startTime), synced.count)
                 return synced
             }
         }
@@ -273,9 +294,13 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         return nil
     }
 
+    /// Convenience wrapper for backwards compatibility
+    func waitForRecentGlassesPhoto(timeout: TimeInterval = 6.0) async -> Data? {
+        await waitForFullResolutionGlassesPhoto(timeout: timeout)
+    }
+
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
         Task { @MainActor in
-            // Coalesce bursts of change notifications (iCloud, Meta View writing metadata).
             self.prefetchTask?.cancel()
             self.prefetchTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -288,12 +313,12 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
     // MARK: - Background PhotoKit work
 
     /// Newest image asset created at/after `cutoff` — (localIdentifier, creationDate).
-    /// Strictly filters for Ray-Ban Meta smart glasses photos (Meta View / Meta AI albums, EXIF tags),
-    /// and rejects iPhone camera roll photos, screenshots, or unrelated device captures.
+    /// Scans both dedicated Meta/Ray-Ban albums AND user library / smart albums.
+    /// Rejects screenshots and low-res thumbnails (< 1000px, Visor parity).
     private nonisolated static func newestImageAsset(since cutoff: Date) async -> (id: String, created: Date)? {
         await withCheckedContinuation { (continuation: CheckedContinuation<(id: String, created: Date)?, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                // Priority 1: Check dedicated Meta View / Ray-Ban albums
+                // 1. Check dedicated Meta View / Ray-Ban user albums
                 let albumCollections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
                 var metaAlbums: [PHAssetCollection] = []
                 albumCollections.enumerateObjects { col, _, _ in
@@ -307,28 +332,43 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
                     let fetchOpts = PHFetchOptions()
                     fetchOpts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
                     fetchOpts.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-                    fetchOpts.fetchLimit = 3
+                    fetchOpts.fetchLimit = 5
                     let albumAssets = PHAsset.fetchAssets(in: album, options: fetchOpts)
-                    if let first = albumAssets.firstObject {
-                        let date = first.creationDate ?? first.modificationDate ?? Date()
+                    var foundInAlbum: (id: String, created: Date)? = nil
+                    albumAssets.enumerateObjects { asset, _, stop in
+                        if asset.mediaSubtypes.contains(.photoScreenshot) { return }
+                        if asset.pixelWidth < 1000 && asset.pixelHeight < 1000 { return }
+                        let date = asset.creationDate ?? asset.modificationDate ?? Date()
                         if date >= cutoff {
-                            continuation.resume(returning: (id: first.localIdentifier, created: date))
-                            return
+                            foundInAlbum = (id: asset.localIdentifier, created: date)
+                            stop.pointee = true
                         }
+                    }
+                    if let found = foundInAlbum {
+                        continuation.resume(returning: found)
+                        return
                     }
                 }
 
-                // Priority 2: General library query with strict Ray-Ban Meta validation
+                // 2. Check General Library / Recents Smart Album
                 let fetchOptions = PHFetchOptions()
                 fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                fetchOptions.predicate = NSPredicate(format: "mediaType == %d AND creationDate >= %@", PHAssetMediaType.image.rawValue, cutoff as NSDate)
-                fetchOptions.fetchLimit = 15
+                fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+                fetchOptions.fetchLimit = 25
                 let assets = PHAsset.fetchAssets(with: .image, options: fetchOptions)
 
-                var matched: (id: String, created: Date)? = nil
+                var bestMatch: (id: String, created: Date)? = nil
+
                 assets.enumerateObjects { asset, _, stop in
-                    // Discard screenshots immediately
+                    // Discard screenshots
                     if asset.mediaSubtypes.contains(.photoScreenshot) { return }
+
+                    // Discard small thumbnails / icons (< 1000px, Visor parity rule)
+                    if asset.pixelWidth < 1000 && asset.pixelHeight < 1000 { return }
+
+                    let date = asset.creationDate ?? asset.modificationDate ?? Date()
+                    // Must be within the cutoff window
+                    if date < cutoff { return }
 
                     // Check if asset is contained in any Meta collection
                     let containing = PHAssetCollection.fetchAssetCollectionsContaining(asset, with: .album, options: nil)
@@ -342,65 +382,34 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
                     }
 
                     if inMetaAlbum {
-                        let date = asset.creationDate ?? asset.modificationDate ?? Date()
-                        matched = (id: asset.localIdentifier, created: date)
+                        bestMatch = (id: asset.localIdentifier, created: date)
                         stop.pointee = true
                         return
                     }
 
-                    // Inspect EXIF metadata for hardware provenance
-                    let options = PHImageRequestOptions()
-                    options.isSynchronous = true
-                    options.deliveryMode = .fastFormat
-                    options.version = .current
-                    let box = DataBox()
-                    PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
-                        box.value = data
+                    // Check Ray-Ban native 12MP aspect ratio (3024x4032 or 4032x3024)
+                    let w = asset.pixelWidth
+                    let h = asset.pixelHeight
+                    let isRayBanRatio = (w == 3024 && h == 4032) || (w == 4032 && h == 3024)
+
+                    if isRayBanRatio {
+                        bestMatch = (id: asset.localIdentifier, created: date)
+                        stop.pointee = true
+                        return
                     }
 
-                    if let data = box.value,
-                       let source = CGImageSourceCreateWithData(data as CFData, nil),
-                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
-                        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
-                        let make = (tiff[kCGImagePropertyTIFFMake] as? String)?.lowercased() ?? ""
-                        let model = (tiff[kCGImagePropertyTIFFModel] as? String)?.lowercased() ?? ""
-                        let software = (tiff[kCGImagePropertyTIFFSoftware] as? String)?.lowercased() ?? ""
-
-                        // Reject iPhone Camera captures (not from glasses)
-                        if make.contains("apple") || model.contains("iphone") {
-                            return
-                        }
-
-                        // Accept Meta / Ray-Ban hardware tags
-                        if make.contains("meta") || make.contains("luxottica") ||
-                           model.contains("ray-ban") || model.contains("meta") ||
-                           software.contains("meta") {
-                            let date = asset.creationDate ?? asset.modificationDate ?? Date()
-                            matched = (id: asset.localIdentifier, created: date)
-                            stop.pointee = true
-                            return
-                        }
-
-                        // Also accept if non-Apple and matches Ray-Ban Meta portrait 12MP ratio (3024x4032 or 4032x3024)
-                        let width = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
-                        let height = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
-                        if (width == 3024 && height == 4032) || (width == 4032 && height == 3024) {
-                            let date = asset.creationDate ?? asset.modificationDate ?? Date()
-                            matched = (id: asset.localIdentifier, created: date)
-                            stop.pointee = true
-                            return
-                        }
+                    // Any recent high-resolution camera photo (>= 1200px) created after cutoff
+                    if bestMatch == nil && (w >= 1200 || h >= 1200) {
+                        bestMatch = (id: asset.localIdentifier, created: date)
                     }
                 }
 
-                // Strictly return genuine match; NEVER fall back to unrelated camera roll photos!
-                continuation.resume(returning: matched)
+                continuation.resume(returning: bestMatch)
             }
         }
     }
 
-    /// The asset's original image (12 MP on Ray-Ban Meta Gen 2), prepared for upload once, in the
-    /// background: upright, long edge <= 3072 px (see `PhotoPayload`).
+    /// Load full-resolution image data (guaranteeing >= 100 KB, rejecting low-res previews).
     private nonisolated static func loadFullResolution(assetID: String) async -> Data? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -414,15 +423,27 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
                 options.deliveryMode = .highQualityFormat
                 options.isNetworkAccessAllowed = true
                 options.version = .current
-                // Synchronous request: the handler runs before this returns. A box (not a captured
-                // var) carries the result out, which is safe in any concurrency-checking mode.
+
                 let box = DataBox()
                 PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
                     box.value = data
                 }
-                if let rawData = box.value {
+                if let rawData = box.value, rawData.count >= 100_000 {
                     let prepared = PhotoPayload.uploadJPEG(from: rawData) ?? rawData
                     continuation.resume(returning: prepared)
+                } else if let rawData = box.value {
+                    // Raw data is small (< 100KB), request high-quality image directly
+                    let imgOptions = PHImageRequestOptions()
+                    imgOptions.isSynchronous = true
+                    imgOptions.deliveryMode = .highQualityFormat
+                    imgOptions.isNetworkAccessAllowed = true
+                    var fullData: Data? = nil
+                    PHImageManager.default().requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: imgOptions) { img, _ in
+                        if let img = img {
+                            fullData = img.jpegData(compressionQuality: PhotoPayload.uploadQuality)
+                        }
+                    }
+                    continuation.resume(returning: fullData ?? rawData)
                 } else {
                     continuation.resume(returning: nil)
                 }
@@ -438,12 +459,6 @@ private final class DataBox: @unchecked Sendable {
 
 // MARK: - Photo payload (pure, unit-testable)
 
-/// Image bytes sent to the AI.
-///
-/// Gemini 3 gives each image a FIXED token budget (HIGH ~1120, ULTRA_HIGH ~2240 tokens) whatever
-/// its pixel count, so a 12 MP upload carries no more detail than ~3000 px — it only costs
-/// 4-5x the bytes (seconds on mobile uplink). Detail is requested with media resolution instead
-/// (GeminiLiveService), and the photo is sent upright, long edge <= `uploadMaxDimension`.
 enum PhotoPayload {
     /// Long edge of the uploaded photo (4032 px keeps full 12 MP Ray-Ban Meta resolution).
     static let uploadMaxDimension = 4032
@@ -560,6 +575,8 @@ final class VoiceAgentViewModel: ObservableObject {
     @Published var userTranscript = ""
     @Published var aiTranscript = ""
     @Published var errorMessage: String?
+    /// Transient solver status ("Đang chờ ảnh chất lượng cao từ kính...")
+    @Published var statusMessage: String?
     /// True when voice recognition is ready (audio engine running)
     @Published var isVoiceReady = false
     /// True while a POV demo recording (glasses video + mic audio) is in progress.
@@ -1151,34 +1168,44 @@ final class VoiceAgentViewModel: ObservableObject {
 
         agentState = .thinking
 
-        // 1. If glasses hardware is currently capturing/transferring photo, wait for it
+        // 1. If glasses hardware is currently capturing/transferring photo via DAT SDK, wait for it
         if glassesManager.isTakingPhoto {
-            let waitDeadline = Date().addingTimeInterval(8.0)
+            let waitDeadline = Date().addingTimeInterval(15.0)
             while glassesManager.isTakingPhoto, Date() < waitDeadline {
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
         }
 
-        // 2. Visor parity: wait for the high-res glasses photo taken just before asking.
-        if activePhotoContext?.isFresh != true {
-            if let recentPhoto = await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 5.0) {
-                print("[VoiceAgent] ✓ Fetched fresh glasses photo from library (\(recentPhoto.count) bytes)")
-                activePhotoContext = CapturedPhotoContext(data: recentPhoto)
-                currentTranscriptPhotoData = recentPhoto
-            }
-        }
+        // 2. Visor parity: Adaptive wait loop for the high-res glasses photo taken just before or during asking.
+        let isVisual = SolverIntent.requiresAttachedPhoto(command)
+        let hasExistingFreshPhoto = (activePhotoContext != nil && activePhotoContext?.isFresh == true) || currentTranscriptPhotoData != nil
 
-        // 3. Workflow gate: If the prompt requires an attached photo, check presence.
-        // If not attached, DO NOT send to the API key server!
-        let needsPhoto = SolverIntent.requiresAttachedPhoto(command)
-        let hasPhoto = (activePhotoContext != nil && activePhotoContext?.isFresh == true) || currentTranscriptPhotoData != nil
-        if needsPhoto && !hasPhoto {
-            print("[VoiceAgent] Prompt requires attached photo, but no photo is attached — blocking API server call")
-            let message = SolverIntent.missingPhotoMessage(for: command)
-            errorMessage = message
-            speakResponse(message)
-            agentState = isSessionActive ? .listening : .idle
-            return
+        if isVisual && !hasExistingFreshPhoto {
+            print("[VoiceAgent] Visual command detected ('\(command)'). Waiting up to 30s for high-res photo from Ray-Ban glasses...")
+            agentState = .thinking
+            statusMessage = "Đang chờ ảnh chất lượng cao từ kính Ray-Ban..."
+
+            // Adaptive wait loop up to 30 seconds for the full 12MP photo to finish syncing/uploading
+            if let fullResPhoto = await RecentPhotoScanner.shared.waitForFullResolutionGlassesPhoto(timeout: 30.0) {
+                print("[VoiceAgent] [OK] Full resolution glasses photo acquired (\(fullResPhoto.count) bytes)")
+                activePhotoContext = CapturedPhotoContext(data: fullResPhoto)
+                currentTranscriptPhotoData = fullResPhoto
+                statusMessage = nil
+            } else {
+                print("[VoiceAgent] Timed out waiting for photo after 30s — blocking API server call")
+                statusMessage = nil
+                let message = SolverIntent.missingPhotoMessage(for: command)
+                errorMessage = message
+                speakResponse(message)
+                agentState = isSessionActive ? .listening : .idle
+                return
+            }
+        } else if !hasExistingFreshPhoto {
+            // Non-visual question: check if a photo happens to be already available within 1s without blocking
+            if let quickPhoto = await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 1.0) {
+                activePhotoContext = CapturedPhotoContext(data: quickPhoto)
+                currentTranscriptPhotoData = quickPhoto
+            }
         }
 
         var photo: Data?
@@ -1377,7 +1404,7 @@ final class VoiceAgentViewModel: ObservableObject {
             return full
         }
         if let streamStill = await takeGlassesPhoto() { return streamStill }
-        return await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 5.0)
+        return await RecentPhotoScanner.shared.waitForFullResolutionGlassesPhoto(timeout: 30.0)
     }
 
     /// The model needs to see and no photo is in the conversation: take one. The new photo also
@@ -1400,13 +1427,15 @@ final class VoiceAgentViewModel: ObservableObject {
     func snapPhotoFromGlasses() async {
         HapticFeedback.light()
         print("[VoiceAgent] Manual photo snap requested from glasses...")
+        statusMessage = "Đang chụp và tải ảnh độ phân giải cao..."
         let data = await acquireGlassesPhoto()
+        statusMessage = nil
 
         if let data {
             activePhotoContext = CapturedPhotoContext(data: data)
             currentTranscriptPhotoData = data
             HapticFeedback.success()
-            print("[VoiceAgent] ✓ Manual photo context cached (\(data.count) bytes)")
+            print("[VoiceAgent] [OK] Manual photo context cached (\(data.count) bytes)")
         } else {
             HapticFeedback.error()
             let message = SolverIntent.missingPhotoMessage(for: lastProcessedCommand.isEmpty ? "chụp ảnh" : lastProcessedCommand)
