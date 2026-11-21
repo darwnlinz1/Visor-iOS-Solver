@@ -78,6 +78,22 @@ struct GlassesSettingsView: View {
 
     private var registrationSection: some View {
         Section {
+            // Wearables.configure() failed at launch: nothing below can work until a restart.
+            if let reason = glassesManager.sdkUnavailableReason {
+                HStack(alignment: .top) {
+                    Image(systemName: "exclamationmark.octagon.fill")
+                        .foregroundColor(Theme.danger)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(reason)
+                            .font(.subheadline)
+                            .foregroundColor(Theme.danger)
+                        Text("Các tính năng kính tắt cho tới khi mở lại app.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             if glassesManager.isRegistered {
                 HStack {
                     Image(systemName: "checkmark.circle.fill")
@@ -114,7 +130,7 @@ struct GlassesSettingsView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRegistering)
+                    .disabled(isRegistering || glassesManager.sdkUnavailableReason != nil)
                 }
             }
 
@@ -251,13 +267,7 @@ struct GlassesSettingsView: View {
             // Stages/updates the on-glasses developer component via Meta AI. Sessions die with
             // "Device unavailable" when it is missing — this is the SDK's recovery path.
             Button {
-                Task {
-                    do {
-                        try await Wearables.shared.openDATGlassesAppUpdate()
-                    } catch {
-                        glassesManager.errorMessage = "Không mở được cập nhật: \(error.localizedDescription)"
-                    }
-                }
+                Task { await glassesManager.openDATGlassesAppUpdate() }
             } label: {
                 Label("Cài/cập nhật thành phần trên kính", systemImage: "arrow.down.circle")
             }

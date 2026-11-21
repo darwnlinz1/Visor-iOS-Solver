@@ -75,20 +75,45 @@ COMMON=(
   CODE_SIGNING_ALLOWED=YES
 )
 
-# Launch the app alone for a few seconds and print its console. Informational (never fails the
-# job): it shows the app's own startup messages, e.g. "[OpenVisionApp] Failed to configure
-# Wearables SDK: ...", which xcodebuild does not forward when the test host dies at launch.
-launch_smoke() {
-  echo "::group::App launch console (15 s)"
+# Launch the app alone for 15 s and print its console (stdout + stderr) into $2.
+# $1: label; any further arguments are SIMCTL_CHILD_*=value assignments for the app's environment.
+# Sets LAUNCH_ALIVE=1 when the app was still running after 15 s (`simctl launch --console`
+# returns as soon as the app exits).
+launch_console() {
+  local label="$1" log="$2"
+  shift 2
+  echo "::group::App launch console: $label (15 s)"
   mkdir -p build
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
-  xcrun simctl launch --console --terminate-running-process "$UDID" "$BUNDLE_ID" > build/launch-console.log 2>&1 &
+  env ${1+"$@"} xcrun simctl launch --console --terminate-running-process "$UDID" "$BUNDLE_ID" > "$log" 2>&1 &
   local pid=$!
   sleep 15
+  if kill -0 "$pid" 2>/dev/null; then LAUNCH_ALIVE=1; else LAUNCH_ALIVE=0; fi
   kill "$pid" 2>/dev/null || true
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
-  cat build/launch-console.log || true
+  cat "$log" || true
+  echo "(still running after 15 s: $([ "$LAUNCH_ALIVE" = 1 ] && echo yes || echo no))"
   echo "::endgroup::"
+}
+
+# 1. Normal launch. Informational (never fails the job): it shows the app's own startup
+#    messages, e.g. "[OpenVisionApp] Failed to configure Wearables SDK: ...", which xcodebuild
+#    does not forward when the test host dies at launch.
+# 2. Launch with the glasses SDK left unconfigured (Debug builds honour the variable): the app
+#    must not trap and must say why the glasses are off (PLAN.md N2 / T2.5). This one fails the job.
+launch_smoke() {
+  launch_console "normal" build/launch-console.log
+  local log=build/launch-console-no-dat.log
+  launch_console "OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1" "$log" SIMCTL_CHILD_OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1
+  if grep -q "Fatal error" "$log" || [ "$LAUNCH_ALIVE" != 1 ]; then
+    echo "::error::the app did not survive a launch without a configured glasses SDK (console above)"
+    return 1
+  fi
+  if ! grep -q "SDK kính chưa khởi tạo được" "$log"; then
+    echo "::error::no \"SDK kính chưa khởi tạo được\" line when launched without the glasses SDK (console above)"
+    return 1
+  fi
+  echo "Launch without the glasses SDK: no trap, and the app reports \"SDK kính chưa khởi tạo được\"."
 }
 
 # When the test host dies at launch there is no test output at all; print what crashed.

@@ -19,21 +19,29 @@ struct OpenVisionApp: App {
     // MARK: - Initialization
 
     init() {
-        // Initialize Meta Wearables SDK
-        do {
-            try Wearables.configure()
-            print("[OpenVisionApp] Wearables SDK configured")
-        } catch {
-            // NSLog, not print: print is buffered and lost when the app traps right after
-            // (GlassesManager.shared needs a configured SDK). Only whether each MWDAT key is set
-            // is logged, never its value (ClientToken is a secret).
-            let mwdat = Bundle.main.object(forInfoDictionaryKey: "MWDAT") as? [String: Any] ?? [:]
-            let keys = mwdat.keys.sorted().map { (key: String) -> String in
-                let value = String(describing: mwdat[key] ?? "")
-                return key + "=" + (value.isEmpty ? "empty" : "set")
-            }.joined(separator: ", ")
-            NSLog("[OpenVisionApp] Failed to configure Wearables SDK: %@ | MWDAT keys: %@",
-                  String(describing: error), keys)
+        // Initialize Meta Wearables SDK. The outcome goes to WearablesBootstrap: GlassesManager
+        // touches Wearables.shared only after a successful configure(), so a failure leaves the
+        // app running without glasses instead of trapping at launch (PLAN.md N2).
+        if WearablesBootstrap.simulatesConfigureFailure {
+            WearablesBootstrap.configureFailed("mô phỏng lỗi (OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1)")
+            NSLog("[OpenVisionApp] Debug: Wearables.configure() skipped (OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1)")
+        } else {
+            do {
+                try Wearables.configure()
+                WearablesBootstrap.configureSucceeded()
+                print("[OpenVisionApp] Wearables SDK configured")
+            } catch {
+                WearablesBootstrap.configureFailed(error.localizedDescription)
+                // NSLog, not print: print is buffered, NSLog reaches the console at once. Only
+                // whether each MWDAT key is set is logged, never its value (ClientToken is a secret).
+                let mwdat = Bundle.main.object(forInfoDictionaryKey: "MWDAT") as? [String: Any] ?? [:]
+                let keys = mwdat.keys.sorted().map { (key: String) -> String in
+                    let value = String(describing: mwdat[key] ?? "")
+                    return key + "=" + (value.isEmpty ? "empty" : "set")
+                }.joined(separator: ", ")
+                NSLog("[OpenVisionApp] Failed to configure Wearables SDK: %@ | MWDAT keys: %@",
+                      String(describing: error), keys)
+            }
         }
         print("[OpenVisionApp] Initialized")
     }
@@ -64,6 +72,10 @@ struct OpenVisionApp: App {
     /// Handle URL callback from Meta AI app for glasses registration
     private func handleURL(_ url: URL) {
         print("[OpenVisionApp] Received URL: \(url)")
+        guard WearablesBootstrap.isConfigured else {
+            print("[OpenVisionApp] Ignoring the URL: \(GlassesManager.sdkUnavailableMessage)")
+            return
+        }
 
         Task {
             do {
