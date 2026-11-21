@@ -461,6 +461,10 @@ final class GeminiStub: URLProtocol {
             client?.urlProtocol(self, didLoad: Data(chunk.utf8))
         }
         if reply.dropAtEnd {
+            // A real connection drops AFTER the bytes it already sent have been read. Failing in
+            // the same instant as the last chunk lets URLSession.bytes throw before the consumer
+            // has read a single line (seen on iOS 26: partial answer lost, a second request made).
+            if !reply.chunks.isEmpty { Thread.sleep(forTimeInterval: 0.3) }
             client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
         } else {
             client?.urlProtocolDidFinishLoading(self)
