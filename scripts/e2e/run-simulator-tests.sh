@@ -26,6 +26,9 @@ RESULT="${RESULT_BUNDLE:-build/E2E.xcresult}"
 [ -f Config.xcconfig ] || cp Config.xcconfig.example Config.xcconfig
 [ -f OpenVision/Config/Config.swift ] || cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
 BUNDLE_ID="$(awk -F= '/^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER/ { gsub(/[[:space:]]/, "", $2); print $2 }' Config.xcconfig)"
+case "$BUNDLE_ID" in  # it goes into simctl arguments and an SQL statement below
+  ""|*[!A-Za-z0-9.-]*) echo "error: unexpected PRODUCT_BUNDLE_IDENTIFIER '$BUNDLE_ID' in Config.xcconfig" >&2; exit 1 ;;
+esac
 
 # Newest iOS 18+ iPhone, preferring a Pro Max (the iPhone 15 Pro Max class this app targets).
 UDID="${SIMULATOR_UDID:-}"
@@ -123,12 +126,54 @@ PY
   echo "::endgroup::"
 }
 
+# Photos access for BlueprintPhotoLibraryE2ETests (PLAN.md N1). On the iOS 26 simulator runtimes
+# `simctl privacy grant photos` writes a TCC row with auth_version 1, which PhotoKit ignores:
+# authorizationStatus stays .notDetermined and the tests skipped on every CI run. The row is
+# rewritten the way AppleSimulatorUtils writes Photos grants (auth_value 2 = full access,
+# auth_version 2); like that tool, nothing is restarted afterwards.
+SIM_HOME="$(xcrun simctl getenv "$UDID" HOME 2>/dev/null || true)"
+TCC_DB="${SIM_HOME:-$HOME/Library/Developer/CoreSimulator/Devices/$UDID/data}/Library/TCC/TCC.db"
+tcc() { sqlite3 -cmd ".timeout 5000" "$@"; }
+photos_tcc_rows() {
+  tcc -header -column "$TCC_DB" "SELECT service, client, client_type, auth_value, auth_reason, auth_version, flags
+    FROM access WHERE service LIKE 'kTCCServicePhotos%' AND client = '$BUNDLE_ID';" 2>&1 || true
+}
+grant_photos_access() {
+  echo "::group::Photos access for $BUNDLE_ID"
+  xcrun simctl privacy "$UDID" grant photos "$BUNDLE_ID" || echo "warning: simctl could not grant Photos access"
+  if [ -f "$TCC_DB" ]; then
+    echo "TCC row written by simctl ($TCC_DB):"
+    photos_tcc_rows
+    tcc "$TCC_DB" "UPDATE access SET auth_value = 2, auth_version = 2
+        WHERE service = 'kTCCServicePhotos' AND client = '$BUNDLE_ID' AND client_type = 0;
+      INSERT INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags)
+        SELECT 'kTCCServicePhotos', '$BUNDLE_ID', 0, 2, 2, 2, 0 WHERE NOT EXISTS (SELECT 1 FROM access
+          WHERE service = 'kTCCServicePhotos' AND client = '$BUNDLE_ID' AND client_type = 0);" \
+      || echo "warning: could not rewrite the Photos TCC row; the photo library tests may skip"
+    echo "TCC row the tests run with:"
+    photos_tcc_rows
+  else
+    echo "warning: no TCC database at $TCC_DB; the photo library tests will skip"
+  fi
+  echo "::endgroup::"
+}
+
+# xcbeautify prints a skipped test without its reason: show the reasons from the raw output,
+# with the Photos TCC row as the tests left it (does test-without-building reinstall reset it?).
+report_skips() {
+  echo "::group::Skipped tests and why"
+  grep -h -E "Test skipped|\[BlueprintPhotoLibraryE2ETests\]" build/test-output.log 2>/dev/null || echo "no skipped tests"
+  echo "Photos TCC row after the run:"
+  photos_tcc_rows
+  echo "::endgroup::"
+}
+
 xcodebuild build-for-testing "${COMMON[@]}" | pretty ${XCBEAUTIFY_ARGS:-}
 
 # Install once and grant Photos access, so the real-photo-library tests run instead of skipping.
 APP="$(find "$DERIVED/Build/Products" -maxdepth 2 -type d -path '*-iphonesimulator/OpenVision.app' | head -n 1)"
 xcrun simctl install "$UDID" "$APP"
-xcrun simctl privacy "$UDID" grant photos "$BUNDLE_ID" || echo "warning: could not grant Photos access; library tests will skip"
+grant_photos_access
 launch_smoke
 
 # SUITE=all runs the whole OpenVisionTests target (no -only-testing list to keep in step).
@@ -142,7 +187,11 @@ echo "Test suites: $SUITE"
 
 rm -rf "$RESULT"
 mkdir -p "$(dirname "$RESULT")"
-if ! xcodebuild test-without-building "${COMMON[@]}" ${ONLY[@]+"${ONLY[@]}"} -resultBundlePath "$RESULT" | pretty ${XCBEAUTIFY_ARGS:-}; then
+status=0
+xcodebuild test-without-building "${COMMON[@]}" ${ONLY[@]+"${ONLY[@]}"} -resultBundlePath "$RESULT" \
+  | tee build/test-output.log | pretty ${XCBEAUTIFY_ARGS:-} || status=$?
+report_skips
+if [ "$status" -ne 0 ]; then
   dump_crash_reports
   exit 1
 fi
