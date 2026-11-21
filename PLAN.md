@@ -6,6 +6,9 @@
 >   "Trực tiếp" (hội thoại đang diễn ra), Cài đặt mới, công cụ gỡ lỗi, thiết kế lại giao diện.
 > - Phase 0–1 của v1 đã xong (PR #2). Việc còn lại của v1 (DAT 1.1.0, đường ảnh, nhận dạng giọng)
 >   được giữ và đánh số lại (Phase 7–8).
+> - **v2.1 (21/11/2026):** chủ dự án đã trả lời D1–D6 (mục 6). App chỉ dùng cho bài tập và thi:
+>   trắc nghiệm đọc "Câu 1: A. Câu 2: B."; tự luận đọc từng dòng "Dòng 1: …" có nghỉ, tốc độ riêng.
+>   Luôn đọc hết; màn hình hiện đầy đủ; không bao giờ bảo "xem màn hình điện thoại".
 > Nếu comment trong code mâu thuẫn với file này, tin file này. Nếu file này mô tả hiện trạng khác
 > với code, tin code và ghi chú lại trong PR.
 
@@ -19,7 +22,9 @@
 3. **Commit message:** `Fix: …`, `Add: …`, `Refactor: …`, `Docs: …`, `Chore: …`, `Test: …`
    (dòng đầu ≤ 72 ký tự), dòng sau ghi `Task: Tx.y`.
 4. **Môi trường:** sandbox Linux, **không có Xcode**. Chạy được ở local:
-   `python3 scripts/blueprint/verify_blueprint.py` (luôn 0 failed) và các script Python.
+   `python3 scripts/blueprint/verify_blueprint.py` (luôn 0 failed), các script Python, và
+   `scripts/swift-local/run.sh` (Swift 6.3 có sẵn trong sandbox: biên dịch và chạy test cho code thuần
+   trong `OpenVision/Services/Speech/`, xem §11).
    Build và test iOS chạy trên GitHub Actions (mục 9). Task chỉ xong khi CI của commit đó xanh,
    hoặc lỗi còn lại được chứng minh là có từ trước.
 5. **File Swift mới:** được phép, nhưng **chỉ** đăng ký vào `project.pbxproj` bằng
@@ -49,13 +54,17 @@
 
 ## 1. Mục tiêu sản phẩm (v2)
 
-Người đeo **Ray-Ban Meta** bấm chụp, nói "Ok Vision" + câu hỏi tự do (Việt hoặc Anh). Kính **đọc**:
-1. **Đáp án** trước tiên (nghe được ngay khi phần còn lại đang được tạo).
-2. Tuỳ **chế độ đọc**: chỉ đáp án, đáp án + hướng làm, hoặc **toàn bộ lời giải tự luận từng bước**.
+App dùng cho **bài tập và đề thi** (chủ yếu toán phổ thông, nhiều trắc nghiệm). Người đeo
+**Ray-Ban Meta** bấm chụp, nói "Ok Vision" + câu hỏi tự do (Việt hoặc Anh). Kính **đọc hết** câu trả lời:
+1. **Trắc nghiệm** (gồm cả đúng/sai và trả lời ngắn): chỉ đọc đáp án, gọn:
+   "Câu 1: A. Câu 2: C. Câu 3: a đúng, b sai, c đúng, d sai. Câu 4: 2 phẩy 5."
+2. **Tự luận**: đọc **từng dòng lời giải** như viết trên giấy, "Dòng 1: …", "Dòng 2: …", có khoảng
+   nghỉ giữa các dòng, với **tốc độ riêng** (chậm hơn trắc nghiệm), rồi đọc đáp số.
 3. Công thức được đọc **tự nhiên bằng tiếng Việt** ("x bình phương trừ 5 x cộng 6 bằng 0",
    "tích phân từ 0 đến 1 của…", "căn bậc hai của…").
-4. Người đeo **điều khiển nhịp đọc**: tạm dừng, đọc lại bước, bước tiếp, chậm lại, nhanh lên,
-   và chế độ **đọc chép** (dừng sau mỗi bước chờ lệnh "tiếp" để kịp viết).
+4. Người đeo **điều khiển nhịp đọc**: tạm dừng, đọc lại dòng, dòng tiếp, chậm lại, nhanh lên,
+   và chế độ **đọc chép** (dừng sau mỗi dòng chờ lệnh "tiếp" để kịp viết).
+5. Không bao giờ nói "câu trả lời dài quá, xem trên điện thoại". Màn hình hiện **đầy đủ** mọi dòng.
 
 Vai trò của iPhone:
 - Màn hình **Trực tiếp**: theo dõi hội thoại khi nó diễn ra (câu hỏi, ảnh, câu trả lời chia theo
@@ -183,7 +192,7 @@ viết test tái hiện trước rồi mới sửa.
 
 ### 4.1 Luồng từ câu hỏi tới giọng đọc
 ```
-Câu hỏi + ảnh → Gemini (định dạng v2: ANSWER / METHOD / STEP n …, toán trong $…$)
+Câu hỏi + ảnh → Gemini (định dạng v2.1: TYPE + Q / P / L / FINAL / ANSWER, toán trong $…$)
   → AnswerFormat.parse / completedSections(in:)     tách đoạn theo thẻ khi stream tới
   → VietMathSpeech.render(đoạn)                      đổi công thức thành lời tiếng Việt
   → ReadingPlan (danh sách ReadingSegment)           mỗi đoạn: loại, chữ hiển thị, các mẩu đọc
@@ -192,40 +201,63 @@ Câu hỏi + ảnh → Gemini (định dạng v2: ANSWER / METHOD / STEP n …, 
 Song song: LiveConversationView hiển thị ReadingPlan + đoạn đang đọc; History lưu ReadingRecord.
 ```
 
-### 4.2 Định dạng câu trả lời v2 (hợp đồng với Gemini)
-Thẻ viết bằng tiếng Anh, nội dung theo ngôn ngữ người hỏi. Mỗi thẻ đứng đầu một dòng.
+### 4.2 Định dạng câu trả lời v2.1 (hợp đồng với Gemini)
+Gemini **tự nhận dạng loại bài** và trả lời theo một trong các khuôn dưới. Thẻ viết bằng ASCII để parse
+chắc chắn; app tự đọc nhãn theo ngôn ngữ người hỏi ("Câu 1" / "Question 1", "Dòng 1" / "Line 1").
+Mỗi thẻ đứng đầu một dòng. Dòng đầu tiên luôn là `TYPE:`.
 ```
-ANSWER: <1–2 câu, đáp án cuối cùng>
-METHOD: <1–2 câu, hướng làm>                 (tuỳ chế độ)
-STEP 1: <một bước, công thức trong $…$>
-STEP 2: …
-CHECK: <điều kiện, thử lại>                  (tuỳ chọn)
-CONCLUSION: <câu kết>                        (tuỳ chọn)
-HINT: <gợi ý>                                (chỉ chế độ Gia sư, thay cho ANSWER)
+TYPE: MCQ                      trắc nghiệm, đúng/sai, trả lời ngắn
+Q1: A
+Q2: C
+Q3: a Đ, b S, c Đ, d S         câu đúng/sai (kiểu đề 2025): mỗi ý một chữ Đ hoặc S
+Q4: 2,5                        câu trả lời ngắn: chỉ con số
+```
+```
+TYPE: ESSAY                    tự luận, chứng minh, bài có lời văn
+P1: Bài 1                      chỉ khi có nhiều bài
+L1: Ta có $\Delta = b^2 - 4ac = 9$.
+L2: Vì $\Delta > 0$ nên phương trình có hai nghiệm phân biệt.
+L3: $x_1 = 2$, $x_2 = \frac{1}{2}$.
+FINAL: Vậy tập nghiệm là $S = \{\frac{1}{2}; 2\}$.
+```
+```
+TYPE: MIXED                    đề vừa trắc nghiệm vừa tự luận: khối Q trước, rồi các P / L / FINAL
+TYPE: OTHER                    câu hỏi không phải bài tập ("đây là đâu", dịch, giải thích)
+ANSWER: <câu trả lời; có thể nhiều dòng ANSWER:>
 ```
 Quy tắc trong prompt:
-- `ANSWER` luôn đứng đầu (trừ Gia sư). Không nhắc "xem trên điện thoại".
-- Công thức **chỉ** trong `$…$` một dòng; không `$$`, không bảng, không markdown, không danh sách.
-- Mỗi `STEP` ≤ khoảng 30 từ lời văn và ≤ 2 công thức, để đọc thành từng nhịp ngắn.
-- Chế độ đọc (`readingMode`, mục 4.6) được ghi vào prompt mỗi lượt:
-  - `answerOnly`: chỉ `ANSWER`.
-  - `summary`: `ANSWER` + `METHOD` + tối đa 3 `STEP`.
-  - `detailed` (tự luận): `ANSWER` + `METHOD` + đủ mọi `STEP` + `CHECK` + `CONCLUSION`.
-  - `auto` (mặc định): trắc nghiệm, câu ngắn → `summary`; tự luận, chứng minh, bài có lời văn → `detailed`.
-- Người dùng nói "giải chi tiết", "giải từng bước", "step by step" → `detailed` cho lượt đó;
-  "chỉ cần đáp án" → `answerOnly`; "gợi ý", "hướng dẫn mình tự làm" → Gia sư (sửa N17).
-- Cả trang: `ANSWER: Câu 1: A. Câu 2: C. …` rồi mỗi câu một `STEP` nếu chế độ cho phép.
-- Giữ nguyên `[[CAPTURE]]`, `[[END]]`, "ALWAYS answer in the language the user used".
+- `MCQ`: **chỉ** đáp án, không giải thích, không chép lại đề. Đánh số theo đề (Câu 5 → `Q5`). Trả lời
+  mọi câu nhìn thấy trong ảnh; câu không đọc được ghi `Q7: ?` (app đọc "Câu 7: không đọc được đề").
+- `ESSAY`: mỗi `L` là **một dòng như viết trên giấy**: một phép biến đổi hoặc một câu lập luận ngắn,
+  ≤ 25 từ, ≤ 2 công thức. Đủ mọi bước, không bỏ bước "dễ". Kết thúc bằng `FINAL`.
+- Công thức **chỉ** trong `$…$` một dòng; không `$$`, không bảng, không markdown, không gạch đầu dòng.
+- Không bao giờ nhắc tới màn hình điện thoại, không xin lỗi vì dài (D5).
+- Giữ: kiểm tra lại kết quả trước khi trả lời, `[[CAPTURE]]`, `[[END]]`,
+  "ALWAYS answer in the language the user used". Bỏ chế độ Gia sư (D1: luôn giải đầy đủ).
+- Hỏi tiếp về một câu ("tại sao câu 3 chọn C?", "giải chi tiết câu 3") → trả lời `ESSAY` cho câu đó.
 
 Quy tắc của parser (`AnswerFormat`, thuần, có test):
-- Không phân biệt hoa thường; chấp nhận `**ANSWER:**`, `- STEP 1:`, `## STEP 1`, và bí danh tiếng
-  Việt `ĐÁP ÁN:`, `HƯỚNG LÀM:`, `BƯỚC 1:`, `KIỂM TRA:`, `KẾT LUẬN:`, `GỢI Ý:`.
-- Văn bản không có thẻ nào → toàn bộ là `ANSWER`, tách thành câu.
-- Khi stream: chỉ trả về đoạn đã **xong dòng**; giữ lại dòng cuối nếu nó có thể là nửa thẻ.
+- Không phân biệt hoa thường; bỏ `**`, `-`, `#` trước thẻ. Bí danh: `CÂU n:` / `CAU n:` = `Qn`,
+  `DÒNG n:` / `DONG n:` = `Ln`, `BÀI n:` = `Pn`, `ĐÁP SỐ:` / `KẾT LUẬN:` = `FINAL`, `TRẢ LỜI:` = `ANSWER`.
+- Thiếu `TYPE:` → suy ra từ thẻ đầu tiên (`Q` → MCQ, `L` / `P` → ESSAY, còn lại OTHER).
+- Văn bản không có thẻ nào → `OTHER`, tách thành câu.
+- Khi stream: chỉ trả về mục đã **xong dòng**; giữ lại dòng cuối nếu nó có thể là nửa thẻ.
+- `Q` đúng/sai: chuẩn hoá thành từng ý (chấp nhận Đ/S, D/S, T/F, đúng/sai, true/false).
 - Xoá `[[END]]`; `[[CAPTURE]]` xử lý như hiện nay (không bao giờ đọc ra).
-- `finishReason == MAX_TOKENS`: đọc phần đã có rồi thêm đoạn thông báo
-  "Lời giải dài quá nên mình dừng ở bước N. Bạn hỏi 'giải tiếp' để mình giải nốt." (sửa N12).
-  ("giải tiếp" là câu hỏi mới gửi Gemini; khác lệnh đọc "tiếp tục" ở 4.4.)
+- `finishReason == MAX_TOKENS`: đọc phần đã có, rồi thêm mục thông báo "Lời giải dài nên mình dừng ở
+  dòng N. Bạn hỏi 'giải tiếp' để mình giải nốt." ("giải tiếp" là câu hỏi mới gửi Gemini, khác lệnh
+  đọc "tiếp tục" ở 4.4.)
+
+Cách đọc từng loại (do `ReadingEngine`, tốc độ và khoảng nghỉ ở 4.6):
+| Loại | Mục | Đọc | Tốc độ / nghỉ |
+|---|---|---|---|
+| MCQ | `Q3: C` | "Câu 3: C." | `mcqRate`, nghỉ `pauseBetweenAnswers` |
+| MCQ đúng/sai | `Q3: a Đ, b S, c Đ, d S` | "Câu 3: a đúng, b sai, c đúng, d sai." | như trên |
+| MCQ trả lời ngắn | `Q4: 2,5` | "Câu 4: 2 phẩy 5." | như trên |
+| ESSAY | `P2: Bài 2` | "Bài 2." | `essayRate`, nghỉ `pauseBetweenLines` |
+| ESSAY | `L1: …` | "Dòng 1." (nếu `readLineNumbers`) rồi nội dung qua `VietMathSpeech` | `essayRate` × `mathRateFactor` cho công thức, nghỉ `pauseBetweenLines` |
+| ESSAY | `FINAL: …` | "Đáp số: …" | `essayRate` |
+| OTHER | `ANSWER: …` | nội dung | `speechRate` |
 
 ### 4.3 Module đọc toán tiếng Việt: `VietMathSpeech`
 Thư mục mới `OpenVision/Services/Speech/`. **Thuần Swift**, không import UIKit/AVFoundation.
@@ -247,8 +279,9 @@ Thành phần:
 - `symbolicFraction`: "trên" (mặc định) hoặc "phần" cho `a/b` có chữ; phân số số luôn "một phần hai".
 - `negativeWord`: "âm" (mặc định) hoặc "trừ" cho dấu trừ một ngôi.
 - `letterStyle`: `asWritten` (đưa chữ Latinh cho giọng đọc) hoặc `vietnameseNames`
-  (a, bê, xê, đê, e, ép, giê, hát, i, ca, e-lờ, em-mờ, en-nờ, o, pê, quy, e-rờ, ét, tê, u, vê,
-  vê kép, ích, i dài, dét). Mặc định quyết định sau spike S7.
+  (a, bê, xê, đê, e, ép, giê, hát, i, gi, ca, lờ, mờ, nờ, o, pê, quy, rờ, ét, tê, u, vê, vê kép,
+  ích, i, dét; chữ hoa đọc giống chữ thường). **Mặc định `vietnameseNames` (D3)**: đọc chắc chắn đúng
+  kiểu lớp học, không phụ thuộc giọng máy đọc chữ Latinh ra sao. S7 dùng để kiểm tra lại.
 
 Ràng buộc bắt buộc (có test):
 - Đầu ra không bao giờ chứa `\`, `$`, `{`, `}`, `^`, `_`.
@@ -256,7 +289,10 @@ Ràng buộc bắt buộc (có test):
 - Chạy < 5 ms cho một bước điển hình (đo trong test bằng `measure`).
 - Lời văn tiếng Việt không có công thức đi qua **không đổi** (trừ số và ký hiệu).
 
-Bảng quy tắc đọc (kiểu `natural`; cột "rõ ràng" chỉ ghi khi khác). Mỗi dòng là ít nhất một test:
+Bảng quy tắc đọc (kiểu `natural`; cột "rõ ràng" chỉ ghi khi khác). Mỗi dòng là ít nhất một test.
+Bảng ghi biến bằng chữ cái cho dễ đọc. Với mặc định `letterStyle = vietnameseNames` (D3), mỗi biến
+một chữ cái được thay bằng tên tiếng Việt, ví dụ mẫu 1 ở H13 thành "ích bình phương trừ 5 ích cộng 6
+bằng 0", `dx` thành "đê ích". Test chạy cả hai kiểu `letterStyle`.
 | Viết | Đọc (tự nhiên) | Rõ ràng |
 |---|---|---|
 | `a + b`, `a - b`, `a = b` | a cộng b, a trừ b, a bằng b | |
@@ -307,13 +343,14 @@ ngoài `\iint` cơ bản. Ghi vào Gỡ lỗi khi gặp để bổ sung sau.
 File mới `OpenVision/Services/Speech/ReadingEngine.swift` (logic) và mở rộng `TTSService` (âm thanh).
 
 Kiểu dữ liệu (thuần, `Codable` để lưu vào Lịch sử):
-- `ReadingSegment { id, kind, title, displayText, pieces: [SpeechPiece] }`, với `kind` là
-  `answer | method | step(n) | check | conclusion | hint | notice`. `title` ví dụ "Bước 2".
+- `ReadingSegment { id, kind, title, displayText }` (file `Services/Speech/ReadingModel.swift`), với `kind` là
+  `mcq(n) | problem(n) | line(n) | final | answer | notice`. `title` ví dụ "Câu 3", "Dòng 2".
   `displayText` là chữ model viết (công thức giữ dạng chữ, hiển thị bằng bộ làm đẹp đơn giản ở 4.5).
-- `ReadingPlan { turnID, language (vi|en), segments, isComplete }`, được **nối thêm đoạn** khi stream tới.
-- `ReadingRecord { language, segments: [{ kind, title, displayText }] }`: bản lưu vào Lịch sử (trường
-  tuỳ chọn `Message.reading`). Khi đọc lại, `pieces` được **dựng lại** từ `displayText` theo cài đặt
-  hiện tại (từ điển phát âm mới sửa cũng có hiệu lực), không lưu `pieces`.
+- `ReadingPlan { turnID, language (vi|en), answerType (mcq|essay|mixed|other), segments, isComplete }`,
+  được **nối thêm đoạn** khi stream tới. Mẩu đọc (`[SpeechPiece]`) **không** lưu trong đoạn: `ReadingEngine`
+  dựng chúng bằng `VietMathSpeech` lúc đọc tới đoạn đó, theo cài đặt hiện tại.
+- `ReadingRecord { language, answerType, segments }`: bản lưu vào Lịch sử (trường tuỳ chọn
+  `Message.reading`). Đọc lại thì dựng mẩu đọc mới theo cài đặt hiện tại (từ điển vừa sửa cũng có hiệu lực).
 - Mẩu lời văn dài hơn 200 ký tự được tách tiếp tại dấu phẩy hoặc chấm phẩy gần nhất.
 
 `ReadingEngine` (`@MainActor ObservableObject`):
@@ -323,12 +360,13 @@ Kiểu dữ liệu (thuần, `Codable` để lưu vào Lịch sử):
 - Lệnh: `start(plan)`, `append(segments)`, `finishAppending()`, `pause()`, `resume()`, `next()`,
   `previous()`, `repeatCurrent()`, `restartFromBeginning()`, `jump(to:)`, `stop()`, `setRate(_:)`.
 - Cách đọc: **một utterance cho một mẩu** (một câu hoặc một công thức).
-  - rate = `speechRate` × (`mathRateFactor` nếu là mẩu công thức) × `liveRateMultiplier`;
+  - rate = tốc độ theo loại (`mcqRate` / `essayRate` / `speechRate`, bảng ở 4.2)
+    × (`mathRateFactor` nếu là mẩu công thức) × `liveRateMultiplier`;
   - `postUtteranceDelay` = `pauseAfterFormula` cho mẩu công thức;
-  - giữa hai đoạn nghỉ `pauseBetweenSteps`;
+  - giữa hai mục nghỉ `pauseBetweenAnswers` (trắc nghiệm) hoặc `pauseBetweenLines` (tự luận);
   - `.pause(ms)` trong mẩu đọc thành khoảng nghỉ thật (utterance rỗng hoặc delay).
 - Đổi tốc độ giữa chừng: dừng utterance hiện tại, đọc lại mẩu hiện tại với tốc độ mới.
-- **Đọc chép** (`dictationMode`): sau mỗi `STEP` chuyển `waitingForNext`; đi tiếp khi có lệnh "tiếp",
+- **Đọc chép** (`dictationMode`, chỉ áp dụng cho tự luận): sau mỗi dòng `L` chuyển `waitingForNext`; đi tiếp khi có lệnh "tiếp",
   nút kính, nút trên màn hình, hoặc sau `dictationAutoContinue` giây (0 = chờ lệnh). Tuỳ chọn
   `repeatFormulaInDictation`: đọc mỗi công thức hai lần.
 - **Giọng theo cả câu trả lời**, không theo từng câu (sửa N5): ngôn ngữ của `ReadingPlan` quyết định
@@ -346,8 +384,9 @@ Kiểu dữ liệu (thuần, `Codable` để lưu vào Lịch sử):
   |---|---|
   | `pause` | tạm dừng, dừng chút, pause |
   | `resume` | tiếp tục, đọc tiếp, tiếp, continue |
-  | `next` | bước tiếp, bước sau, bỏ qua, next |
-  | `previous` | bước trước, quay lại, back |
+  | `next` | dòng tiếp, câu tiếp, bỏ qua, next |
+  | `previous` | dòng trước, câu trước, quay lại, back |
+  | `jump(n)` | đọc lại câu 3, đọc lại dòng 5, câu 3, dòng 5 |
   | `repeat` | đọc lại, lặp lại, nhắc lại, repeat |
   | `restart` | đọc lại từ đầu, from the start |
   | `slower` / `faster` | chậm lại, đọc chậm / nhanh lên, đọc nhanh |
@@ -360,8 +399,7 @@ Kiểu dữ liệu (thuần, `Codable` để lưu vào Lịch sử):
 - Phân biệt hai kiểu dừng: lệnh đọc `stop` ("Ok Vision dừng lại") chỉ dừng đọc, phiên vẫn mở, nói
   "đọc lại" thì đọc tiếp được. Kết thúc phiên vẫn như cũ: "tạm biệt / cảm ơn" (`[[END]]`), nút mic,
   hoặc hết thời gian im lặng sau khi đọc xong.
-- Nút kính khi đang đọc (`readingButtonActions`, mặc định tắt, quyết định D4): bấm 1 lần = tạm
-  dừng/tiếp, bấm 2 lần = đọc lại bước, giữ = bước tiếp.
+- Nút kính khi đang đọc: **gác lại** (D4). Làm được bằng `MWDATInputs` (experimental) nhưng chưa làm.
 
 ### 4.5 Giao diện mới
 Tab (nhãn tiếng Việt): **Trực tiếp** | **Lịch sử** | **Cài đặt**. Màn hình Gỡ lỗi mở từ Cài đặt;
@@ -375,13 +413,14 @@ lớp phủ gỡ lỗi bật được trên màn hình Trực tiếp. Toàn bộ
 - Danh sách lượt hỏi của cuộc hội thoại hiện tại (`ConversationManager.currentConversation`
   + lượt đang diễn ra):
   - Bong bóng người dùng: chữ nhận dạng **cập nhật trực tiếp** khi đang nói, ảnh thu nhỏ (chạm để xem lớn).
-  - Thẻ trả lời: đoạn `ANSWER` nổi bật; các đoạn còn lại thành danh sách "Hướng làm", "Bước 1…n",
-    "Kiểm tra", "Kết luận". Đoạn đang đọc được tô sáng và tự cuộn tới; chữ đang đọc được gạch chân
-    theo `currentPieceRange`. Chạm một đoạn để đọc từ đó.
+  - Thẻ trả lời, hiện **đầy đủ** (D5): nhãn loại (Trắc nghiệm / Tự luận / Hỗn hợp / Khác).
+    Trắc nghiệm: lưới "Câu 1: A  Câu 2: C …" (đúng/sai hiện từng ý). Tự luận: các dòng đánh số
+    "Dòng 1 … Dòng n" và "Đáp số". Mục đang đọc được tô sáng và tự cuộn tới; chữ đang đọc được gạch
+    chân theo `currentPieceRange`. Chạm một mục để đọc từ đó.
   - Công thức hiển thị bằng bộ làm đẹp đơn giản (`MathPrettyText`, thuần): `x^2` → x², `\sqrt{x}` → √x,
     `\frac{a}{b}` → a/b, `\le` → ≤, `\pi` → π… Không dùng KaTeX/WebView.
-- Thanh điều khiển đọc (hiện khi có `ReadingPlan`): ⏮ bước trước, ⏯ tạm dừng/tiếp, ⏭ bước tiếp,
-  🔁 đọc lại bước, chip tốc độ (0,75× / 1× / 1,25× / 1,5×), chip chế độ (Đáp án / Tóm tắt / Chi tiết / Tự động).
+- Thanh điều khiển đọc (hiện khi có `ReadingPlan`): ⏮ mục trước, ⏯ tạm dừng/tiếp, ⏭ mục tiếp,
+  🔁 đọc lại mục, chip tốc độ (0,75× / 1× / 1,25× / 1,5×), công tắc nhanh "Đọc chép" (tự luận).
 - Ô soạn: nút mic (bắt đầu/dừng phiên), nút chụp từ kính, ô gõ câu hỏi. Gõ khi chưa có phiên thì tự
   mở phiên; câu trả lời cho câu gõ được lưu Lịch sử (sửa N10).
 - Trạng thái trống: hướng dẫn 3 bước + danh sách kiểm tra (key Gemini, kính, quyền Ảnh, quyền Mic,
@@ -395,9 +434,12 @@ trả lời có nút **Đọc lại** (dùng `ReadingRecord` đã lưu) và **Ti
 1. Kính Ray-Ban Meta (giữ nội dung hiện có).
 2. Gemini (key).
 3. Nghe: wake word, ngôn ngữ nghe, mic kính, tự kết thúc khi im lặng, âm báo.
-4. **Đọc câu trả lời**: giọng Việt, giọng Anh, tốc độ lời văn, tốc độ công thức, nghỉ giữa các bước,
-   nghỉ sau công thức, chế độ đọc, đọc chép (+ tự đi tiếp sau N giây, đọc công thức hai lần),
-   nút kính khi đang đọc. Có nút **Nghe thử** đọc một lời giải mẫu 3 bước với cài đặt hiện tại.
+4. **Đọc câu trả lời**, hai nhóm riêng:
+   - *Trắc nghiệm*: tốc độ, nghỉ giữa các câu.
+   - *Tự luận*: tốc độ, hệ số tốc độ công thức, nghỉ giữa các dòng, nghỉ sau công thức, đọc số dòng
+     ("Dòng 1"), đọc chép (+ tự đi tiếp sau N giây, đọc công thức hai lần).
+   - Chung: giọng Việt, giọng Anh, tốc độ cho câu trả lời thường (`speechRate`).
+   Có nút **Nghe thử** đọc một đề mẫu (3 câu trắc nghiệm + 1 bài tự luận 4 dòng) với cài đặt hiện tại.
 5. **Đọc toán tiếng Việt**: kiểu đọc (tự nhiên / rõ ràng), phân số chữ ("trên" / "phần"), số âm
    ("âm" / "trừ"), tên chữ cái, **Từ điển phát âm** (thêm / sửa / xoá / khôi phục mặc định),
    **Thử đọc**: ô nhập công thức hoặc chọn mẫu (15 mẫu ở mục 7, H13), nút nghe, hiện văn bản sẽ đọc.
@@ -421,10 +463,13 @@ tính tính toán trả về enum (giá trị lạ → mặc định). Không th
 
 | Key | Kiểu | Mặc định | Khoảng / giá trị | Ý nghĩa |
 |---|---|---|---|---|
-| `speechRate` (đã có) | Float | 0.5 | 0.35–0.6 | Tốc độ lời văn |
-| `readingMode` | String | `"auto"` | `answerOnly`, `summary`, `detailed`, `auto` | Chế độ đọc (D1) |
+| `speechRate` (đã có) | Float | 0.5 | 0.35–0.6 | Tốc độ câu trả lời thường (`OTHER`, thông báo) |
+| `mcqRate` | Float | 0.5 | 0.35–0.6 | Tốc độ đọc đáp án trắc nghiệm |
+| `essayRate` | Float | 0.42 | 0.3–0.6 | Tốc độ đọc tự luận (chậm hơn để kịp viết) |
+| `pauseBetweenAnswers` | Double | 0.5 | 0–2 s | Nghỉ giữa các câu trắc nghiệm |
+| `pauseBetweenLines` | Double | 1.2 | 0–5 s | Nghỉ giữa các dòng tự luận |
+| `readLineNumbers` | Bool | true | | Đọc "Dòng 1", "Dòng 2" trước mỗi dòng |
 | `mathRateFactor` | Double | 0.85 | 0.6–1.0 | Hệ số tốc độ cho mẩu công thức |
-| `pauseBetweenSteps` | Double | 0.8 | 0–3 s | Nghỉ giữa các đoạn |
 | `pauseAfterFormula` | Double | 0.3 | 0–1.5 s | Nghỉ sau mỗi công thức |
 | `dictationMode` | Bool | false | | Đọc chép: dừng sau mỗi bước |
 | `dictationAutoContinue` | Double | 0 | 0 (chờ lệnh) – 30 s | Tự đi tiếp |
@@ -432,9 +477,8 @@ tính tính toán trả về enum (giá trị lạ → mặc định). Không th
 | `mathVerbosity` | String | `"natural"` | `natural`, `explicit` | Kiểu đọc toán |
 | `symbolicFractionWord` | String | `"tren"` | `tren`, `phan` | "a trên b" hay "a phần b" |
 | `negativeWord` | String | `"am"` | `am`, `tru` | "âm 3" hay "trừ 3" |
-| `letterStyle` | String | `"asWritten"` | `asWritten`, `vietnameseNames` | Tên chữ cái (D3, S7) |
+| `letterStyle` | String | `"vietnameseNames"` | `vietnameseNames`, `asWritten` | Tên chữ cái (D3) |
 | `pronunciationOverrides` | [String: String] | [:] | | Từ điển phát âm của người dùng |
-| `readingButtonActions` | Bool | false | | Nút kính điều khiển đọc (D4) |
 | `hideTextSpeakOnly` | Bool | false | | Ẩn chữ trên màn hình Trực tiếp |
 | `debugOverlay` | Bool | false | | Lớp phủ gỡ lỗi trên Trực tiếp |
 | `verboseLogging` | Bool | false | | Log chi tiết (kể cả văn bản đọc) |
@@ -545,14 +589,14 @@ Làm trước Phase 4 để khi bỏ DISPLAY, công thức đã được đọc 
 ### Phase 4: định dạng trả lời v2, bỏ DISPLAY
 
 **T4.1 Prompt v2**
-- Việc: viết lại `buildSystemPrompt(readingMode:)` theo 4.2. Giữ nguyên các phần ảnh, `[[CAPTURE]]`,
+- Việc: viết lại `buildSystemPrompt()` theo 4.2 (Gemini tự nhận loại bài). Giữ các phần ảnh, `[[CAPTURE]]`,
   `[[END]]`, ngôn ngữ, kiểm tra lại kết quả toán, ngày giờ, hướng dẫn riêng, ghi nhớ. Bỏ hẳn
   "DUAL-CHANNEL", `SPOKEN:`, `DISPLAY:`, "2 to 4 complete sentences", "phone screen". Sửa N17.
 - Guard (sửa `verify_blueprint.py`): thay check "2 to 4 complete sentences" và "SPOKEN:/DISPLAY:"
-  bằng: prompt chứa `ANSWER:` và `STEP 1:`; không chứa `DISPLAY:`; không chứa "phone screen".
+  bằng: prompt chứa `TYPE:`, `Q1:`, `L1:`, `FINAL:`; không chứa `DISPLAY:`; không chứa "phone screen".
   Giữ check "language the user used", "under 250 characters" (không có), `captureToken`.
-- Test: thay `testSystemPromptKeepsTheDualChannelContractAndIsBilingual` bằng bản v2 (mỗi chế độ đọc
-  sinh đúng câu chỉ dẫn).
+- Test: thay `testSystemPromptKeepsTheDualChannelContractAndIsBilingual` bằng bản v2.1 (có đủ khuôn
+  MCQ / ESSAY / MIXED / OTHER, có câu cấm nhắc màn hình điện thoại, không còn chế độ Gia sư).
 - Xong khi: guard xanh, CI xanh.
 
 **T4.2 `AnswerFormat` (parser v2)**
@@ -609,7 +653,7 @@ Làm trước Phase 4 để khi bỏ DISPLAY, công thức đã được đọc 
   "ok vision stop" vẫn dừng); test trạng thái: conversation timeout không chạy khi đang đọc.
 - Xong khi: CI xanh. Hardware: H14, H15, H16, H17.
 
-**T5.4 Nút kính khi đang đọc** (`readingButtonActions`, mặc định tắt). Hardware: H15.
+**T5.4 Nút kính khi đang đọc**: **gác lại** theo D4, không làm trong đợt này.
 
 **T5.5 Đọc lại từ Lịch sử** bằng `ReadingRecord` (không gọi Gemini). Test: plan dựng lại từ record
 giống plan gốc.
@@ -661,6 +705,22 @@ dùng app, có thể làm Phase 7 **trước** Phase 3–6 (ít đụng chung fi
   (tham số `album`; thêm test ảnh ngoài album Meta **không** được nhận). (B6) Hardware: H12.
 - **T7.7** Sau mỗi lần chụp: log tuyến âm thanh + `isOtherAudioPlaying`, gọi
   `configureAudioForGlasses(forceRestart: false)`. Không đổi category. Hardware: H11.
+- **T7.8 Giữ kết nối kính (D2)**, cần T7.1:
+  - Theo dõi `Device.addDeviceStateListener` (link, pin, bản lề, đeo/tháo, nhiệt) → chip Kính + log.
+  - Kính quay lại (có trong `devicesStream`, link đã nối): tự tạo lại session với backoff 2, 4, 8 … ≤ 60 s
+    (hiện chỉ có cho nút chụp).
+  - Giữa các lần chụp: `DeviceSession.pause()` thay cho `endSession()`, `resume()` khi cần chụp, để lần
+    chụp sau không phải mở session lại (≤ 15 s). Theo tài liệu DAT: không restart session khi đang
+    `paused`, chờ `started`/`paused` trước khi gọi tiếp. Có công tắc trong Gỡ lỗi để tắt cách này nếu
+    H20 cho thấy hao pin.
+  - Xong khi: CI xanh; log ghi mỗi lần mất/nối lại kết nối. Hardware: H20.
+- **T7.9 Camera chỉ chạy khi thật sự chụp** (đèn camera chỉ sáng lúc chụp hoặc ghi hình):
+  - Rà mọi chỗ gọi `startStreaming`, `wakeCamera`, `addCamera`, `captureFullResolutionPhoto`. Gọi agent,
+    bắt đầu phiên, nút chụp đang liên kết (`addInputs`) **không** được bật camera. Chỉ chụp khi người
+    dùng bấm chụp, khi Gemini trả `[[CAPTURE]]`, hoặc khi ghi hình.
+  - Log mỗi lần camera bật/tắt kèm lý do; màn hình Lượt hỏi hiện số lần và tổng thời gian camera bật.
+  - Guard tĩnh: thân `startSession` và handler wake word không gọi `startStreaming` / `captureFullResolutionPhoto`.
+  - Không tìm cách tắt hay che đèn (mục 6). Hardware: H21.
 
 ### Phase 8: nghe giọng nói (từ v1)
 `T5.3` đã sửa `VoiceCommandService`; các task này phải dựa trên phiên bản sau `T5.3`.
@@ -677,22 +737,37 @@ dùng app, có thể làm Phase 7 **trước** Phase 3–6 (ít đụng chung fi
 - **T9.2** CONTRIBUTING: bỏ phần lỗi thời (OpenClaw, `rayl15`, `Tests/`, `AIBackend` factory,
   `NativeTool`); giữ quy ước branch/commit/PR/CI; nhắc `scripts/pbxproj_files.py`.
 - **T9.3** CHANGELOG `[Unreleased]`: Added / Changed / Removed / Fixed của v2.
-- **T9.4** PR template: "PLAN.md §7 (H1–H19)".
+- **T9.4** PR template: "PLAN.md §7 (H1–H22)".
 - **T9.5** PLAN.md: đánh dấu task nào xong ở commit nào (mục 3), không xoá nội dung khác.
 
 ---
 
 ## 6. Quyết định của chủ dự án và spike
 
-Quyết định (agent dùng giá trị mặc định ghi trong ngoặc cho tới khi chủ dự án trả lời):
-| ID | Câu hỏi | Mặc định tạm |
+Quyết định (chủ dự án đã trả lời ngày 21/11/2026):
+| ID | Câu hỏi | Quyết định |
 |---|---|---|
-| D1 | Chế độ đọc mặc định: `auto`, `summary` hay `detailed`? | `auto` |
-| D2 | Kết nối kính: giữ Bluetooth Classic hay chuyển BLE + Wi-Fi (cần Hotspot Configuration, Wi-Fi info, bỏ `external-accessory`)? | Giữ Bluetooth Classic |
-| D3 | Tên chữ cái: để giọng đọc tự đọc chữ Latinh, hay đọc tên tiếng Việt (ích, i dài, dét…)? | Sau S7; tạm `asWritten` |
-| D4 | Nút kính điều khiển việc đọc khi đang đọc? | Tắt |
-| D5 | Màn hình chỉ hiện công thức dạng chữ làm đẹp đơn giản (không KaTeX). Đồng ý? | Đồng ý |
-| D6 | Chế độ `detailed` có dùng model mạnh hơn (`gemini-3.5-flash`) không? | Không (S4) |
+| D1 | Chế độ đọc | **Luôn đọc hết.** Gemini tự nhận loại bài: trắc nghiệm chỉ đọc "Câu n: X", tự luận đọc từng dòng có nghỉ (4.2). Không còn cài đặt chế độ đọc. |
+| D2 | Kết nối kính | **Giữ Bluetooth Classic** (đã so sánh, lý do bên dưới) và làm thêm T7.8 để giữ kết nối. |
+| D3 | Tên chữ cái | **Đọc tên tiếng Việt** (`vietnameseNames`: ích, i, dét…), sửa được trong từ điển. |
+| D4 | Nút kính điều khiển việc đọc | Làm được (qua `MWDATInputs`) nhưng **gác lại**. |
+| D5 | Màn hình | **Hiện đầy đủ** mọi câu, mọi dòng. Giọng đọc **không bao giờ** bảo xem màn hình. |
+| D6 | Model | **Giữ Flash-Lite** (chủ yếu toán phổ thông, trắc nghiệm). Trắc nghiệm giữ đơn giản; tự luận đi qua module đọc riêng với tốc độ riêng. |
+
+Lý do giữ Bluetooth Classic (D2). Đường BLE + Wi-Fi là mặc định Meta khuyến nghị cho app phát hành
+trên App Store, nhưng với app này (cài tay, chụp ảnh rời theo yêu cầu, cần Internet cho Gemini) thì kém hơn:
+- Mỗi lần bật camera, iOS hiện hộp thoại "muốn kết nối Wi-Fi của kính" và iPhone rời mạng Wi-Fi đang
+  dùng (mất Internet trong lúc đó) ([DAT #363](https://github.com/meta/meta-wearables-dat-ios/issues/363), [#376](https://github.com/meta/meta-wearables-dat-ios/issues/376)). Hỏng hẳn trải nghiệm rảnh tay.
+- Có lỗi Wi-Fi đang mở: không vào được Wi-Fi của kính ([#354](https://github.com/meta/meta-wearables-dat-ios/issues/354)), session mới kẹt ở `.starting` ([#382](https://github.com/meta/meta-wearables-dat-ios/issues/382)).
+- Ảnh 12 MP qua Wi-Fi còn chậm hơn (165 s so với 49 s); ảnh nhanh từ stream chỉ hơn 0,3 s.
+Bluetooth Classic không có hộp thoại, iPhone giữ Internet. Lý do App Store (MFi PPID) không áp dụng
+vì app không lên App Store. Xem lại nếu Meta sửa các lỗi trên hoặc app cần phát hành.
+
+Đèn trắng nhấp nháy khi gọi agent. Đèn trắng phía trước kính là **đèn báo camera đang hoạt động**
+cho người xung quanh. Firmware của kính bật nó bất cứ khi nào camera chạy, Meta xác nhận đây là hành
+vi cố ý ([DAT #318](https://github.com/meta/meta-wearables-dat-ios/issues/318)), và kính từ chối quay
+chụp nếu đèn bị che. **Plan không tìm cách tắt hay che đèn này.** Việc hợp lệ là bảo đảm camera chỉ
+chạy khi thật sự chụp ảnh (đèn chỉ sáng lúc chụp), xem T7.9.
 
 Spike (chỉ làm khi chủ dự án yêu cầu; kết quả là ghi chú trong PR hoặc mục mới ở đây):
 | ID | Nội dung |
@@ -700,7 +775,7 @@ Spike (chỉ làm khi chủ dự án yêu cầu; kết quả là ghi chú trong 
 | S1 | `VoiceInvocation` (DAT, experimental): "Hey Meta, mở OpenVision" |
 | S2 | `MWDATSpeech`: nhận dạng trên kính thay `SFSpeechRecognizer` + HFP |
 | S3 | `SpeechAnalyzer` / `SpeechTranscriber` (iOS 26) cho vi-VN |
-| S4 | So `gemini-3.5-flash-lite` với `gemini-3.5-flash` trên 20 bài tự luận (đúng/sai, độ trễ, quota) |
+| S4 | (Không cần theo D6) So `gemini-3.5-flash-lite` với `gemini-3.5-flash` nếu sau này thấy giải sai nhiều |
 | S5 | `MWDAT.TeamID` rỗng khi build CI + Sideloadly ký lại: có làm đăng ký thất bại không? |
 | S6 | Port giao thức Visor lên iOS qua BLE L2CAP (rất lớn, rủi ro điều khoản) |
 | S7 | Nghe thử giọng tiếng Việt bằng màn hình Thử đọc: chữ cái đứng riêng, số, thập phân, chữ Hy Lạp, "lốc", "cốt", "sin"; ghi lại chỗ sai để chỉnh từ điển mặc định |
@@ -717,7 +792,7 @@ quyền Ảnh = Toàn bộ ảnh. Log xem trong Cài đặt → Gỡ lỗi → L
 | # | Bước | Đạt khi |
 |---|---|---|
 | H1 | Nhìn đề toán, bấm chụp trên gọng, nói "Ok Vision, giải câu này" | Kính đọc đáp án; log có `Photo: <nguồn> <w>x<h>` và `Attached image payload` |
-| H2 | Nghe hết câu trả lời ở chế độ Tóm tắt | Đọc liền mạch, không đọc "đô la", "gạch chéo", tên lệnh LaTeX |
+| H2 | Chụp một trang 10 câu trắc nghiệm, hỏi "giải hết" | Đọc "Câu 1: …" đến "Câu 10: …", không giải thích, không đọc "đô la", "gạch chéo", tên lệnh LaTeX |
 | H3 | Quan sát thanh âm lượng và loa kính | Không nhảy, không tiếng click |
 | H4 | Trong 120 s hỏi "Tại sao lại ra kết quả đó?" | Trả lời đúng ngữ cảnh; log `not re-uploading` |
 | H5 | Ghi hình POV khi đang hội thoại | App không đơ |
@@ -729,12 +804,15 @@ quyền Ảnh = Toàn bộ ảnh. Log xem trong Cài đặt → Gỡ lỗi → L
 | H11 | Ngay sau một lần chụp, nghe câu trả lời; thử cả khi đang phát nhạc | Kính vẫn phát tiếng |
 | H12 | Chụp 1 ảnh bằng camera iPhone, rồi hỏi câu không liên quan | Ảnh iPhone không được gửi |
 | H13 | Cài đặt → Đọc toán → Thử đọc 15 mẫu dưới đây, nghe qua kính | Đúng câu mong đợi, nghe rõ; ghi lại chỗ sai |
-| H14 | Chế độ Chi tiết, bài tự luận ≥ 5 bước | Đọc hết, không bị cắt sau 30 s, mic vẫn nghe được lệnh sau 1 phút |
-| H15 | Khi đang đọc: "Ok Vision tạm dừng", "tiếp tục", "đọc lại", "bước tiếp", "bước trước", "chậm lại", "nhanh lên", "dừng lại" | Mỗi lệnh có tác dụng trong ≤ 1,5 s; tiếng đọc của app không tự kích hoạt lệnh |
-| H16 | Bật Đọc chép, giải một bài 4 bước | Dừng sau mỗi bước; nói "tiếp" (không cần wake word) thì đọc bước sau |
+| H14 | Bài tự luận dài (≥ 8 dòng) | Đọc "Dòng 1…" đến "Đáp số", nghỉ giữa các dòng, tốc độ tự luận; không bị cắt sau 30 s; mic vẫn nghe được lệnh sau 1 phút |
+| H15 | Khi đang đọc: "Ok Vision tạm dừng", "tiếp tục", "đọc lại", "dòng tiếp", "dòng trước", "đọc lại câu 3", "chậm lại", "nhanh lên", "dừng lại" | Mỗi lệnh có tác dụng trong ≤ 1,5 s; tiếng đọc của app không tự kích hoạt lệnh |
+| H16 | Bật Đọc chép, giải một bài tự luận 4 dòng | Dừng sau mỗi dòng; nói "tiếp" (không cần wake word) thì đọc dòng sau |
 | H17 | Khi đang đọc: "Ok Vision, còn câu 2 thì sao?" | Dừng đọc, câu hỏi mới được gửi nguyên văn, không phải hỏi lại |
 | H18 | Xem màn hình Trực tiếp và Lịch sử khi đang đọc | Đoạn đang đọc được tô sáng; chạm đoạn để đọc từ đó; Lịch sử "Đọc lại" chạy không cần mạng |
 | H19 | Cài đặt → Gỡ lỗi | Log có các danh mục gemini/glasses/voice/tts/reading; Xuất log ra file .txt |
+| H20 | Gập kính 30 s rồi mở; đi xa 10 m rồi quay lại; chụp 2 lần liên tiếp | Tự nối lại không cần thao tác; ghi thời gian nối lại và thời gian lần chụp thứ 2 |
+| H21 | Nói "Ok Vision" + câu hỏi không cần ảnh; rồi bấm chụp | Câu 1: đèn camera không sáng. Câu 2: đèn chỉ sáng lúc chụp. Nếu có đèn khác nhấp nháy, ghi lại thời điểm và đính kèm log |
+| H22 | Đề hỗn hợp (trắc nghiệm + 1 bài tự luận) | Đọc khối "Câu …" trước (tốc độ trắc nghiệm), rồi bài tự luận (tốc độ tự luận) |
 
 15 mẫu cho H13 (cũng là mẫu có sẵn trong màn hình Thử đọc và ca test ở T3.2):
 | # | Công thức | Câu đọc mong đợi (tự nhiên) |
@@ -759,7 +837,7 @@ Mẫu báo cáo phần cứng:
 ```
 Ngày / build: ____  iOS: ____  Firmware kính: ____  Meta AI: ____  Mạng: ____
 H1 ☐ H2 ☐ H3 ☐ H4 ☐ H5 ☐ H6 ☐ H7 ☐ H8 ☐ H9 ☐ H10 ☐ H11 ☐ H12 ☐
-H13 ☐ (mẫu sai: ___) H14 ☐ H15 ☐ H16 ☐ H17 ☐ H18 ☐ H19 ☐
+H13 ☐ (mẫu sai: ___) H14 ☐ H15 ☐ H16 ☐ H17 ☐ H18 ☐ H19 ☐ H20 ☐ H21 ☐ H22 ☐
 H9 nhanh: ___×___ ___ s | 12 MP: ___×___ ___ s
 Thời gian từ lúc nói xong tới tiếng đầu tiên (H1): ____ s
 Ghi chú / log lỗi (đính kèm file Xuất log):
@@ -828,15 +906,37 @@ Quyết định đã dùng giá trị mặc định tạm: D…
 Phát hiện mới (không có trong PLAN): …
 ```
 
-## 11. Chia việc theo phiên làm việc của agent
+## 11. Chia việc: đợt song song và đợt tuần tự
 
-Mỗi phiên chỉ làm một nhóm, kết thúc bằng báo cáo mục 10:
-| Phiên | Phạm vi | Ghi chú |
-|---|---|---|
-| A | Phase 2 (T2.1 → T2.5) | Nền móng cho mọi phiên sau |
-| B | Phase 3 (T3.1 → T3.4) | Module đọc toán, thuần logic, nhiều test |
-| C | Phase 4 (T4.1 → T4.4) | Sau phiên này app đọc toàn bộ câu trả lời, chưa có điều khiển |
-| D | Phase 5 (T5.1 → T5.5) | Cần chủ dự án chạy H14–H17 sau đó |
-| E | Phase 6 (T6.1 → T6.6) | Cần chủ dự án xem giao diện (H18, H19) |
-| F | Phase 7–8 | Chờ quyết định D2; có thể đưa lên trước C nếu ảnh đang chặn việc dùng app |
-| G | Phase 9 | Tài liệu |
+**Đợt 1 (3 agent song song).** Mỗi agent một thư mục `git worktree`, một branch, một PR vào
+`feature/voice-v2` (không vào `main`). Ba nhóm **không sửa chung file nào**:
+| Agent | Branch | Task | Chỉ được sửa / tạo |
+|---|---|---|---|
+| A (hạ tầng) | `feature/voice-v2-infra` | T2.1, T2.2, T2.3, T2.5 | `scripts/pbxproj_files.py` (mới), `scripts/blueprint/verify_blueprint.py`, `scripts/e2e/run-simulator-tests.sh`, `OpenVisionTests/BlueprintPhotoLibraryE2ETests.swift`, `OpenVision/App/OpenVisionApp.swift`, `OpenVision/Managers/GlassesManager.swift`, `OpenVision/Views/Settings/GlassesSettingsView.swift` |
+| B (đọc toán) | `feature/voice-v2-math` | T3.1, T3.2, T3.4 | File **mới** trong `OpenVision/Services/Speech/` (splitter, lexer, parser, node, reader, từ điển, `VietMathSpeech`) và `OpenVisionTests/VietMath*Tests.swift` |
+| C (định dạng) | `feature/voice-v2-format` | T4.2 (chỉ phần thuần), `ReadingModel`, `ReplyAssembler`, văn bản prompt v2.1 | File **mới**: `OpenVision/Services/Speech/AnswerFormat.swift`, `ReadingModel.swift`, `ReplyAssembler.swift`, `PromptV2.swift` (hàm trả về chuỗi prompt, **chưa nối** vào `GeminiLiveService`), `OpenVisionTests/AnswerFormatTests.swift`, `ReplyAssemblerTests.swift`, `PromptV2Tests.swift` |
+
+Quy tắc Đợt 1:
+- B và C **không** sửa `project.pbxproj`, `run-simulator-tests.sh`, `PLAN.md` hay file có sẵn. File mới của
+  họ được đăng ký vào pbxproj ở bước tích hợp (bằng script của A). Vì vậy B và C kiểm chứng bằng
+  `scripts/swift-local/run.sh` (test thuần trên Linux), CI của PR họ chỉ chứng minh không làm hỏng app.
+- Code thuần phải biên dịch được cả trên Linux lẫn iOS: chỉ `import Foundation`; không dùng
+  `as NSString` (Linux không tự chuyển `String` sang `NSString`), dùng `NSRange(s.startIndex..., in: s)`
+  và `Range(nsRange, in: s)`; không dùng API chỉ có trên Apple.
+- Kiểu dùng chung giữa B và C: C định nghĩa `ReadingModel.swift`; B định nghĩa `SpeechPiece` trong
+  `VietMathSpeech.swift`. Không ai định nghĩa trùng tên kiểu của người kia.
+
+**Review.** Một agent review đọc diff của 3 PR theo `PLAN.md`, ghi lỗi theo mức độ. Agent làm việc sửa
+theo review trên đúng branch của mình rồi chạy lại test.
+
+**Tích hợp (tuần tự).** Gộp 3 branch vào `feature/voice-v2`; đăng ký file mới bằng
+`scripts/pbxproj_files.py`; thêm các suite test mới vào `run-simulator-tests.sh`; CI phải xanh.
+
+**Các đợt sau (tuần tự, mỗi đợt một phiên):**
+| Đợt | Phạm vi |
+|---|---|
+| 2 | T2.4 (`AppLog`), T3.3 (nối module đọc toán vào `TTSService`), T4.1 (nối prompt v2.1), T4.3, T4.4 |
+| 3 | Phase 5 (T5.1, T5.2, T5.3, T5.5) |
+| 4 | Phase 6 (giao diện) |
+| 5 | Phase 7–8 (ảnh, DAT 1.1.0, giữ kết nối, camera/đèn, nghe) |
+| 6 | Phase 9 (tài liệu) |
