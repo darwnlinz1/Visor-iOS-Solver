@@ -64,9 +64,28 @@ COMMON=(
   META_APP_ID=0
 )
 
+# Launch the app alone for a few seconds and print its console. Informational (never fails the
+# job): it shows the app's own startup messages, e.g. "[OpenVisionApp] Failed to configure
+# Wearables SDK: ...", which xcodebuild does not forward when the test host dies at launch.
+launch_smoke() {
+  echo "::group::App launch console (15 s)"
+  mkdir -p build
+  xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+  xcrun simctl launch --console --terminate-running-process "$UDID" "$BUNDLE_ID" > build/launch-console.log 2>&1 &
+  local pid=$!
+  sleep 15
+  kill "$pid" 2>/dev/null || true
+  xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+  cat build/launch-console.log || true
+  echo "::endgroup::"
+}
+
 # When the test host dies at launch there is no test output at all; print what crashed.
 dump_crash_reports() {
   echo "::group::OpenVision crash reports"
+  sleep 10   # ReportCrash writes the file a few seconds after the process dies
+  ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | head -5 || true
+  xcrun simctl spawn "$UDID" log show --last 3m --style compact --predicate 'process == "OpenVision"' 2>/dev/null | tail -40 || true
   local found=0 report
   while IFS= read -r report; do
     [ -n "$report" ] || continue
@@ -91,7 +110,7 @@ except Exception as e:
     print("(could not parse: %s)" % e)
     print(raw[:4000])
 PY
-  done < <(find "$HOME/Library/Logs/DiagnosticReports" -name 'OpenVision*' -mmin -60 2>/dev/null | head -3)
+  done < <(find "$HOME/Library/Logs/DiagnosticReports" -name 'OpenVision*' -mmin -30 2>/dev/null | head -3)
   [ "$found" = 1 ] || echo "no OpenVision crash report found"
   echo "::endgroup::"
 }
@@ -102,6 +121,7 @@ xcodebuild build-for-testing "${COMMON[@]}" | pretty ${XCBEAUTIFY_ARGS:-}
 APP="$(find "$DERIVED/Build/Products" -maxdepth 2 -type d -path '*-iphonesimulator/OpenVision.app' | head -n 1)"
 xcrun simctl install "$UDID" "$APP"
 xcrun simctl privacy "$UDID" grant photos "$BUNDLE_ID" || echo "warning: could not grant Photos access; library tests will skip"
+launch_smoke
 
 ONLY=()
 if [ "$SUITE" = "blueprint" ]; then
