@@ -24,7 +24,16 @@ struct OpenVisionApp: App {
             try Wearables.configure()
             print("[OpenVisionApp] Wearables SDK configured")
         } catch {
-            print("[OpenVisionApp] Failed to configure Wearables SDK: \(error)")
+            // NSLog, not print: print is buffered and lost when the app traps right after
+            // (GlassesManager.shared needs a configured SDK). Only whether each MWDAT key is set
+            // is logged, never its value (ClientToken is a secret).
+            let mwdat = Bundle.main.object(forInfoDictionaryKey: "MWDAT") as? [String: Any] ?? [:]
+            let keys = mwdat.keys.sorted().map { (key: String) -> String in
+                let value = String(describing: mwdat[key] ?? "")
+                return key + "=" + (value.isEmpty ? "empty" : "set")
+            }.joined(separator: ", ")
+            NSLog("[OpenVisionApp] Failed to configure Wearables SDK: %@ | MWDAT keys: %@",
+                  String(describing: error), keys)
         }
         print("[OpenVisionApp] Initialized")
     }
