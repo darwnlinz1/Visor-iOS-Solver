@@ -1,441 +1,818 @@
-# PLAN.md: kế hoạch sửa OpenVision iOS (dành cho coding agent)
+# PLAN.md v2: OpenVision iOS, trả lời hoàn toàn bằng giọng nói (dành cho coding agent)
 
-> Cập nhật: 21/11/2026. Đây là **tài liệu duy nhất** về thiết kế, hiện trạng và việc cần làm.
-> Các tài liệu cũ (MASTER_HANDOVER_BLUEPRINT, ULTIMATE_VISOR_MASTER_MANIFESTO, PROJECT_AUDIT,
-> ARCHITECTURE_DECISION, ADR-001, SETUP, E2E_TEST_PLAN, …) đã bị xoá vì chứa nhiều khẳng định
-> sai so với code (ảnh 12 MP, OpenRouter, circuit breaker, phát hiện ảnh mờ, thời gian phản hồi
-> 2,5 s trên kính…). Nếu comment trong code mâu thuẫn với file này, **tin file này**. Nếu file này
-> mô tả hiện trạng khác với code bạn đọc được, **tin code** và ghi chú lại trong PR.
+> Cập nhật: 21/11/2026, bản v2, thay thế v1. Thay đổi so với v1:
+> - **Bỏ kênh DISPLAY** (lời giải LaTeX hiện trên iPhone). Mọi câu trả lời được **đọc qua loa kính**.
+> - Thêm: module đọc toán tiếng Việt, bộ máy đọc lời giải nhiều bước có chỉnh tốc độ, màn hình
+>   "Trực tiếp" (hội thoại đang diễn ra), Cài đặt mới, công cụ gỡ lỗi, thiết kế lại giao diện.
+> - Phase 0–1 của v1 đã xong (PR #2). Việc còn lại của v1 (DAT 1.1.0, đường ảnh, nhận dạng giọng)
+>   được giữ và đánh số lại (Phase 7–8).
+> Nếu comment trong code mâu thuẫn với file này, tin file này. Nếu file này mô tả hiện trạng khác
+> với code, tin code và ghi chú lại trong PR.
 
 ---
 
 ## 0. Quy tắc làm việc cho agent (đọc trước khi làm bất cứ gì)
 
-1. **Làm theo thứ tự phase** (Phase 0 → 5). Không nhảy phase. Mỗi task (`T…`) là **một commit**.
-2. **Branch:** tạo `feature/fix-ios-pipeline` từ branch đang chứa file này, mở **một** PR vào
-   `main`. Không bao giờ commit hoặc push thẳng lên `main`. Không `push --force`.
-3. **Commit message** theo `CONTRIBUTING.md`: `Fix: …`, `Refactor: …`, `Docs: …`, `Chore: …`,
-   `Test: …` (tối đa 72 ký tự ở dòng đầu, dòng sau ghi ID task, ví dụ `Task: T1.2`).
-4. **Môi trường:** sandbox là Linux, **không có Xcode**. Bạn không build được app ở local.
-   - Chạy được ở local: `python3 scripts/blueprint/verify_blueprint.py` (phải luôn 0 failed).
-   - Build và test iOS chạy trên GitHub Actions khi có PR (`CI`, `E2E (Blueprint)`). Xem mục 9
-     để đọc kết quả. Một task chỉ coi là xong khi CI của commit đó xanh (hoặc lỗi còn lại đã được
-     ghi rõ là có từ trước và không do bạn gây ra).
-5. **Không thêm file Swift mới** nếu không thật cần. `OpenVision.xcodeproj/project.pbxproj` được
-   commit sẵn và CI không chạy `xcodegen`. Nếu bắt buộc phải thêm file: thêm đủ 4 mục trong
-   pbxproj (PBXFileReference, PBXBuildFile, children của group, Sources build phase) bằng cách
-   sao chép mẫu của một file cùng thư mục; guard `project` sẽ kiểm tra.
-6. **Không làm ngoài plan:** không refactor lan man, không thêm tính năng, không thêm dependency,
-   không thêm OpenRouter / GeminiModelManager / phát hiện ảnh mờ / backend mới. Không đưa lại
-   danh sách từ khoá để đoán ý người dùng.
-7. **Giữ nguyên các bất biến âm thanh** mà guard đang kiểm tra (lesson 1–4): một tap mic duy nhất
-   trong `VoiceCommandService`, `configureForGlasses` dùng `.playAndRecord` + `mode: .default` +
-   `[.mixWithOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]`, không gọi
-   `setPreferredInput` trong route change, chờ 350 ms sau TTS, đặt `.speaking` + `isBargeInPaused`
-   **trước** khi xếp câu nói.
-8. **Bí mật:** không bao giờ commit hay in ra log API key, `CLIENT_TOKEN`, Team ID thật.
-9. **Phần cứng:** nhiều task chỉ kiểm chứng được trên kính thật. Với các task đó: viết code, thêm
-   log rõ ràng, ghi trong PR "Cần chủ dự án chạy H…" (mục 7). **Không được tuyên bố đã chạy trên
-   kính.**
-10. Khi xong (hoặc bị chặn), báo cáo theo mẫu ở mục 10.
+1. **Thứ tự:** làm theo phase (2 → 9), trong phase làm theo số task. Mỗi task là **một commit**.
+2. **Branch:** tạo `feature/voice-v2` từ `main` nếu PR #2 đã merge, nếu chưa thì từ
+   `feature/fix-ios-pipeline`. Mở **một** PR vào `main`. Không commit thẳng `main`, không force push.
+3. **Commit message:** `Fix: …`, `Add: …`, `Refactor: …`, `Docs: …`, `Chore: …`, `Test: …`
+   (dòng đầu ≤ 72 ký tự), dòng sau ghi `Task: Tx.y`.
+4. **Môi trường:** sandbox Linux, **không có Xcode**. Chạy được ở local:
+   `python3 scripts/blueprint/verify_blueprint.py` (luôn 0 failed) và các script Python.
+   Build và test iOS chạy trên GitHub Actions (mục 9). Task chỉ xong khi CI của commit đó xanh,
+   hoặc lỗi còn lại được chứng minh là có từ trước.
+5. **File Swift mới:** được phép, nhưng **chỉ** đăng ký vào `project.pbxproj` bằng
+   `scripts/pbxproj_files.py` (tạo ở T2.1). Không sửa tay pbxproj.
+6. **Không làm ngoài plan:** không thêm dependency (không thư viện LaTeX bên thứ ba), không backend
+   mới, không OpenRouter, không danh sách từ khoá đoán ý câu hỏi.
+7. **Giữ nguyên bất biến âm thanh** (guard lesson 1–4): một tap mic duy nhất trong
+   `VoiceCommandService`; `configureForGlasses` dùng `.playAndRecord` + `mode: .default` +
+   `[.mixWithOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]`; không gọi
+   `setPreferredInput` trong route change; chờ ≥ 350 ms sau TTS; đặt `.speaking` +
+   `isBargeInPaused = true` **trước** khi xếp câu nói. Không đổi category/mode khi đang đọc.
+8. **Logic thuần phải test được:** parser, bộ đọc toán, lệnh giọng nói, máy trạng thái đọc nằm
+   trong enum/struct không phụ thuộc UIKit/AVFoundation, có unit test chạy trên simulator.
+   Mỗi file test mới phải được thêm vào danh sách suite trong `scripts/e2e/run-simulator-tests.sh`
+   (nếu không, CI biên dịch nhưng không chạy nó).
+   Giữ các tên mà `scripts/blueprint/verify_ipa_symbols.sh` tìm trong IPA: `RecentPhotoScanner`,
+   `cleanSpokenAudio`, `conversationHistory`, `PhotoPayload`, `streamGenerateContent`, `SolverIntent`.
+   Khi một check của guard không còn đúng với thiết kế v2, **sửa check** cho đúng tên/hành vi mới
+   trong cùng commit, không xoá check mà không có check thay thế.
+9. **Bí mật và riêng tư:** không commit hay log API key, `CLIENT_TOKEN`, Team ID. Log có câu hỏi
+   của người dùng chỉ lưu trên máy; chỉ xuất ra khi người dùng bấm "Xuất log".
+10. **Phần cứng:** việc nào chỉ kiểm được trên kính thì viết code + log rõ, ghi trong PR
+    "Cần chủ dự án chạy H…" (mục 7). Không tuyên bố đã chạy trên kính.
+11. Nếu bị chặn quá 2 lần ở cùng một task: dừng, báo cáo theo mẫu mục 10.
 
 ---
 
-## 1. Mục tiêu và phạm vi
+## 1. Mục tiêu sản phẩm (v2)
 
-App: người đeo **Ray-Ban Meta** (Gen 2) chụp ảnh bằng kính, nói "Ok Vision" + câu hỏi tự do
-(tiếng Việt hoặc tiếng Anh). **Gemini** trả lời: phần `SPOKEN:` được đọc qua loa kính, phần
-`DISPLAY:` (Markdown + LaTeX) hiển thị trên iPhone (KaTeX offline). Máy đích: iPhone 15 Pro,
-iOS 18+. Cài bằng Sideloadly từ IPA unsigned do workflow `Build Unsigned IPA` tạo.
+Người đeo **Ray-Ban Meta** bấm chụp, nói "Ok Vision" + câu hỏi tự do (Việt hoặc Anh). Kính **đọc**:
+1. **Đáp án** trước tiên (nghe được ngay khi phần còn lại đang được tạo).
+2. Tuỳ **chế độ đọc**: chỉ đáp án, đáp án + hướng làm, hoặc **toàn bộ lời giải tự luận từng bước**.
+3. Công thức được đọc **tự nhiên bằng tiếng Việt** ("x bình phương trừ 5 x cộng 6 bằng 0",
+   "tích phân từ 0 đến 1 của…", "căn bậc hai của…").
+4. Người đeo **điều khiển nhịp đọc**: tạm dừng, đọc lại bước, bước tiếp, chậm lại, nhanh lên,
+   và chế độ **đọc chép** (dừng sau mỗi bước chờ lệnh "tiếp" để kịp viết).
 
-**Mục tiêu của đợt sửa này** (theo thứ tự ưu tiên):
-1. CI và test thật sự chạy, và xanh.
-2. Gỡ các hồi quy do các commit sau `418a993` gây ra.
-3. Đường lấy ảnh nhanh, trung thực (biết ảnh từ đâu, độ phân giải bao nhiêu), không gửi nhầm ảnh
-   riêng tư từ Camera Roll.
-4. Nhận dạng giọng nói và âm thanh ổn định hơn.
-5. Tài liệu khớp với code.
+Vai trò của iPhone:
+- Màn hình **Trực tiếp**: theo dõi hội thoại khi nó diễn ra (câu hỏi, ảnh, câu trả lời chia theo
+  bước, đoạn đang đọc được tô sáng), có nút điều khiển đọc và ô gõ câu hỏi.
+- **Lịch sử**: xem lại và **đọc lại** câu trả lời cũ.
+- **Cài đặt**: mọi tuỳ chọn đọc (tốc độ, nghỉ, chế độ, cách đọc toán, từ điển phát âm, nút thử đọc).
+- **Gỡ lỗi**: log, dòng thời gian từng lượt hỏi, câu trả lời thô so với văn bản được đọc.
 
-**Ngoài phạm vi** (chỉ làm khi chủ dự án duyệt, xem mục 6): Voice Invocation "Hey Meta",
-MWDATSpeech, đổi model, port giao thức Visor.
+Không phải mục tiêu: hiển thị LaTeX đẹp trên màn hình, chạy offline, thay thế Meta AI.
 
 ---
 
 ## 2. Sự thật kỹ thuật đã xác minh
 
 ### 2.1 Vì sao app này khác Visor Android về bản chất
-- [Visor](https://github.com/macedonga/visor) **thay thế** app Meta AI: nó trở thành "owner app"
-  của kính, nói giao thức riêng của Meta qua **BLE L2CAP (PSM 0x80)**, RFCOMM và Wi-Fi Direct.
-  "Hey Meta", mic, nhận dạng giọng nói, giọng đọc và nút chụp đều do kính xử lý; Visor chỉ thay
-  "server" trả lời. Ảnh 12 MP qua Wi-Fi Direct. Chạy được khi khoá máy.
-- App này là **app phụ** qua Meta Wearables DAT SDK. Meta AI vẫn giữ kính. App phải tự làm: wake
-  word (`SFSpeechRecognizer` trên iPhone), mic qua Bluetooth HFP (chất lượng cuộc gọi), giọng đọc
-  `AVSpeechSynthesizer` phát qua HFP, và lấy ảnh qua DAT. Đây là giới hạn kiến trúc, không phải bug.
+- [Visor](https://github.com/macedonga/visor) **thay thế** Meta AI, nói giao thức riêng của Meta
+  qua BLE L2CAP (PSM 0x80), RFCOMM và Wi-Fi Direct; "Hey Meta", mic, nhận dạng và giọng đọc do
+  kính xử lý. App này là **app phụ** qua Meta DAT SDK: tự làm wake word (`SFSpeechRecognizer`),
+  mic qua Bluetooth HFP, giọng đọc `AVSpeechSynthesizer`. Đây là giới hạn kiến trúc.
 
-### 2.2 Giới hạn của Meta DAT SDK (iOS) cần biết khi sửa code
+### 2.2 Giới hạn của Meta DAT SDK (iOS)
 | Sự thật | Nguồn |
 |---|---|
-| `Camera.photo` (ảnh rời) qua Bluetooth Classic: `.medium` 720×1280 ≈ **8,7 s**, `.full` 3024×4032 ≈ **49 s**. Qua Wi-Fi còn chậm hơn (25 s / 165 s). `stream.capturePhoto` (1440×1080, ~200 KB) chỉ ≈ **1 s**. App này dùng cấu hình Bluetooth Classic (`external-accessory` + `com.meta.ar.wearable`). | [DAT #363](https://github.com/meta/meta-wearables-dat-ios/issues/363) |
-| Ray-Ban Meta Gen 1: `Camera.photo` báo `CaptureRequestError 6` ở cả 720p và 12 MP; stream still vẫn chạy. | [DAT #383](https://github.com/meta/meta-wearables-dat-ios/issues/383) |
-| Bấm nút chụp khi luồng camera đang chạy: kính **tạm dừng session** thay vì gửi sự kiện cho app. | [DAT #312](https://github.com/meta/meta-wearables-dat-ios/issues/312) |
-| Khi luồng camera chạy, kính tắt các âm thanh khác; A2DP có thể **không bật lại**. | [DAT #256](https://github.com/meta/meta-wearables-dat-ios/issues/256), [#358](https://github.com/meta/meta-wearables-dat-ios/issues/358) |
-| `Inputs` (nút chụp), `Camera.photo`, `Speech`, `VoiceInvocation` là **experimental**: cần Developer Mode, app dùng chúng chưa được phát hành. | [CHANGELOG DAT](https://github.com/meta/meta-wearables-dat-ios/blob/main/CHANGELOG.md) |
-| Một số bản Meta AI không bật được Developer Mode. | [DAT #325](https://github.com/meta/meta-wearables-dat-ios/issues/325) |
-| DAT **1.1.0** (20/11/2026): thêm `DeviceSession.pause()/resume()`, `DeviceSessionError.notRegistered` (createSession ném lỗi khi chưa đăng ký), `RegistrationError.unauthorized`, `stream.capturePhoto` timeout 10 s (trước là 30 s). Project đang ghim **1.0.1**. | CHANGELOG DAT |
-| DAT tạm dừng camera khi app ra nền; sample chính thức của Meta đóng session khi app ra nền. | CHANGELOG DAT 0.9.0 |
+| `Camera.photo` qua Bluetooth Classic: 720p ≈ 8,7 s, 12 MP ≈ 49 s; `stream.capturePhoto` (1440×1080) ≈ 1 s. App đang dùng Bluetooth Classic. | [DAT #363](https://github.com/meta/meta-wearables-dat-ios/issues/363) |
+| Gen 1: `Camera.photo` lỗi `CaptureRequestError 6`. | [DAT #383](https://github.com/meta/meta-wearables-dat-ios/issues/383) |
+| Bấm nút chụp khi stream đang chạy: kính tạm dừng session. | [DAT #312](https://github.com/meta/meta-wearables-dat-ios/issues/312) |
+| Khi camera stream chạy, kính tắt âm thanh khác; A2DP có thể không bật lại. | [#256](https://github.com/meta/meta-wearables-dat-ios/issues/256), [#358](https://github.com/meta/meta-wearables-dat-ios/issues/358) |
+| `Inputs`, `Camera.photo`, `Speech`, `VoiceInvocation` là experimental, cần Developer Mode. | [CHANGELOG DAT](https://github.com/meta/meta-wearables-dat-ios/blob/main/CHANGELOG.md) |
+| Tài liệu DAT hiện khuyến nghị Bluetooth LE + Wi-Fi làm mặc định, bỏ `external-accessory`. | `plugins/mwdat-ios/skills/getting-started/SKILL.md` (repo DAT) |
+| DAT 1.1.0 (20/11/2026): `pause()/resume()`, `notRegistered`, `RegistrationError.unauthorized`. App ghim 1.0.1. | CHANGELOG DAT |
 
 ### 2.3 Gemini
-- Model đang dùng: `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` (cả hai tồn tại, xem
-  [danh sách model](https://ai.google.dev/gemini-api/docs/models)). Flash-Lite là bậc yếu nhất,
-  Google định vị cho tác vụ nhẹ và đọc tài liệu.
-- Gemini 3 tính token ảnh theo mức cố định (HIGH ≈ 1120, ULTRA_HIGH ≈ 2240 token), nên upload ảnh
-  lớn hơn ~3072 px chỉ tốn thời gian truyền.
+- Model chain `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`; Flash-Lite là bậc yếu nhất.
+- `maxOutputTokens` 8192; `finishReason` hiện không được kiểm tra (xem N12).
+
+### 2.4 Giọng đọc Apple (AVSpeechSynthesizer)
+- Mỗi `AVSpeechUtterance` có `rate` (0…1, mặc định 0,5), `preUtteranceDelay`, `postUtteranceDelay`.
+  Không đổi được rate của utterance đã xếp hàng; muốn đổi tốc độ giữa chừng phải dừng và xếp lại.
+- Có `pauseSpeaking(at:)` / `continueSpeaking()` và delegate `didPause`, `didContinue`,
+  `willSpeakRangeOfSpeechString` (biết đang đọc tới chữ nào, dùng để tô sáng).
+- Utterance quá dài có thể bị dừng giữa chừng (diễn đàn Apple, thread 737685: dừng sau ~300 từ).
+  → **Mỗi utterance chỉ một câu hoặc một công thức.**
+- SSML (`AVSpeechUtterance(ssmlRepresentation:)`, iOS 16+) có nhưng hành vi theo từng giọng không
+  ổn định → không dùng trong bản chính (spike S8).
+- Giọng tiếng Việt đọc chữ cái Latinh đứng riêng, số thập phân, chữ Hy Lạp thế nào **chưa được
+  kiểm chứng** → spike S7, dùng màn hình "Thử đọc" trong Cài đặt.
+- Khi dùng mic kính, đầu ra đi qua HFP (chất lượng cuộc gọi). Đọc lời giải dài sẽ kém rõ hơn
+  nhạc A2DP. Không được đổi category để cải thiện (lesson 2) → chỉ nghiên cứu (spike S9).
+
+### 2.5 Cách người Việt đọc công thức (quy ước dùng cho module đọc toán)
+Đây là cách đọc phổ thông trong trường học; người dùng có thể sửa từng mục trong từ điển phát âm.
+`x²` "x bình phương", `x³` "x lập phương", `xⁿ` "x mũ n", `√x` "căn x" / "căn bậc hai của x",
+`∛x` "căn bậc ba của x", `3/4` "ba phần tư", `a/b` "a trên b", `−3` "âm 3", `2,5` "2 phẩy 5",
+`f'(x)` "f phẩy x", `∫₀¹` "tích phân từ 0 đến 1", `lim` "giới hạn khi … tiến tới …",
+`log₂ 8` "lô-ga-rít cơ số 2 của 8", `sin/cos/tan/cot` "sin / cốt / tang / cô-tang",
+`Δ` "đen-ta", `→AB` "véc-tơ A B", `∈` "thuộc", `[1; 3]` "đoạn từ 1 đến 3", `30°` "30 độ".
+Bảng đầy đủ ở mục 4.3.
 
 ---
 
-## 3. Bản đồ mã nguồn
+## 3. Hiện trạng
 
+### 3.1 Đã xong (Phase 0–1 của v1, PR #2, CI + E2E xanh ở `dd04593`)
+E2E chạy được lần đầu (ký ad-hoc simulator); tham chiếu tài liệu cũ đã sửa; Info.plist `arm64`,
+bỏ `NSAllowsArbitraryLoads`; không in config; TTL ảnh 120 s / 5 lần; không gửi lại ảnh đã có trong
+lịch sử; upload 3072 px q0.85; bỏ danh sách từ khoá, chỉ dùng `[[CAPTURE]]`.
+
+### 3.2 Lỗi còn mở từ v1 (giữ ID cũ)
+- **B6** RecentPhotoScanner nhận mọi ảnh ≥ 1200 px trong 120 s (ảnh riêng tư bị gửi đi) → T7.6.
+- **B8** `captureFullResolutionPhoto` sai thứ tự nguồn, timeout 3 s, không ghi nguồn → T7.3.
+- **B9** chụp đồng thời dùng vòng poll, fallback lặp lại → T7.2, T7.5.
+- **B11** nhận dạng giọng chạy trên server, `taskHint = .search` → T8.1, T8.2.
+- **B12** biến thể wake word dễ nhầm → T8.3.
+- **B15** DAT 1.0.1 → T7.1. **B16** README/CONTRIBUTING sai → Phase 9.
+
+### 3.3 Phát hiện mới khi đọc code (21/11/2026)
+N1 và N2 đã thấy trên CI. N6, N7, N9, N10 là **suy ra từ việc đọc code**, chưa chạy trên máy: khi sửa,
+viết test tái hiện trước rồi mới sửa.
+
+| ID | Vấn đề | Vị trí | Sửa ở |
+|---|---|---|---|
+| N1 | 3 test `BlueprintPhotoLibraryE2ETests` luôn bị skip trên CI (quyền Ảnh chưa `.authorized` lúc chạy test). | `scripts/e2e/run-simulator-tests.sh` | T2.3 |
+| N2 | `GlassesManager.init` dùng `Wearables.shared` vô điều kiện; nếu `Wearables.configure()` lỗi thì app crash lúc khởi động (đã thấy trên CI). | `GlassesManager.swift` (`private let wearables`) | T2.5 |
+| N3 | App dùng đường Bluetooth Classic, tài liệu DAT khuyến nghị BLE + Wi-Fi. | `Info.plist` | Quyết định D2 |
+| N4 | `cleanSpokenAudio` xoá lệnh LaTeX **trước** `SpokenMath`: `\frac{1}{2}` thành "12", `\sqrt{x}` thành "x", `x \le 2` thành "x 2"; xoá dấu `-` đầu dòng ("-2x+4=0" đọc thành "2x+4=0"); "2*3*4" thành "234". | `TTSService.cleanSpokenAudio`, `enqueue` | T3.3 |
+| N5 | Ngôn ngữ chọn theo từng câu: dòng công thức có ≥ 2 từ ASCII ≥ 3 chữ ("f(x) = sin x + cos x.") bị đọc bằng giọng tiếng Anh giữa câu trả lời tiếng Việt. | `TTSService.sentenceIsVietnamese` | T5.1 |
+| N6 | Khi đang đọc câu trả lời (state `.processing`), bộ nhận dạng tích luỹ chính tiếng đọc của app; "Ok Vision …" sớm không còn nằm trong 15 ký tự đầu nên lệnh ngắt hỏng; nếu task nhận dạng kết thúc (~1 phút) thì không ai khởi động lại → mic điếc tới hết câu trả lời. | `VoiceCommandService.handleRecognitionResult` (`.processing`), `restartIfRecognizerEnded` | T5.3 |
+| N7 | Câu trả lời không bắt đầu bằng giọng nói (giữ nút "chụp và giải", gõ phím, đọc lại): bộ đếm 30 s của conversation mode vẫn chạy và `stopSession()` cắt ngang câu trả lời. | `startConversationTimeout`, `onConversationTimeout` | T5.3 |
+| N8 | `ttsSpeakingChanged(false)` mở lại mic ngay, bỏ qua lớp chờ 350 ms (lớp này chỉ đổi `agentState`). | `VoiceAgentViewModel.ttsSpeakingChanged` | T5.3 |
+| N9 | "Ok Vision, <câu hỏi>" khi đang đọc: dừng TTS nhưng không dừng Gemini; câu hỏi có thể bị mất; stream có thể đọc lại từ đầu. | `onWakeWordDetected`, `handleCommandComplete` | T5.3 |
+| N10 | Gõ câu hỏi khi chưa có phiên: câu trả lời bị bỏ (guard `isSessionActive`); câu trả lời cho câu gõ không vào Lịch sử (`historyAwaitingReply` không được đặt). | `sendTypedCommand` | T6.2 |
+| N11 | Lịch sử lưu văn bản DISPLAY (LaTeX); ảnh lưu base64 lặp lại mỗi câu hỏi; lỗi decode `conversations.json` thì lần lưu sau ghi đè mất lịch sử. | `ConversationManager`, `recordAssistantReply` | T4.3, T6.3 |
+| N12 | `finishReason` không được kiểm tra: câu trả lời bị cắt vì `MAX_TOKENS` vẫn coi là thành công. | `GeminiLiveService.performStreamingRequest` | T4.3 |
+| N13 | `SettingsSecretsTests`, `TextChunkingTests` không bao giờ chạy trên CI (script chỉ chạy các suite Blueprint*). | `run-simulator-tests.sh` | T2.2 |
+| N14 | 145 lệnh `print(` không vào OSLog; 58 `NSLog`; không có logger chung → không làm được màn hình log. | toàn bộ `OpenVision/` | T2.4 |
+| N15 | `MetricsCollector` có dòng thời gian từng lượt nhưng không ai hiển thị; lượt không có tiếng đọc thì bị "treo" và dính vào lượt sau. | `Services/Telemetry/` | T6.5 |
+| N16 | `ParticleEffect` tạo thêm `Timer` mỗi lần `onAppear` (rò rỉ); giao diện lẫn tiếng Anh/Việt; link GitHub trong Cài đặt sai tên repo. | `AnimatedBackground.swift`, `MainTabView`, `SettingsView` | T6.1, T6.4 |
+| N17 | Prompt coi "explain step by step" là chế độ Gia sư (giấu đáp án), trùng với yêu cầu "giải chi tiết từng bước". | `buildSystemPrompt` | T4.1 |
+| N18 | Một số enum lạ trong `settings.json` làm hỏng cả hai lần decode → **toàn bộ cài đặt về mặc định**. | `SettingsManager.loadSettings` | Quy tắc ở 4.6 |
+
+### 3.4 Bản đồ mã nguồn (hiện có và sẽ thêm)
 | File | Trách nhiệm |
 |---|---|
-| `OpenVision/App/OpenVisionApp.swift` | Khởi động, cấu hình DAT SDK, nhận URL callback từ Meta AI |
-| `OpenVision/Managers/GlassesManager.swift` | Đăng ký, `DeviceSession`, camera stream, ảnh (`captureFullResolutionPhoto`), nút chụp (`MWDATInputs`) |
-| `OpenVision/Views/VoiceAgent/VoiceAgentViewModel.swift` | Điều phối toàn bộ: phiên, `sendCommand`, lấy ảnh (`acquireGlassesPhoto`), nút chụp, TTS streaming, lịch sử. Chứa luôn `CapturedPhotoContext`, `SolverIntent`, `RecentPhotoScanner`, `PhotoPayload`, `TextChunking` |
-| `OpenVision/Services/GeminiLive/GeminiLiveService.swift` | REST streaming SSE, retry theo loại lỗi, xoay key, model chain, lịch sử 6 entry, `[[CAPTURE]]` / `[[END]]`, system prompt, `parseDualChannel` |
-| `OpenVision/Services/Voice/VoiceCommandService.swift` | `AVAudioEngine` duy nhất + tap mic, `SFSpeechRecognizer`, wake word, conversation mode, barge-in |
-| `OpenVision/Services/Voice/SpeechActivityDetector.swift` | VAD Silero (FluidAudio) để biết lúc người dùng nói xong |
-| `OpenVision/Services/Audio/AudioSessionManager.swift` | `AVAudioSession`, chọn mic HFP của kính |
-| `OpenVision/Services/TTS/TTSService.swift` | Giọng Apple theo ngôn ngữ, `cleanSpokenAudio`, `SpokenMath` |
-| `OpenVision/Views/Settings/GlassesSettingsView.swift` | Cài đặt kính, công tắc ảnh full-res, nút "Chụp thử" |
-| `OpenVision/Models/AppSettings.swift` | Model cài đặt (mặc định) |
-| `OpenVisionTests/*` | `BlueprintSolverTests` (logic thuần), `BlueprintGeminiE2ETests` (Gemini giả lập bằng URLProtocol), `BlueprintPhotoLibraryE2ETests`, `GeminiLiveSmokeTests` (Gemini thật, tuỳ chọn) |
-| `scripts/blueprint/verify_blueprint.py` | Guard tĩnh, chạy được trên Linux |
-| `scripts/e2e/run-simulator-tests.sh` | Chạy test trên simulator (CI job `E2E (Blueprint)`) |
-| `.github/workflows/{ci,e2e,build-ipa}.yml` | Build, test, đóng gói IPA |
-
-Commit `418a993` (commit đầu tiên) là mốc "sạch". Các commit `d881354`, `284bdfd`, `f032c60`,
-`050dea5`, `c4d7987` thêm các thay đổi liên quan tới ảnh, một phần là hồi quy (mục 4). Các tính
-năng UI của chúng (xem trước ảnh trong bong bóng chat, ô nhập câu hỏi bằng bàn phím
-`sendTypedCommand`, `detachPhoto`) **giữ lại**.
+| `OpenVision/App/OpenVisionApp.swift` | Khởi động, `Wearables.configure()`, URL callback của Meta AI |
+| `OpenVision/Managers/GlassesManager.swift` | Đăng ký, `DeviceSession`, camera, ảnh, nút chụp (`MWDATInputs`) |
+| `OpenVision/Managers/SettingsManager.swift`, `Models/AppSettings.swift` | Cài đặt, lưu `settings.json` (key ở Keychain) |
+| `OpenVision/Managers/ConversationManager.swift`, `Models/Conversation.swift` | Lịch sử, lưu `conversations.json` |
+| `OpenVision/Views/VoiceAgent/VoiceAgentViewModel.swift` | Điều phối: phiên, `sendCommand`, ảnh, TTS streaming, lịch sử; chứa `CapturedPhotoContext`, `SolverIntent`, `RecentPhotoScanner`, `PhotoPayload`, `TextChunking` |
+| `OpenVision/Views/VoiceAgent/VoiceAgentView.swift` | Màn hình chính hiện tại (sẽ thành Trực tiếp) |
+| `OpenVision/Services/GeminiLive/GeminiLiveService.swift` | REST SSE, retry, xoay key, model chain, lịch sử 6 entry, `[[CAPTURE]]`/`[[END]]`, prompt, parser |
+| `OpenVision/Services/TTS/TTSService.swift` | Giọng Apple, `cleanSpokenAudio`, `SpokenMath`, hàng đợi utterance |
+| `OpenVision/Services/Voice/VoiceCommandService.swift` | `AVAudioEngine` + tap mic duy nhất, `SFSpeechRecognizer`, wake word, barge-in |
+| `OpenVision/Services/Audio/AudioSessionManager.swift` | `AVAudioSession`, mic HFP của kính |
+| `OpenVision/Services/Telemetry/*` | `MetricsCollector`, `TurnTimeline` (chưa ai hiển thị) |
+| `OpenVision/Views/Components/*`, `History/*`, `Settings/*` | Thành phần giao diện, Lịch sử, Cài đặt |
+| **Mới** `OpenVision/Services/Speech/` | `VietMathSpeech` (+ splitter, lexer, parser, reader, từ điển), `AnswerFormat`, `ReplyAssembler`, `ReadingEngine`, `ReadingCommand` |
+| **Mới** `OpenVision/Utilities/Helpers/AppLog.swift` | Logger chung + bộ đệm cho màn hình Log |
+| **Mới** `scripts/pbxproj_files.py` | Đăng ký / gỡ file Swift trong pbxproj |
+| `scripts/blueprint/verify_blueprint.py`, `verify_ipa_symbols.sh` | Guard tĩnh, kiểm tra ký hiệu trong IPA |
+| `scripts/e2e/run-simulator-tests.sh`, `.github/workflows/*` | Test simulator, CI, build IPA |
 
 ---
 
-## 4. Lỗi đã xác minh (hiện trạng trên `main`)
+## 4. Thiết kế mới
 
-| ID | Lỗi | Vị trí | Bằng chứng |
-|---|---|---|---|
-| B1 | Job `E2E (Blueprint)` fail ở **mọi** commit: script không có quyền chạy. Test simulator **chưa từng chạy**. | `scripts/e2e/run-simulator-tests.sh` (mode 100644) | Log CI: `run-simulator-tests.sh: Permission denied` |
-| B2 | TTL ảnh 300 s / 10 lần dùng, test yêu cầu 120 s / 5 lần → test sẽ fail khi B1 được sửa. | `CapturedPhotoContext.ttl`, `.maxUses` | `testPhotoContextLivesFor120SecondsAndFiveQuestions`; giá trị gốc ở `418a993` là 120/5 |
-| B3 | Câu hỏi nối tiếp gửi lại **cả ảnh gốc lẫn bản 1536 px** trong lịch sử. `imageFingerprintInHistory` được ghi nhưng không bao giờ đọc. | `GeminiLiveService.performTurn` | `testFollowUpOnTheSamePhotoKeepsContextWithoutReuploading` sẽ fail; logic gốc ở `418a993` (khối "Photo already in conversation history — not re-uploading") |
-| B4 | Danh sách từ khoá (`requiresAttachedPhoto`) chặn câu hỏi và đi chụp ảnh. Nó trùng và mâu thuẫn với cơ chế `[[CAPTURE]]`. Chỉ cần có "chụp", "photo", "bài này" là app chụp ảnh; trường hợp xấu nhất chờ 60–90 s. Guard không bắt được vì chỉ tìm tên `visualKeywords`. | `SolverIntent.requiresAttachedPhoto`, `sendCommand` | Thêm ở `f032c60`, `050dea5` |
-| B5 | Câu hỏi **không liên quan tới ảnh** vẫn chờ 1 s quét Camera Roll và gắn ảnh tìm được. | `sendCommand` (nhánh `else if !hasExistingFreshPhoto`) | |
-| B6 | `RecentPhotoScanner` nhận ảnh 4032×3024 (trùng ảnh 12 MP của iPhone) và **mọi ảnh ≥ 1200 px** trong 120 s → ảnh riêng tư bị gửi lên Gemini. `photoLibraryDidChange` cũng tự gắn ảnh đó làm ngữ cảnh. | `RecentPhotoScanner.newestImageAsset`, `photoLibraryDidChange`, `onPhotoArrived` | |
-| B7 | `currentTranscriptPhotoData` (biến cho UI) được dùng làm nguồn ảnh gửi đi, **bỏ qua TTL**: ảnh cũ bị gắn mãi. | `sendCommand` | |
-| B8 | `captureFullResolutionPhoto` gần như **không bao giờ** dùng `Camera.photo`: thử stream still (chờ 4 s) → `lastFrame` (khung video) → `Camera.photo` sau cùng với timeout **3 s** (thực tế cần 8–49 s). Tham số `timeout` bị bỏ qua. `fullPhotoFailures = 0` bị đặt lại mỗi lần gọi nên khoá sau 2 lần lỗi vô tác dụng. Không biết ảnh từ nguồn nào, độ phân giải bao nhiêu. | `GlassesManager.captureFullResolutionPhoto` | Mục 2.2 |
-| B9 | Các lần chụp đồng thời đợi nhau bằng vòng lặp poll (15 s trong `sendCommand`, 45 s trong `acquireGlassesPhoto`). `captureFullResolutionPhoto` trả `nil` nếu đang có lần chụp khác. Sau đó `acquireGlassesPhoto` lại bật stream lần nữa (`takeGlassesPhoto` → `freshLiveFrame`), rồi chờ Camera Roll 30 s. | `VoiceAgentViewModel.acquireGlassesPhoto`, `sendCommand` | |
-| B10 | Ảnh upload 4032 px q0.92 thay vì 3072 px q0.85 (giá trị gốc), chỉ thêm độ trễ. | `PhotoPayload.uploadMaxDimension`, `.uploadQuality` | Đổi ở `284bdfd` |
-| B11 | Nhận dạng giọng nói chạy trên server Apple (không đặt `requiresOnDeviceRecognition`), `taskHint = .search` cho cả câu hỏi dài. | `VoiceCommandService.configureRecognitionRequest` | |
-| B12 | Biến thể wake word dễ khớp nhầm câu tiếng Anh bình thường: `"a vision"`, `"have vision"`, `"heavy vision"`, `"obey vision"`. `detectWakeWord` khớp substring ở bất kỳ đâu. | `VoiceCommandService.wakeWordVariations` | |
-| B13 | Info.plist: `UIRequiredDeviceCapabilities = armv7` (sai cho app 64-bit), `NSAllowsArbitraryLoads = true` (không cần). | `OpenVision/Resources/Info.plist` | |
-| B14 | `build-ipa.yml` in nội dung `Config.xcconfig` ra log (`cat Config.xcconfig`). Hiện là placeholder, nhưng sẽ lộ token nếu sau này dùng secret. | `.github/workflows/build-ipa.yml` | |
-| B15 | DAT SDK ghim 1.0.1, đã có 1.1.0. | `project.yml`, `project.pbxproj` | |
-| B16 | README, CONTRIBUTING mô tả sai (ảnh full-res từ kính, OpenClaw, rayl15, thư mục `Tests/`, `CLAUDE.md`). | `README.md`, `CONTRIBUTING.md` | |
+### 4.1 Luồng từ câu hỏi tới giọng đọc
+```
+Câu hỏi + ảnh → Gemini (định dạng v2: ANSWER / METHOD / STEP n …, toán trong $…$)
+  → AnswerFormat.parse / completedSections(in:)     tách đoạn theo thẻ khi stream tới
+  → VietMathSpeech.render(đoạn)                      đổi công thức thành lời tiếng Việt
+  → ReadingPlan (danh sách ReadingSegment)           mỗi đoạn: loại, chữ hiển thị, các mẩu đọc
+  → ReadingEngine                                    xếp utterance ngắn, tốc độ, nghỉ, điều khiển
+  → TTSService (AVSpeechSynthesizer, giọng theo ngôn ngữ của câu trả lời)
+Song song: LiveConversationView hiển thị ReadingPlan + đoạn đang đọc; History lưu ReadingRecord.
+```
+
+### 4.2 Định dạng câu trả lời v2 (hợp đồng với Gemini)
+Thẻ viết bằng tiếng Anh, nội dung theo ngôn ngữ người hỏi. Mỗi thẻ đứng đầu một dòng.
+```
+ANSWER: <1–2 câu, đáp án cuối cùng>
+METHOD: <1–2 câu, hướng làm>                 (tuỳ chế độ)
+STEP 1: <một bước, công thức trong $…$>
+STEP 2: …
+CHECK: <điều kiện, thử lại>                  (tuỳ chọn)
+CONCLUSION: <câu kết>                        (tuỳ chọn)
+HINT: <gợi ý>                                (chỉ chế độ Gia sư, thay cho ANSWER)
+```
+Quy tắc trong prompt:
+- `ANSWER` luôn đứng đầu (trừ Gia sư). Không nhắc "xem trên điện thoại".
+- Công thức **chỉ** trong `$…$` một dòng; không `$$`, không bảng, không markdown, không danh sách.
+- Mỗi `STEP` ≤ khoảng 30 từ lời văn và ≤ 2 công thức, để đọc thành từng nhịp ngắn.
+- Chế độ đọc (`readingMode`, mục 4.6) được ghi vào prompt mỗi lượt:
+  - `answerOnly`: chỉ `ANSWER`.
+  - `summary`: `ANSWER` + `METHOD` + tối đa 3 `STEP`.
+  - `detailed` (tự luận): `ANSWER` + `METHOD` + đủ mọi `STEP` + `CHECK` + `CONCLUSION`.
+  - `auto` (mặc định): trắc nghiệm, câu ngắn → `summary`; tự luận, chứng minh, bài có lời văn → `detailed`.
+- Người dùng nói "giải chi tiết", "giải từng bước", "step by step" → `detailed` cho lượt đó;
+  "chỉ cần đáp án" → `answerOnly`; "gợi ý", "hướng dẫn mình tự làm" → Gia sư (sửa N17).
+- Cả trang: `ANSWER: Câu 1: A. Câu 2: C. …` rồi mỗi câu một `STEP` nếu chế độ cho phép.
+- Giữ nguyên `[[CAPTURE]]`, `[[END]]`, "ALWAYS answer in the language the user used".
+
+Quy tắc của parser (`AnswerFormat`, thuần, có test):
+- Không phân biệt hoa thường; chấp nhận `**ANSWER:**`, `- STEP 1:`, `## STEP 1`, và bí danh tiếng
+  Việt `ĐÁP ÁN:`, `HƯỚNG LÀM:`, `BƯỚC 1:`, `KIỂM TRA:`, `KẾT LUẬN:`, `GỢI Ý:`.
+- Văn bản không có thẻ nào → toàn bộ là `ANSWER`, tách thành câu.
+- Khi stream: chỉ trả về đoạn đã **xong dòng**; giữ lại dòng cuối nếu nó có thể là nửa thẻ.
+- Xoá `[[END]]`; `[[CAPTURE]]` xử lý như hiện nay (không bao giờ đọc ra).
+- `finishReason == MAX_TOKENS`: đọc phần đã có rồi thêm đoạn thông báo
+  "Lời giải dài quá nên mình dừng ở bước N. Bạn hỏi 'giải tiếp' để mình giải nốt." (sửa N12).
+  ("giải tiếp" là câu hỏi mới gửi Gemini; khác lệnh đọc "tiếp tục" ở 4.4.)
+
+### 4.3 Module đọc toán tiếng Việt: `VietMathSpeech`
+Thư mục mới `OpenVision/Services/Speech/`. **Thuần Swift**, không import UIKit/AVFoundation.
+
+Thành phần:
+| Kiểu | Việc |
+|---|---|
+| `MathSpanSplitter` | Tách văn bản thành mẩu lời văn và mẩu công thức: `$…$`, `\(…\)`, `\[…\]`, `$$…$$` (coi như một dòng). Nhận cả "công thức trần" trong lời văn: ký tự Unicode toán (² ³ √ ≤ ≥ ≠ ≈ × ÷ ± ∞ ∫ ∑ π Δ → ⇒ ⇔ ∈ ∉ ⊂ ∪ ∩ ∅ °) và mẫu ASCII rõ ràng (`x^2`, `3/4`, `f(x) =`). Thận trọng: "1-5", "Ray-Ban", ngày "12/5/2026" giữ nguyên. |
+| `MathLexer`, `MathParser` | LaTeX tập con → cây `MathNode` (đệ quy xuống). **Không bao giờ throw**: lệnh lạ thành `.unknown(name, args)`. |
+| `MathNode` | `number`, `identifier`, `binary(op)`, `unary(op)`, `fraction`, `power`, `subscript`, `root(index)`, `function(name, arg)`, `group`, `abs`, `integral(lower, upper, body, variable)`, `limit(variable, target, body)`, `sum/product(from, to, body)`, `vector`, `angle`, `triangle`, `set`, `interval`, `cases([rows])`, `matrix(rows)`, `text`, `unknown`. |
+| `VietnameseMathReader` | `MathNode` → mảng `SpeechPiece` (`.words(String)`, `.pause(ms)`), theo `MathReadingStyle`. |
+| `EnglishMathReader` | Bộ đọc tối giản cho câu trả lời tiếng Anh (chuyển các từ tiếng Anh của `SpokenMath` sang đây). |
+| `PronunciationDictionary` | Bảng mặc định (hàm, chữ Hy Lạp, đơn vị, tên chữ cái) + ghi đè của người dùng (Cài đặt). Áp dụng theo **token nguyên**, không theo chuỗi con. |
+| `VietMathSpeech.render(_ text:, language:, style:) -> [SpeechPiece]` | Điểm vào duy nhất. Lời văn giữ nguyên (chỉ chuẩn hoá số, đơn vị, ký hiệu). |
+
+`MathReadingStyle` (lấy từ Cài đặt, mục 4.6):
+- `verbosity`: `natural` (tự nhiên) hoặc `explicit` (rõ ràng: thêm "hết căn", "hết mũ",
+  "hết phân số", "mở ngoặc / đóng ngoặc" khi cấu trúc lồng nhau).
+- `symbolicFraction`: "trên" (mặc định) hoặc "phần" cho `a/b` có chữ; phân số số luôn "một phần hai".
+- `negativeWord`: "âm" (mặc định) hoặc "trừ" cho dấu trừ một ngôi.
+- `letterStyle`: `asWritten` (đưa chữ Latinh cho giọng đọc) hoặc `vietnameseNames`
+  (a, bê, xê, đê, e, ép, giê, hát, i, ca, e-lờ, em-mờ, en-nờ, o, pê, quy, e-rờ, ét, tê, u, vê,
+  vê kép, ích, i dài, dét). Mặc định quyết định sau spike S7.
+
+Ràng buộc bắt buộc (có test):
+- Đầu ra không bao giờ chứa `\`, `$`, `{`, `}`, `^`, `_`.
+- Mỗi `SpeechPiece.words` ≤ 200 ký tự (để mỗi utterance ngắn, mục 2.4).
+- Chạy < 5 ms cho một bước điển hình (đo trong test bằng `measure`).
+- Lời văn tiếng Việt không có công thức đi qua **không đổi** (trừ số và ký hiệu).
+
+Bảng quy tắc đọc (kiểu `natural`; cột "rõ ràng" chỉ ghi khi khác). Mỗi dòng là ít nhất một test:
+| Viết | Đọc (tự nhiên) | Rõ ràng |
+|---|---|---|
+| `a + b`, `a - b`, `a = b` | a cộng b, a trừ b, a bằng b | |
+| `-3`, `-x` (đầu biểu thức, sau `=`, sau `(`) | âm 3, âm x | |
+| `2x`, `ab`, `2(x+1)` | 2 x, a b, 2 nhân x cộng 1 | 2 nhân mở ngoặc x cộng 1 đóng ngoặc |
+| `a \cdot b`, `a \times b`, `a : b`, `a \div b` | a nhân b, a nhân b, a chia b, a chia b | |
+| `\neq`, `<`, `>`, `\le`, `\ge`, `\approx`, `\pm` | khác, nhỏ hơn, lớn hơn, nhỏ hơn hoặc bằng, lớn hơn hoặc bằng, xấp xỉ, cộng trừ | |
+| `x^2`, `x^3`, `x^n`, `x^{-1}` | x bình phương, x lập phương, x mũ n, x mũ âm 1 | |
+| `e^{2x+1}` | e mũ 2 x cộng 1 (nghỉ ngắn sau mũ) | e mũ 2 x cộng 1, hết mũ |
+| `(x+1)^2` | x cộng 1, tất cả bình phương | |
+| `\frac{1}{2}`, `\frac{3}{4}`, `\frac{1}{10}` | một phần hai, ba phần tư, một phần mười | |
+| `\frac{a}{b}`, `\frac{x}{2}` | a trên b, x trên 2 | |
+| `\frac{x+1}{x-1}` | x cộng 1, trên x trừ 1 | phân số, tử số x cộng 1, mẫu số x trừ 1, hết phân số |
+| `\sqrt{x}`, `\sqrt{2}` | căn x, căn 2 | căn bậc hai của x |
+| `\sqrt[3]{x}` | căn bậc ba của x | |
+| `\sqrt{x^2+1}` | căn của x bình phương cộng 1 | căn của x bình phương cộng 1, hết căn |
+| x giữa hai dấu gạch đứng, `\lvert x \rvert`, `\left\lvert x \right\rvert` | giá trị tuyệt đối của x | |
+| `n!` | n giai thừa | |
+| `f(x)`, `f'(x)`, `f''(x)` | f x, f phẩy x, f hai phẩy x | f của x |
+| `\sin x`, `\cos x`, `\tan x`, `\cot x`, `\sin^2 x` | sin x, cốt x, tang x, cô-tang x, sin bình phương x | |
+| `\log_2 8`, `\log x`, `\ln x`, `e^x` | lô-ga-rít cơ số 2 của 8, lốc x, lốc nê-pe của x, e mũ x | |
+| `\int_0^1 f(x)\,dx` | tích phân từ 0 đến 1 của f x, đê x | |
+| `\int f(x)\,dx` | nguyên hàm của f x, đê x | |
+| `\lim_{x \to 0}`, `x \to +\infty` | giới hạn khi x tiến tới 0 của, x tiến tới dương vô cùng | |
+| `\sum_{i=1}^{n} a_i` | tổng từ i bằng 1 đến n của a i | |
+| `x_1`, `u_{n+1}` | x một, u n cộng 1 | x chỉ số 1 |
+| `\overrightarrow{AB}`, `\vec{a}` | véc-tơ A B, véc-tơ a | |
+| `\widehat{ABC}`, `\angle ABC`, `\triangle ABC` | góc A B C, góc A B C, tam giác A B C | |
+| `\perp`, `\parallel`, `\sim` | vuông góc với, song song với, đồng dạng với | |
+| `\in`, `\notin`, `\subset`, `\cup`, `\cap`, `\emptyset` | thuộc, không thuộc, là tập con của, hợp, giao, tập rỗng | |
+| `\mathbb{R}`, `\mathbb{N}`, `\mathbb{Z}`, `\mathbb{Q}` | tập số thực, tập số tự nhiên, tập số nguyên, tập số hữu tỉ | |
+| `[1; 3]`, `(1; 3)`, `[1; 3)` | đoạn từ 1 đến 3, khoảng từ 1 đến 3, nửa khoảng từ 1 đến 3 | |
+| `\forall`, `\exists`, `\Rightarrow`, `\Leftrightarrow` | với mọi, tồn tại, suy ra, tương đương | |
+| `\infty`, `\Delta`, `\alpha`, `\beta`, `\pi` | vô cùng, đen-ta, an-pha, bê-ta, pi (đủ bảng chữ Hy Lạp trong từ điển) | |
+| `30^\circ`, `30°`, `50\%` | 30 độ, 30 độ, 50 phần trăm | |
+| `2.5`, `2,5`, `2{,}5` (câu trả lời tiếng Việt) | 2 phẩy 5 | |
+| `C_5^2`, `\binom{5}{2}`, `A_5^2` | tổ hợp chập 2 của 5, tổ hợp chập 2 của 5, chỉnh hợp chập 2 của 5 | |
+| `\begin{cases} x+y=3 \\ x-y=1 \end{cases}` | hệ phương trình: x cộng y bằng 3; x trừ y bằng 1 | hệ gồm 2 phương trình: thứ nhất…; thứ hai… |
+| ma trận `\begin{pmatrix} 1 & 2 \\ 3 & 4 \end{pmatrix}` | ma trận 2 hàng 2 cột: hàng 1: 1, 2; hàng 2: 3, 4 | |
+| `5 cm`, `3 m/s`, `60 km/h`, `2 kg` | 5 xen-ti-mét, 3 mét trên giây, 60 ki-lô-mét trên giờ, 2 ki-lô-gam | |
+| `\text{nếu }` | đọc nguyên chữ | |
+| lệnh lạ `\foo{x}` | bỏ tên lệnh, đọc đối số: x (và log cảnh báo cho màn hình Gỡ lỗi) | |
+
+Ngoài phạm vi bản này: công thức hoá học (`H_2O` đọc thành "H 2 O"), đạo hàm riêng, tích phân bội
+ngoài `\iint` cơ bản. Ghi vào Gỡ lỗi khi gặp để bổ sung sau.
+
+### 4.4 Bộ máy đọc: `ReadingPlan` + `ReadingEngine`
+File mới `OpenVision/Services/Speech/ReadingEngine.swift` (logic) và mở rộng `TTSService` (âm thanh).
+
+Kiểu dữ liệu (thuần, `Codable` để lưu vào Lịch sử):
+- `ReadingSegment { id, kind, title, displayText, pieces: [SpeechPiece] }`, với `kind` là
+  `answer | method | step(n) | check | conclusion | hint | notice`. `title` ví dụ "Bước 2".
+  `displayText` là chữ model viết (công thức giữ dạng chữ, hiển thị bằng bộ làm đẹp đơn giản ở 4.5).
+- `ReadingPlan { turnID, language (vi|en), segments, isComplete }`, được **nối thêm đoạn** khi stream tới.
+- `ReadingRecord { language, segments: [{ kind, title, displayText }] }`: bản lưu vào Lịch sử (trường
+  tuỳ chọn `Message.reading`). Khi đọc lại, `pieces` được **dựng lại** từ `displayText` theo cài đặt
+  hiện tại (từ điển phát âm mới sửa cũng có hiệu lực), không lưu `pieces`.
+- Mẩu lời văn dài hơn 200 ký tự được tách tiếp tại dấu phẩy hoặc chấm phẩy gần nhất.
+
+`ReadingEngine` (`@MainActor ObservableObject`):
+- Trạng thái công khai: `state` (`idle | reading | paused | waitingForNext | finished`),
+  `currentSegment`, `currentPieceRange` (từ `willSpeakRangeOfSpeechString`, để tô sáng chữ đang đọc),
+  `liveRateMultiplier` (0,75 / 1 / 1,25 / 1,5).
+- Lệnh: `start(plan)`, `append(segments)`, `finishAppending()`, `pause()`, `resume()`, `next()`,
+  `previous()`, `repeatCurrent()`, `restartFromBeginning()`, `jump(to:)`, `stop()`, `setRate(_:)`.
+- Cách đọc: **một utterance cho một mẩu** (một câu hoặc một công thức).
+  - rate = `speechRate` × (`mathRateFactor` nếu là mẩu công thức) × `liveRateMultiplier`;
+  - `postUtteranceDelay` = `pauseAfterFormula` cho mẩu công thức;
+  - giữa hai đoạn nghỉ `pauseBetweenSteps`;
+  - `.pause(ms)` trong mẩu đọc thành khoảng nghỉ thật (utterance rỗng hoặc delay).
+- Đổi tốc độ giữa chừng: dừng utterance hiện tại, đọc lại mẩu hiện tại với tốc độ mới.
+- **Đọc chép** (`dictationMode`): sau mỗi `STEP` chuyển `waitingForNext`; đi tiếp khi có lệnh "tiếp",
+  nút kính, nút trên màn hình, hoặc sau `dictationAutoContinue` giây (0 = chờ lệnh). Tuỳ chọn
+  `repeatFormulaInDictation`: đọc mỗi công thức hai lần.
+- **Giọng theo cả câu trả lời**, không theo từng câu (sửa N5): ngôn ngữ của `ReadingPlan` quyết định
+  giọng cho mọi mẩu, kể cả mẩu chỉ có công thức.
+- Kiểm thử không cần âm thanh: `ReadingEngine` dùng protocol `SpeechSynthesizing`; test dùng bản giả
+  ghi lại các utterance (văn bản, rate, delay) và giả lập callback xong/huỷ.
+
+Điều khiển bằng giọng khi đang đọc (sửa N6–N9), trong `VoiceCommandService` + `ReadingCommand`:
+- Khi `ReadingEngine.state` là `reading`: **xoá bộ đệm nhận dạng ở đầu mỗi đoạn** (để wake word có thể
+  "nằm đầu" lại) và tự khởi động lại bộ nhận dạng nếu nó kết thúc. Lệnh phải có wake word ở đầu
+  (chống tiếng vọng): "Ok Vision" + một trong các lệnh dưới.
+- Khi `paused` hoặc `waitingForNext`: app đang im, nên chấp nhận lệnh **không cần wake word**.
+- `ReadingCommand.parse(_ text:) -> ReadingCommand?` (thuần, có test, hai ngôn ngữ):
+  | Lệnh | Câu nói (ví dụ) |
+  |---|---|
+  | `pause` | tạm dừng, dừng chút, pause |
+  | `resume` | tiếp tục, đọc tiếp, tiếp, continue |
+  | `next` | bước tiếp, bước sau, bỏ qua, next |
+  | `previous` | bước trước, quay lại, back |
+  | `repeat` | đọc lại, lặp lại, nhắc lại, repeat |
+  | `restart` | đọc lại từ đầu, from the start |
+  | `slower` / `faster` | chậm lại, đọc chậm / nhanh lên, đọc nhanh |
+  | `stop` | dừng lại, thôi, stop (dừng đọc, giữ kế hoạch để "đọc lại") |
+- Sau wake word mà **không phải** lệnh đọc → coi là câu hỏi mới: dừng đọc, `gemini.interrupt()`,
+  **giữ nguyên câu hỏi** và gửi đi (sửa N9).
+- Trong khi `reading | paused | waitingForNext`: **không chạy** bộ đếm conversation timeout (sửa N7).
+- Khi đọc xong (`finished`) hoặc bị dừng: chỉ bỏ `isBargeInPaused` và vào conversation mode sau
+  350 ms kể từ utterance cuối (sửa N8, giữ check lesson 4).
+- Phân biệt hai kiểu dừng: lệnh đọc `stop` ("Ok Vision dừng lại") chỉ dừng đọc, phiên vẫn mở, nói
+  "đọc lại" thì đọc tiếp được. Kết thúc phiên vẫn như cũ: "tạm biệt / cảm ơn" (`[[END]]`), nút mic,
+  hoặc hết thời gian im lặng sau khi đọc xong.
+- Nút kính khi đang đọc (`readingButtonActions`, mặc định tắt, quyết định D4): bấm 1 lần = tạm
+  dừng/tiếp, bấm 2 lần = đọc lại bước, giữ = bước tiếp.
+
+### 4.5 Giao diện mới
+Tab (nhãn tiếng Việt): **Trực tiếp** | **Lịch sử** | **Cài đặt**. Màn hình Gỡ lỗi mở từ Cài đặt;
+lớp phủ gỡ lỗi bật được trên màn hình Trực tiếp. Toàn bộ chữ trên giao diện bằng tiếng Việt.
+
+**Trực tiếp** (thay bố cục `VoiceAgentView`; `VoiceAgentViewModel` vẫn là nơi điều phối):
+- Thanh trạng thái trên cùng, các chip bấm được (mở đúng màn hình Cài đặt):
+  Kính (chưa đăng ký / đã kết nối), Mic (kính / điện thoại, nhận dạng trên máy hay server),
+  Gemini (có key, model), Ảnh (còn N giây, nguồn và độ phân giải), Trạng thái (Đang nghe /
+  Đang nghĩ N s / Đang đọc bước k/n / Tạm dừng / Chờ "tiếp").
+- Danh sách lượt hỏi của cuộc hội thoại hiện tại (`ConversationManager.currentConversation`
+  + lượt đang diễn ra):
+  - Bong bóng người dùng: chữ nhận dạng **cập nhật trực tiếp** khi đang nói, ảnh thu nhỏ (chạm để xem lớn).
+  - Thẻ trả lời: đoạn `ANSWER` nổi bật; các đoạn còn lại thành danh sách "Hướng làm", "Bước 1…n",
+    "Kiểm tra", "Kết luận". Đoạn đang đọc được tô sáng và tự cuộn tới; chữ đang đọc được gạch chân
+    theo `currentPieceRange`. Chạm một đoạn để đọc từ đó.
+  - Công thức hiển thị bằng bộ làm đẹp đơn giản (`MathPrettyText`, thuần): `x^2` → x², `\sqrt{x}` → √x,
+    `\frac{a}{b}` → a/b, `\le` → ≤, `\pi` → π… Không dùng KaTeX/WebView.
+- Thanh điều khiển đọc (hiện khi có `ReadingPlan`): ⏮ bước trước, ⏯ tạm dừng/tiếp, ⏭ bước tiếp,
+  🔁 đọc lại bước, chip tốc độ (0,75× / 1× / 1,25× / 1,5×), chip chế độ (Đáp án / Tóm tắt / Chi tiết / Tự động).
+- Ô soạn: nút mic (bắt đầu/dừng phiên), nút chụp từ kính, ô gõ câu hỏi. Gõ khi chưa có phiên thì tự
+  mở phiên; câu trả lời cho câu gõ được lưu Lịch sử (sửa N10).
+- Trạng thái trống: hướng dẫn 3 bước + danh sách kiểm tra (key Gemini, kính, quyền Ảnh, quyền Mic,
+  quyền Nhận dạng giọng nói), mỗi mục bấm để sửa.
+- `SwirlOrb` thu nhỏ thành biểu tượng trạng thái; bỏ `ParticleEffect` (rò rỉ Timer, N16).
+
+**Lịch sử**: danh sách (tìm kiếm, xoá); chi tiết hiển thị các lượt như màn hình Trực tiếp; mỗi câu
+trả lời có nút **Đọc lại** (dùng `ReadingRecord` đã lưu) và **Tiếp tục hội thoại** (`seedHistory` v2).
+
+**Cài đặt** (nhóm theo thứ tự):
+1. Kính Ray-Ban Meta (giữ nội dung hiện có).
+2. Gemini (key).
+3. Nghe: wake word, ngôn ngữ nghe, mic kính, tự kết thúc khi im lặng, âm báo.
+4. **Đọc câu trả lời**: giọng Việt, giọng Anh, tốc độ lời văn, tốc độ công thức, nghỉ giữa các bước,
+   nghỉ sau công thức, chế độ đọc, đọc chép (+ tự đi tiếp sau N giây, đọc công thức hai lần),
+   nút kính khi đang đọc. Có nút **Nghe thử** đọc một lời giải mẫu 3 bước với cài đặt hiện tại.
+5. **Đọc toán tiếng Việt**: kiểu đọc (tự nhiên / rõ ràng), phân số chữ ("trên" / "phần"), số âm
+   ("âm" / "trừ"), tên chữ cái, **Từ điển phát âm** (thêm / sửa / xoá / khôi phục mặc định),
+   **Thử đọc**: ô nhập công thức hoặc chọn mẫu (15 mẫu ở mục 7, H13), nút nghe, hiện văn bản sẽ đọc.
+6. Trợ lý: hướng dẫn riêng, ghi nhớ.
+7. **Gỡ lỗi** (mục 4.7).
+8. Giới thiệu: phiên bản app, phiên bản DAT SDK, model đang dùng, link repo đúng (sửa N16).
+
+Bỏ khỏi Cài đặt: "Hiện hội thoại trên màn hình" (`showTranscripts`) → thay bằng "Ẩn chữ, chỉ nghe"
+trong Đọc câu trả lời (giữ key cũ để decode không lỗi).
+
+**Onboarding**: sửa chữ cho đúng sản phẩm mới (không còn "iPhone hiện lời giải có công thức");
+trang cuối là danh sách quyền và thiết lập, mỗi dòng có nút cấp/mở.
+
+Chung: token giao diện (cỡ chữ, khoảng cách, bo góc) đưa vào `Theme`; hỗ trợ Dynamic Type; mọi nút
+điều khiển có nhãn VoiceOver tiếng Việt.
+
+### 4.6 Cài đặt mới trong `AppSettings`
+Quy tắc (do N18): **mọi lựa chọn kiểu enum lưu dưới dạng `String`** với giá trị mặc định, và có thuộc
+tính tính toán trả về enum (giá trị lạ → mặc định). Không thêm enum `Codable` mới trực tiếp vào
+`AppSettings`. Số thực được kẹp trong khoảng ở chỗ đọc. Mở rộng `testOlderSettingsFilesStillDecode`.
+
+| Key | Kiểu | Mặc định | Khoảng / giá trị | Ý nghĩa |
+|---|---|---|---|---|
+| `speechRate` (đã có) | Float | 0.5 | 0.35–0.6 | Tốc độ lời văn |
+| `readingMode` | String | `"auto"` | `answerOnly`, `summary`, `detailed`, `auto` | Chế độ đọc (D1) |
+| `mathRateFactor` | Double | 0.85 | 0.6–1.0 | Hệ số tốc độ cho mẩu công thức |
+| `pauseBetweenSteps` | Double | 0.8 | 0–3 s | Nghỉ giữa các đoạn |
+| `pauseAfterFormula` | Double | 0.3 | 0–1.5 s | Nghỉ sau mỗi công thức |
+| `dictationMode` | Bool | false | | Đọc chép: dừng sau mỗi bước |
+| `dictationAutoContinue` | Double | 0 | 0 (chờ lệnh) – 30 s | Tự đi tiếp |
+| `repeatFormulaInDictation` | Bool | false | | Đọc công thức hai lần khi đọc chép |
+| `mathVerbosity` | String | `"natural"` | `natural`, `explicit` | Kiểu đọc toán |
+| `symbolicFractionWord` | String | `"tren"` | `tren`, `phan` | "a trên b" hay "a phần b" |
+| `negativeWord` | String | `"am"` | `am`, `tru` | "âm 3" hay "trừ 3" |
+| `letterStyle` | String | `"asWritten"` | `asWritten`, `vietnameseNames` | Tên chữ cái (D3, S7) |
+| `pronunciationOverrides` | [String: String] | [:] | | Từ điển phát âm của người dùng |
+| `readingButtonActions` | Bool | false | | Nút kính điều khiển đọc (D4) |
+| `hideTextSpeakOnly` | Bool | false | | Ẩn chữ trên màn hình Trực tiếp |
+| `debugOverlay` | Bool | false | | Lớp phủ gỡ lỗi trên Trực tiếp |
+| `verboseLogging` | Bool | false | | Log chi tiết (kể cả văn bản đọc) |
+
+### 4.7 Gỡ lỗi
+- `AppLog` (file mới `OpenVision/Utilities/Helpers/AppLog.swift`): `AppLog.info(.gemini, "…")`,
+  `.debug/.warning/.error`. Ghi vào `os.Logger(subsystem: bundleID, category:)` **và** một bộ đệm vòng
+  2000 dòng trong bộ nhớ (`@Published`) cho màn hình log. Danh mục: `app, glasses, gemini, voice,
+  tts, reading, audio, photo, settings, history`. Không bao giờ ghi key hay token.
+- Màn hình **Log**: lọc theo danh mục và mức, tìm kiếm, tạm dừng cuộn, sao chép, **Xuất log** (.txt
+  qua share sheet). Có thêm nút gộp log SDK Meta (dùng `OSLogStore` như `dumpSDKLogs`).
+- Màn hình **Lượt hỏi**: từ `MetricsCollector.recentTurns` → thời gian từ nói xong tới token đầu,
+  tới tiếng đầu, tổng thời gian đọc, model, số đoạn, số mẩu, nguồn và kích thước ảnh, bị ngắt hay không.
+  Sửa N15: lượt không có tiếng đọc phải được đóng (`abandonTurn`).
+- Màn hình **Câu trả lời thô**: văn bản Gemini trả về, các đoạn đã tách, văn bản thực sự được đọc
+  cho từng mẩu, cảnh báo của bộ đọc toán (lệnh lạ).
+- **Lớp phủ trên Trực tiếp**: `agentState`, trạng thái `VoiceCommandService`, trạng thái `ReadingEngine`,
+  tuyến âm thanh (mic/loa), lỗi gần nhất.
+
+### 4.8 Những thứ bị gỡ bỏ
+`SolutionView.swift` (SolutionWebView, SolutionSheet, SolutionButton, SolutionItem); thư mục
+`Resources/SolutionRenderer` (KaTeX, marked, fonts, giấy phép) và khai báo của nó trong `project.yml`
++ pbxproj; `latestSolution`, `solutionWorthShowing`; nhánh DISPLAY của `parseDualChannel`,
+`generateSpokenSummary` (câu "xem trên điện thoại"), `dualChannelFromHistory`, `streamingSpokenPrefix`
+(thay bằng `AnswerFormat`); nút "Xem công thức" trong Lịch sử; chữ onboarding về lời giải trên màn
+hình; dòng ghi công KaTeX/marked trong README; các test và check guard gắn với DISPLAY (thay bằng bản v2).
+`SpokenMath` được thay bằng `VietMathSpeech` + `EnglishMathReader`.
 
 ---
 
 ## 5. Kế hoạch theo phase
 
-Mỗi task ghi: **Việc cần làm**, **Không làm**, **Xong khi**. Sau mỗi task: chạy guard ở local,
-commit, push, chờ CI (mục 9).
+Mỗi task: **Việc**, **Không làm**, **Xong khi**. Sau mỗi task: guard local, commit, push, chờ CI.
 
-### Phase 0: nền móng (không đổi hành vi app)
+### Phase 2: hạ tầng (không đổi hành vi app)
 
-**T0.1: Cho script E2E chạy được (B1)**
-- Việc: `git update-index --chmod=+x scripts/e2e/run-simulator-tests.sh` và `chmod +x` file đó.
-- Xong khi: `git ls-files -s scripts/e2e/run-simulator-tests.sh` bắt đầu bằng `100755`; job
-  `Blueprint E2E (iOS simulator)` không còn `Permission denied`. **Ghi lại danh sách test fail**
-  (dự kiến có ít nhất các test ở B2, B3). Chưa sửa ở task này.
-- Nếu job fail vì lý do hạ tầng (không tìm thấy simulator iOS 18+, xcbeautify…): sửa
-  `scripts/e2e/run-simulator-tests.sh` hoặc `e2e.yml` tối thiểu để chạy được, ghi lý do trong commit.
+**T2.1 Script đăng ký file Swift vào pbxproj**
+- Việc: `scripts/pbxproj_files.py add <path>` / `remove <path>`. File dưới `OpenVision/` vào target app
+  (Sources phase `5B369180DFE2DD0B99684491`), dưới `OpenVisionTests/` vào target test
+  (`4082EAA7B9C9E911E29F7B44`). Thêm đủ 4 mục (PBXBuildFile, PBXFileReference, con của group, mục
+  trong Sources phase); tạo PBXGroup nếu thư mục chưa có (ví dụ `Services/Speech`). ID 24 ký tự hex
+  in hoa, sinh tất định từ SHA-1 của đường dẫn, kiểm tra không trùng. Lệnh chạy lại không đổi gì.
+  Có `--self-test` chạy trên bản sao tạm của pbxproj: thêm rồi xoá một file giả, kết quả phải giống hệt ban đầu.
+- Guard: check `project` thêm chiều ngược lại: mọi `path = X.swift;` trong pbxproj phải có file thật.
+- Xong khi: `--self-test` pass ở local; guard xanh; CI build xanh.
 
-**T0.2: Sửa tham chiếu tới tài liệu đã xoá**
-- Việc: các file sau còn nhắc `MASTER_HANDOVER_BLUEPRINT.md`, `docs/testing/E2E_TEST_PLAN.md`,
-  `docs/architecture/ADR-001-solver-pipeline.md`, `docs/architecture.md`, `SETUP.md`, `CLAUDE.md`:
-  `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.github/pull_request_template.md`, `Makefile`,
-  `.github/workflows/e2e.yml`, `scripts/blueprint/verify_blueprint.py`,
-  `scripts/blueprint/verify_ipa_symbols.sh`, `scripts/e2e/run-simulator-tests.sh`,
-  `OpenVision/Views/VoiceAgent/VoiceAgentViewModel.swift`,
-  `OpenVision/Services/GeminiLive/GeminiLiveService.swift`, `OpenVisionTests/BlueprintSolverTests.swift`,
-  `OpenVisionTests/BlueprintGeminiE2ETests.swift`. Thay bằng `PLAN.md` (ví dụ "see PLAN.md §7")
-  hoặc bỏ câu đó. Chỉ sửa comment/chuỗi, **không sửa logic**.
-- Xong khi: `grep -rnE "MASTER_HANDOVER|E2E_TEST_PLAN|ADR-001|docs/architecture|SETUP\.md|CLAUDE\.md" --exclude-dir=.git .`
-  chỉ còn kết quả trong `PLAN.md`. (Trong `CHANGELOG.md`, các mục lịch sử cũ chỉ cần bỏ link,
-  giữ nội dung.)
+**T2.2 CI chạy mọi suite test (N13)**
+- Việc: trong `run-simulator-tests.sh`, chế độ `blueprint` chạy thêm `SettingsSecretsTests`,
+  `TextChunkingTests` và mọi suite mới của plan này (liệt kê tường minh). `GeminiLiveSmokeTests` tự skip.
+- Xong khi: log E2E có dòng "Executed" cho từng suite, 0 fail.
 
-**T0.3: Info.plist (B13)**
-- Việc: `armv7` → `arm64`. Xoá `NSAllowsArbitraryLoads`, giữ `NSAllowsLocalNetworking = true`
-  (DAT có thể cần mạng nội bộ tới kính). Không đổi key nào khác.
-- Xong khi: guard xanh, CI build xanh.
+**T2.3 Test thư viện Ảnh không bị skip (N1)**
+- Việc: tìm nguyên nhân (in `PHPhotoLibrary.authorizationStatus` trong `setUp`, kiểm tra
+  `xcodebuild test-without-building` có cài lại app sau `simctl privacy grant` không). Sửa tối thiểu.
+- Xong khi: 3 test `BlueprintPhotoLibraryE2ETests` được chạy (không skip) và pass. Nếu sau 2 lần thử
+  vẫn không được: ghi rõ nguyên nhân trong PR và chuyển sang task sau.
 
-**T0.4: Không in config ra log (B14)**
-- Việc: trong `build-ipa.yml`, bỏ `cat Config.xcconfig`; chỉ in "Configuration files verified".
-- Không làm: chưa thêm secret Team ID / Meta ID vào CI (xem spike S5).
+**T2.4 `AppLog` và chuyển log**
+- Việc: tạo `AppLog` (4.7). Thay `print(`/`NSLog(` bằng `AppLog` trong: `VoiceAgentViewModel`,
+  `GeminiLiveService`, `TTSService`, `VoiceCommandService`, `GlassesManager`, `AudioSessionManager`,
+  `OpenVisionApp`. Giữ nguyên nội dung thông điệp. Thông điệp có văn bản người dùng chỉ ghi khi
+  `verboseLogging` bật.
+- Guard: check mới, các file trên không còn `print(` / `NSLog(` (bỏ qua comment).
+- Xong khi: guard xanh, CI xanh, log khởi động trong E2E vẫn hiện thông điệp của app.
 
-### Phase 1: gỡ hồi quy để CI xanh
+**T2.5 Không crash khi SDK kính không khởi tạo được (N2)**
+- Việc: `OpenVisionApp` ghi kết quả `Wearables.configure()` vào một cờ dùng chung
+  (ví dụ `WearablesBootstrap.configureError`). `GlassesManager` lấy `Wearables.shared` **lười**, chỉ sau
+  khi cấu hình thành công; nếu lỗi thì mọi hàm trả về sớm và đặt `errorMessage`
+  "SDK kính chưa khởi tạo được: <lỗi>". Cài đặt → Kính hiện thông báo này.
+- Kiểm chứng: bản Debug đọc biến môi trường `OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1` để bỏ qua
+  `configure()`. `launch_smoke` trong `run-simulator-tests.sh` chạy thêm một lần với biến này
+  (`SIMCTL_CHILD_OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1 xcrun simctl launch …`).
+- Xong khi: CI xanh; console của lần khởi động có biến này **không** có `Fatal error`, và có dòng
+  "SDK kính chưa khởi tạo được".
 
-**T1.1: TTL ảnh 120 s / 5 lần (B2)**
-- Việc: `CapturedPhotoContext.ttl = 120.0`, `maxUses = 5`; sửa doc comment cho đúng.
-- Xong khi: `testPhotoContextLivesFor120SecondsAndFiveQuestions` pass.
+### Phase 3: module đọc toán tiếng Việt (4.3)
+Làm trước Phase 4 để khi bỏ DISPLAY, công thức đã được đọc đúng ngay từ đầu. Cuối phase này module
+được nối vào `TTSService` (T3.3), nên cả câu trả lời dạng cũ (SPOKEN) cũng hưởng lợi.
 
-**T1.2: Không gửi lại ảnh đã có trong lịch sử (B3)**
-- Việc: trong `GeminiLiveService.performTurn`, khôi phục khối của `418a993`
-  (`git show 418a993:OpenVision/Services/GeminiLive/GeminiLiveService.swift`, quanh dòng 228):
-  nếu `historyContainsImage` và `imageFingerprintInHistory == PhotoPayload.fingerprint(prepared)`
-  thì `prepared = nil` và log `Photo already in conversation history — not re-uploading`. Xoá
-  comment "always attach it…". Giữ nguyên nhánh `.staleSignature` (nó gắn lại `fullUpload`).
-- Xong khi: `testFollowUpOnTheSamePhotoKeepsContextWithoutReuploading` và
-  `testANewPhotoIsUploadedAgain` pass.
-
-**T1.3: Kích thước upload 3072 px q0.85 (B10)**
-- Việc: `PhotoPayload.uploadMaxDimension = 3072`, `uploadQuality = 0.85`; sửa comment.
-- Xong khi: test trong `BlueprintSolverTests` / `BlueprintGeminiE2ETests` về kích thước ảnh pass.
-
-**T1.4: Chỉ một cơ chế quyết định có cần ảnh: `[[CAPTURE]]` (B4, B5, B7)**
-- Việc trong `VoiceAgentViewModel.sendCommand`:
-  - Xoá nhánh `isVisual` (gọi `acquireGlassesPhoto` khi có từ khoá) và nhánh quét nhanh 1 s.
-  - Ảnh gửi đi **chỉ** lấy từ `activePhotoContext` khi `isFresh` (tăng `useCount`).
-    `currentTranscriptPhotoData` chỉ dùng cho UI: gán bằng ảnh thực sự gửi đi (hoặc `nil`).
-  - Giữ: lệnh dừng, chống trùng lệnh 4 s, vòng chờ `glassesManager.isTakingPhoto` (sẽ thay ở T3.1),
-    `ConversationManager.addUserMessage`, `sendRESTMessage`, `handleSendFailure`.
-- Xoá `SolverIntent.requiresAttachedPhoto` và `scripts/test_e2e_photo_flow.py`.
-- Guard: trong `verify_blueprint.py`, check `workflow` "verbatim" phải fail nếu
-  `VoiceAgentViewModel.swift` chứa `requiresAttachedPhoto` hoặc `visualPhrases` (bên cạnh
-  `visualKeywords` hiện có).
-- Không làm: không thêm danh sách từ khoá mới dưới tên khác.
-- Xong khi: guard xanh; toàn bộ test Blueprint trên simulator xanh. Hardware: H6, H12.
-
-### Phase 2: nâng DAT SDK lên 1.1.0 (B15)
-
-**T2.1**
-- Việc: `project.yml` → `exactVersion: "1.1.0"`; `project.pbxproj` → khối
-  `XCRemoteSwiftPackageReference "meta-wearables-dat-ios"` `version = 1.1.0;`. Sửa comment pin trong
-  `project.yml` (bỏ đoạn mô tả 1.0.1, thêm 1 dòng về 1.1.0).
-- Xử lý API mới (chỉ những gì cần để compile + báo lỗi rõ):
-  - `GlassesManager.register()`: bắt `RegistrationError.unauthorized` → `errorMessage =
-    "Meta chưa cho phép app này đăng ký. Kiểm tra App ID, Bundle ID và Team ID trong Wearables Developer Center."`
-  - `GlassesManager.startSession`: lỗi `DeviceSessionError.notRegistered` → `report("Chưa đăng ký với Meta AI")`.
-  - Nếu code `switch` trên các enum lỗi này mà không có `default`, thêm case mới.
-- Không làm: chưa dùng `pause()/resume()`.
-- Xong khi: CI build + E2E xanh. Nếu không resolve được package qua URL `facebook/…`, đổi sang
-  `https://github.com/meta/meta-wearables-dat-ios` ở cả hai file. Hardware: H1, H9.
-
-### Phase 3: đường lấy ảnh
-
-**T3.1: Một lần chụp dùng chung (B9)**
-- Việc trong `GlassesManager`:
-  - Thêm `private var captureTask: Task<Data?, Never>?`.
-  - `captureFullResolutionPhoto(fullResolution:timeout:)`: nếu `captureTask != nil` thì
-    `return await captureTask!.value` (dùng chung kết quả) thay vì trả `nil`. Nếu không, tạo task
-    chạy phần thân hiện tại, gán `captureTask`, `await`, rồi đặt `captureTask = nil`.
-    `isTakingPhoto` vẫn phản ánh "đang có task".
-- Việc trong `VoiceAgentViewModel`: bỏ vòng poll `isTakingPhoto` ở đầu `acquireGlassesPhoto` và
-  ở bước 1 của `sendCommand` (gọi thẳng `acquireGlassesPhoto` / dùng `activePhotoContext`).
-- Xong khi: CI xanh. Không còn vòng `while glassesManager.isTakingPhoto` nào trong ViewModel.
-
-**T3.2: Thứ tự nguồn ảnh theo cài đặt, timeout đúng, ghi nguồn (B8)**
-- Việc trong `GlassesManager.captureFullResolutionPhoto`:
-  - Thêm `@Published private(set) var lastPhotoSource: String = ""` (giá trị:
-    `"camera.photo full"`, `"camera.photo large"`, `"stream still"`, `"video frame"`).
-  - Sau khi lấy được ảnh: đọc kích thước bằng `PhotoPayload.imageInfo(data)` và log
-    `[GlassesManager] Photo: <source> <w>x<h> <bytes> bytes in <s> s`.
-  - `fullResolution == true` (người dùng chọn ảnh nét tối đa): thử **`Camera.photo` trước** theo
-    trình tự hiện có (đánh thức bằng stream → `photo.start()` → chờ `.started` → dừng stream → chờ
-    `.stopped` → `capturePhoto(resolution: .full, quality: .high)`). Chờ ảnh tới `timeout`
-    (mặc định **75 s**). Mỗi sự kiện `transferProgressPublisher` cập nhật một mốc "lần cuối có tiến
-    độ"; huỷ sớm nếu **15 s** không có tiến độ. Lỗi thì rơi xuống stream still.
-  - `fullResolution == false` (mặc định mới): **stream still trước**, chờ tối đa **10 s**; rồi tới
-    video frame. Không thử `Camera.photo`.
-  - Bỏ dòng `fullPhotoFailures = 0` ở đầu hàm. Chỉ reset trong `endSession()` và
-    `resetPhotoFailures()`. Khi `fullPhotoFailures >= 2`, bỏ qua `Camera.photo` trong session đó.
-  - Bỏ timeout cứng 3 s bên trong `withCheckedContinuation`; dùng cơ chế timeout ở trên.
-  - Giữ chuỗi `.photo.capturePhoto(resolution:` (guard kiểm tra).
-- Xong khi: CI xanh. Hardware: H9 (đo cả hai chế độ), H1.
-
-**T3.3: Mặc định và nhãn Settings trung thực**
-- Việc: `AppSettings.fullResolutionPhotos = false`. Trong `GlassesSettingsView.photoSection`:
-  tiêu đề "Ảnh nét tối đa (12 MP)"; phụ đề khi bật: "Rất chậm qua Bluetooth, có thể 30–60 giây";
-  khi tắt: "Nhanh (~1–2 giây), ảnh từ luồng camera". Kết quả "Chụp thử" hiển thị thêm
-  `glassesManager.lastPhotoSource`, ví dụ `1440×1080 · 1.2 s · stream still`.
+**T3.1 Tách mẩu, lexer, parser, AST**
+- Việc: `MathSpanSplitter`, `MathLexer`, `MathParser`, `MathNode` trong `Services/Speech/`.
+- Test (`OpenVisionTests/VietMathParserTests.swift`): mỗi cấu trúc ở bảng 4.3 parse ra đúng cây;
+  ngoặc thiếu, lệnh lạ, chuỗi rỗng không crash.
 - Xong khi: CI xanh.
 
-**T3.4: Đơn giản hoá `acquireGlassesPhoto` (B9)**
-- Việc: logic mới:
-  1. Nếu `isRecording` (stream đang được ghi hình dùng): `capturePhotoFromGlasses()` (stream still
-     trên stream đang chạy), nâng thời gian chờ trong đó từ 1,5 s lên 10 s.
-  2. Ngược lại: `glassesManager.captureFullResolutionPhoto(fullResolution: settings.fullResolutionPhotos)`
-     nếu `glassesManager.isRegistered`.
-  3. Nếu vẫn `nil`: `RecentPhotoScanner.shared.fetchMostRecentPhoto()` (một lần, **không** vòng chờ 30 s).
-- Xoá `takeGlassesPhoto()`, `freshLiveFrame()`, `RecentPhotoScanner.waitForFullResolutionGlassesPhoto`,
-  `waitForRecentGlassesPhoto` nếu không còn ai gọi.
-- Xong khi: CI xanh. Thời gian xấu nhất khi không có ảnh (chế độ nhanh) ≲ 30 s (mở session 15 s +
-  stream 8 s + still 10 s). Ghi con số ước tính trong PR.
-
-**T3.5: Camera Roll chỉ đọc album của Meta (B6)**
-- Việc trong `RecentPhotoScanner.newestImageAsset`:
-  - Chỉ tìm trong album có tiêu đề chứa `meta`, `ray-ban` hoặc `stories` (không phân biệt hoa thường).
-  - Xoá toàn bộ bước 2 (quét thư viện chung, luật tỉ lệ 4032×3024, luật ≥ 1200 px).
-  - Nếu không có album Meta nào: log **một lần** danh sách tiêu đề album người dùng có (để chẩn đoán)
-    rồi trả `nil`.
-- Hệ quả: `photoLibraryDidChange` / `onPhotoArrived` chỉ còn kích hoạt với ảnh từ album Meta. Giữ
-  `recentPhotoWindow = 120` và `requestImageDataAndOrientation` (guard lesson 6).
-- Sửa `OpenVisionTests/BlueprintPhotoLibraryE2ETests.swift` cho khớp: helper `addToLibrary` nhận
-  thêm tham số `album: String?`; khi có, tạo (hoặc tìm) album đó bằng
-  `PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle:)` và thêm asset vào.
-  Hai test hiện có dùng album `"Meta AI"`. Thêm test mới: ảnh 4032×3024 vừa tạo **không** thuộc
-  album nào thì `fetchMostRecentPhoto()` phải trả `nil` (hoặc ảnh khác, không phải ảnh này).
-- Xong khi: guard xanh; cả ba test trong `BlueprintPhotoLibraryE2ETests` pass trên simulator.
-  Hardware: H12, và H1 khi dùng đường Camera Roll.
-
-### Phase 4: giọng nói và âm thanh
-
-**T4.1: Nhận dạng trên máy khi có thể (B11)**
-- Việc trong `configureRecognitionRequest`: nếu `speechRecognizer?.supportsOnDeviceRecognition == true`
-  thì `request.requiresOnDeviceRecognition = true`. Log một lần cho mỗi locale:
-  `[VoiceCommand] on-device recognition for <locale>: yes/no`.
-- Xong khi: CI xanh. Hardware: H1, H10 (ghi lại vi-VN có hỗ trợ on-device không).
-
-**T4.2: `taskHint` theo trạng thái (B11)**
-- Việc: `.search` khi `state == .idle` (chờ wake word); `.dictation` khi `.listening` /
-  `.conversationMode`. Truyền trạng thái vào `configureRecognitionRequest` (thêm tham số).
-- Lưu ý: request được tạo lại trong `restartRecognition()`, `enterConversationMode()` gọi
-  `restartRecognition()` **trước** khi đổi `state`. Đặt `state` trước khi restart, hoặc truyền
-  trạng thái đích vào. Không đổi thứ tự ngoài chỗ này.
+**T3.2 `VietnameseMathReader` + `PronunciationDictionary` + `MathReadingStyle`**
+- Việc: luật đọc theo bảng 4.3, cả hai kiểu `natural` / `explicit`; từ điển mặc định (hàm số, chữ Hy
+  Lạp, đơn vị, tên chữ cái) + ghi đè từ `pronunciationOverrides`.
+- Test (`OpenVisionTests/VietMathSpeechTests.swift`): bảng dữ liệu **≥ 80 ca** (đầu vào → câu đọc mong
+  đợi), gồm mọi dòng của bảng 4.3 và 15 mẫu ở H13; ghi đè từ điển có hiệu lực; tên chữ cái theo
+  `letterStyle`.
 - Xong khi: CI xanh.
 
-**T4.3: Bỏ biến thể wake word dễ nhầm (B12)**
-- Việc: xoá `"a vision"`, `"have vision"`, `"heavy vision"`, `"obey vision"` khỏi
-  `wakeWordVariations`. Giữ các biến thể guard yêu cầu (`"ô kê vi dơn"`, `"ok vi dơn"`, `"vi dơn"`,
-  `"ok vision"`).
-- Xong khi: `testWakeWordIsStrippedInEitherLanguage` pass, guard xanh.
+**T3.3 Lời văn, số, đơn vị, tiếng Anh; sửa thứ tự xử lý (N4)**
+- Việc: chuẩn hoá số (thập phân dấu phẩy trong câu tiếng Việt, số âm), đơn vị, ký hiệu Unicode trong lời
+  văn; `EnglishMathReader` (chuyển từ `SpokenMath`). Trong `TTSService`: `VietMathSpeech.render` chạy
+  **trước**; `cleanSpokenAudio` chỉ còn là lưới an toàn bỏ thẻ và markdown, **không** xoá nghĩa toán,
+  **không** xoá dấu `-` đầu dòng, không xoá `*` giữa số. Giữ `static func cleanSpokenAudio` và lời gọi
+  `cleanSpokenAudio(text)` (guard lesson 5, ký hiệu IPA).
+- Test: các ca hồi quy N4 (`\frac{1}{2}`, `\sqrt{x}`, `x \le 2`, "-2x + 4 = 0", "2*3*4").
+- Xong khi: CI xanh; `testCleanSpokenAudio…` được cập nhật đúng hành vi mới.
 
-**T4.4: Kiểm tra âm thanh sau khi chụp (DAT #256/#358)**
-- Việc: trong `VoiceAgentViewModel`, sau mỗi lần `acquireGlassesPhoto` trả về (có ảnh hay không),
-  log `AVAudioSession.sharedInstance().currentRoute` (input/output portName + portType) và
-  `isOtherAudioPlaying`, rồi gọi `configureAudioForGlasses(forceRestart: false)`.
-- Không làm: không đổi category/mode/options, không tự `setActive(false)`. Nếu H11 cho thấy kính
-  im lặng sau khi chụp, ghi vào PR để chủ dự án quyết định bước tiếp.
-- Xong khi: guard xanh, CI xanh. Hardware: H2, H11.
+**T3.4 Kiểm tra độ bền**
+- Việc: test sinh 1000 chuỗi ngẫu nhiên (seed cố định) gồm ký tự LaTeX, Unicode toán, chữ Việt.
+- Xong khi: không crash; đầu ra không chứa `\ $ { } ^ _`; mỗi mẩu ≤ 200 ký tự; tổng thời gian < 2 s.
 
-### Phase 5: tài liệu khớp code (B16)
+### Phase 4: định dạng trả lời v2, bỏ DISPLAY
 
-**T5.1 README.md**: viết lại ngắn gọn, đúng sự thật: app làm gì; ảnh mặc định là stream still
-(~1–2 s), 12 MP là tuỳ chọn chậm; tính năng experimental cần Developer Mode; yêu cầu và thiết lập
-(copy từ mục 8); giới hạn đã biết (mục 2.1, 2.2); lệnh test. Bỏ link tới file đã xoá.
+**T4.1 Prompt v2**
+- Việc: viết lại `buildSystemPrompt(readingMode:)` theo 4.2. Giữ nguyên các phần ảnh, `[[CAPTURE]]`,
+  `[[END]]`, ngôn ngữ, kiểm tra lại kết quả toán, ngày giờ, hướng dẫn riêng, ghi nhớ. Bỏ hẳn
+  "DUAL-CHANNEL", `SPOKEN:`, `DISPLAY:`, "2 to 4 complete sentences", "phone screen". Sửa N17.
+- Guard (sửa `verify_blueprint.py`): thay check "2 to 4 complete sentences" và "SPOKEN:/DISPLAY:"
+  bằng: prompt chứa `ANSWER:` và `STEP 1:`; không chứa `DISPLAY:`; không chứa "phone screen".
+  Giữ check "language the user used", "under 250 characters" (không có), `captureToken`.
+- Test: thay `testSystemPromptKeepsTheDualChannelContractAndIsBilingual` bằng bản v2 (mỗi chế độ đọc
+  sinh đúng câu chỉ dẫn).
+- Xong khi: guard xanh, CI xanh.
 
-**T5.2 CONTRIBUTING.md**: bỏ phần lỗi thời (OpenClaw, link `rayl15`, thư mục `Tests/`,
-`CLAUDE.md`, `AIBackend` factory, `NativeTool`). Giữ quy ước branch, commit, PR, CI. Ghi: "Kế hoạch
-và hiện trạng: PLAN.md".
+**T4.2 `AnswerFormat` (parser v2)**
+- Việc: file mới `OpenVision/Services/Speech/AnswerFormat.swift` (thuần): `parse(_ raw:) -> [AnswerSection]`
+  và `completedSections(in accumulated:) -> [AnswerSection]` cho stream (4.2). `GeminiLiveService` gọi
+  callback mới `onPartialSections([AnswerSection])` thay cho `onPartialSpoken`. Mất kết nối giữa chừng:
+  giữ câu trả lời nếu đã có `ANSWER` (thay điều kiện dùng `parseDualChannel` hiện nay).
+- Test: chuyển các test parser cũ sang v2: biến thể thẻ, chữ "display"/`\displaystyle` trong nội dung
+  không cắt câu, tính "tiền tố" khi stream (mỗi kết quả trung gian là tiền tố của kết quả cuối),
+  `[[END]]` không bao giờ bị đọc, câu trả lời không thẻ, dòng nửa thẻ.
+- Xong khi: CI xanh.
 
-**T5.3 CHANGELOG.md**: thêm vào `[Unreleased]` các mục Fixed/Changed của đợt này (mỗi dòng một
-thay đổi, ngắn).
+**T4.3 Nối vào ViewModel (tạm thời, trước khi có ReadingEngine)**
+- Việc: `VoiceAgentViewModel` nhận đoạn, tạo `ReadingPlan`, đọc lần lượt từng đoạn qua hàng đợi TTS
+  hiện có (mỗi câu một utterance). App phải chạy được đầu–cuối sau task này.
+  Lịch sử: `addAssistantMessage` lưu **văn bản đọc** (nối các đoạn) và thêm trường tuỳ chọn
+  `reading: ReadingRecord?` vào `Message` (Optional, decode an toàn). `seedHistory` dựng lại dạng v2
+  (`ANSWER: <câu đầu>` …). `finishReason == MAX_TOKENS` → đoạn thông báo (N12).
+- Giữ: check guard lesson 4 (`.speaking` + `isBargeInPaused = true` trước khi xếp câu, cả đường stream).
+  Nếu tên hàm đổi, sửa check guard cho đúng tên mới, **không** bỏ check.
+- Logic dựng `ReadingPlan` và `ReadingRecord` từ các đoạn nằm trong kiểu thuần `ReplyAssembler`
+  (ViewModel chỉ gọi nó), vì `VoiceAgentViewModel` khó khởi tạo trong test (đụng kính và âm thanh).
+- Xong khi: CI xanh; test mới: câu trả lời v2 nhiều bước đi qua `GeminiStub` → `AnswerFormat` →
+  `ReplyAssembler` cho plan đúng thứ tự đoạn, và record đủ đoạn với `kind`, `title`, `displayText`.
 
-**T5.4 PR template**: thay tham chiếu `E2E_TEST_PLAN.md` bằng "PLAN.md §7 (H1–H12)"; bỏ "on-device MLX".
+**T4.4 Gỡ DISPLAY và bộ hiển thị KaTeX**
+- Việc: xoá mọi thứ ở 4.8 thuộc màn hình (dùng `scripts/pbxproj_files.py remove` cho
+  `SolutionView.swift`; xoá 4 dòng folder reference `SolutionRenderer` trong pbxproj bằng script hoặc
+  một hàm `remove-folder` của script; xoá thư mục; sửa `project.yml`). Sửa `VoiceAgentView`,
+  `ConversationListView`, onboarding cho hết tham chiếu.
+- Guard: bỏ check "DISPLAY channel is rendered (offline KaTeX)"; thêm check: không còn file
+  `SolutionView.swift`, thư mục `SolutionRenderer`, chuỗi `SolutionWebView`/`latestSolution` trong `OpenVision/`.
+- Xong khi: CI xanh; ghi kích thước IPA trước/sau trong PR (chạy Build Unsigned IPA).
 
-**T5.5 PLAN.md**: cập nhật mục 4 (đánh dấu lỗi nào đã sửa, commit nào), không xoá nội dung khác.
+### Phase 5: bộ máy đọc (4.4)
+
+**T5.1 TTSService: hàng đợi mẩu**
+- Việc: API xếp `SpeechPiece` với rate và `postUtteranceDelay` riêng; delegate `didPause`, `didContinue`,
+  `willSpeakRangeOfSpeechString` → tiến độ công khai; ngôn ngữ theo cả câu trả lời (N5). Giữ hàm cũ
+  cho thông báo ngắn (`speak`).
+- Xong khi: CI xanh; test `testSpokenAnswerPlaysCompletely…` vẫn pass (sửa cho định dạng v2).
+
+**T5.2 `ReadingEngine`**
+- Việc: kiểu dữ liệu, trạng thái, lệnh, chế độ, đọc chép (4.4); protocol `SpeechSynthesizing`.
+- Test (`OpenVisionTests/ReadingEngineTests.swift`, bản tổng hợp giả): thứ tự utterance, rate từng mẩu
+  (lời văn / công thức / hệ số trực tiếp), nghỉ giữa đoạn, pause/resume, next/previous/repeat ở biên,
+  đổi tốc độ giữa chừng đọc lại mẩu hiện tại, đọc chép chờ "tiếp" và tự đi tiếp sau N giây, nối đoạn
+  khi đang đọc, `stop` giữ kế hoạch.
+- Xong khi: CI xanh.
+
+**T5.3 Điều khiển bằng giọng khi đang đọc (N6–N9)**
+- Việc: `ReadingCommand.parse` (thuần) + thay đổi `VoiceCommandService` và ViewModel theo 4.4.
+- Test: `ReadingCommandTests` (hai ngôn ngữ, có/không wake word, câu hỏi mới không bị hiểu nhầm là lệnh,
+  "ok vision stop" vẫn dừng); test trạng thái: conversation timeout không chạy khi đang đọc.
+- Xong khi: CI xanh. Hardware: H14, H15, H16, H17.
+
+**T5.4 Nút kính khi đang đọc** (`readingButtonActions`, mặc định tắt). Hardware: H15.
+
+**T5.5 Đọc lại từ Lịch sử** bằng `ReadingRecord` (không gọi Gemini). Test: plan dựng lại từ record
+giống plan gốc.
+
+### Phase 6: giao diện (4.5)
+
+Không có Xcode để xem giao diện. Mỗi task UI: giữ view nhỏ, tách logic hiển thị ra struct thuần có
+test (ví dụ `MathPrettyText`, cách gom lượt hỏi), thêm `#Preview` cho từng view mới, và ghi trong PR
+"Cần chủ dự án xem giao diện trên máy (H18)".
+
+**T6.1 Nền tảng giao diện**: token cỡ chữ/khoảng cách/bo góc trong `Theme`; thành phần dùng chung
+`StatusChip`, `SegmentRow`, `PlaybackBar`, `MathPrettyText` (+ test); bỏ `ParticleEffect`, đổi nhãn tab
+sang tiếng Việt (N16).
+
+**T6.2 Màn hình Trực tiếp**: bố cục 4.5; gõ câu hỏi khi chưa có phiên (N10). Test: logic gom lượt hỏi
+(lượt đang diễn ra + các lượt đã lưu) và trạng thái chip.
+
+**T6.3 Lịch sử**: hiển thị đoạn, nút Đọc lại, Tiếp tục hội thoại. Lưu ảnh một lần cho mỗi ảnh (bản thu
+nhỏ 1024 px), không lặp lại theo từng câu hỏi (N11). Đọc `conversations.json` lỗi thì **đổi tên file
+cũ thành `.bak`** trước khi ghi file mới, không ghi đè mất dữ liệu (N11).
+
+**T6.4 Cài đặt**: sắp xếp lại theo 4.5; thêm 2 màn hình "Đọc câu trả lời" và "Đọc toán tiếng Việt"
+(Thử đọc, Từ điển phát âm, Nghe thử); thêm khoá ở 4.6; link repo đúng.
+
+**T6.5 Gỡ lỗi**: màn hình Log, Lượt hỏi, Câu trả lời thô, lớp phủ trên Trực tiếp, Xuất log (4.7); sửa
+lượt bị treo trong `MetricsCollector` (N15).
+
+**T6.6 Onboarding**: chữ mới + danh sách quyền và thiết lập.
+
+### Phase 7: ảnh và DAT (từ v1, giữ nguyên nội dung kỹ thuật)
+Phụ thuộc quyết định D2 (đường kết nối). Nếu kết quả H1/H9 của chủ dự án cho thấy ảnh đang chặn việc
+dùng app, có thể làm Phase 7 **trước** Phase 3–6 (ít đụng chung file, trừ `VoiceAgentViewModel`).
+
+- **T7.1** Nâng DAT 1.0.1 → 1.1.0 (`project.yml` + pbxproj), xử lý `RegistrationError.unauthorized`
+  ("Meta chưa cho phép app này đăng ký. Kiểm tra App ID, Bundle ID và Team ID trong Wearables
+  Developer Center.") và `DeviceSessionError.notRegistered`. (B15)
+- **T7.2** Một lần chụp dùng chung (`captureTask`), bỏ vòng poll `isTakingPhoto` trong ViewModel. (B9)
+- **T7.3** Thứ tự nguồn theo cài đặt: 12 MP bật → `Camera.photo .full` trước (timeout 75 s, huỷ nếu 15 s
+  không có tiến độ truyền); tắt (mặc định mới) → stream still 10 s rồi video frame. Ghi
+  `lastPhotoSource` và log `Photo: <nguồn> <w>x<h> <bytes> bytes in <s> s`. Bỏ reset
+  `fullPhotoFailures` mỗi lần gọi. Giữ chuỗi `.photo.capturePhoto(resolution:` (guard). (B8)
+- **T7.4** Mặc định `fullResolutionPhotos = false`; nhãn trung thực ("Rất chậm qua Bluetooth, 30–60 giây"
+  / "Nhanh, ~1–2 giây"); "Chụp thử" hiện nguồn ảnh.
+- **T7.5** `acquireGlassesPhoto` đơn giản: đang ghi hình → stream still (10 s); còn lại →
+  `captureFullResolutionPhoto`; nếu không có → quét Camera Roll **một lần**. Xoá `takeGlassesPhoto`,
+  `freshLiveFrame`, `waitForFullResolutionGlassesPhoto`, `waitForRecentGlassesPhoto` nếu không còn dùng. (B9)
+- **T7.6** Camera Roll chỉ đọc album có tên chứa `meta`, `ray-ban`, `stories`; bỏ luật 4032×3024 và
+  ≥ 1200 px; không có album Meta thì log một lần danh sách tên album. Sửa `BlueprintPhotoLibraryE2ETests`
+  (tham số `album`; thêm test ảnh ngoài album Meta **không** được nhận). (B6) Hardware: H12.
+- **T7.7** Sau mỗi lần chụp: log tuyến âm thanh + `isOtherAudioPlaying`, gọi
+  `configureAudioForGlasses(forceRestart: false)`. Không đổi category. Hardware: H11.
+
+### Phase 8: nghe giọng nói (từ v1)
+`T5.3` đã sửa `VoiceCommandService`; các task này phải dựa trên phiên bản sau `T5.3`.
+- **T8.1** `requiresOnDeviceRecognition = true` khi `supportsOnDeviceRecognition`; log một lần mỗi locale;
+  hiện trạng thái trên chip Mic. (B11) Hardware: H10.
+- **T8.2** `taskHint`: `.search` khi chờ wake word, `.dictation` khi đang nghe câu hỏi. Chú ý
+  `enterConversationMode()` gọi `restartRecognition()` trước khi đổi `state`. (B11)
+- **T8.3** Bỏ `"a vision"`, `"have vision"`, `"heavy vision"`, `"obey vision"` khỏi `wakeWordVariations`;
+  giữ các biến thể guard yêu cầu. (B12)
+
+### Phase 9: tài liệu khớp code
+- **T9.1** README: app làm gì (trả lời bằng giọng nói, đọc toán tiếng Việt, đọc chép), yêu cầu và thiết
+  lập (mục 8), giới hạn (2.1, 2.2, 2.4), lệnh test. Bỏ ghi công KaTeX/marked.
+- **T9.2** CONTRIBUTING: bỏ phần lỗi thời (OpenClaw, `rayl15`, `Tests/`, `AIBackend` factory,
+  `NativeTool`); giữ quy ước branch/commit/PR/CI; nhắc `scripts/pbxproj_files.py`.
+- **T9.3** CHANGELOG `[Unreleased]`: Added / Changed / Removed / Fixed của v2.
+- **T9.4** PR template: "PLAN.md §7 (H1–H19)".
+- **T9.5** PLAN.md: đánh dấu task nào xong ở commit nào (mục 3), không xoá nội dung khác.
 
 ---
 
-## 6. Spike cần chủ dự án duyệt (KHÔNG tự làm code sản phẩm)
+## 6. Quyết định của chủ dự án và spike
 
-Chỉ làm khi chủ dự án yêu cầu. Kết quả là một ghi chú ngắn (thêm mục mới vào PLAN.md hoặc mô tả PR):
-đã thử gì, kết quả, đề xuất.
-
-| ID | Nội dung | Vì sao |
+Quyết định (agent dùng giá trị mặc định ghi trong ngoặc cho tới khi chủ dự án trả lời):
+| ID | Câu hỏi | Mặc định tạm |
 |---|---|---|
-| S1 | `VoiceInvocation` (DAT, experimental): "Hey Meta, mở OpenVision" mở app từ kính | Gần nhất với việc Visor chiếm "Hey Meta"; có báo lỗi ở [#344](https://github.com/meta/meta-wearables-dat-ios/issues/344), [#355](https://github.com/meta/meta-wearables-dat-ios/issues/355) |
-| S2 | `MWDATSpeech`: nhận dạng giọng nói trên kính thay `SFSpeechRecognizer` + HFP | Bỏ được mic HFP chất lượng thấp; cần kiểm tra có hỗ trợ tiếng Việt không |
-| S3 | `SpeechAnalyzer` / `SpeechTranscriber` (iOS 26) cho vi-VN | Nhận dạng trên máy, câu dài; cần `#available` vì app hỗ trợ iOS 18 |
-| S4 | Model: so `gemini-3.5-flash-lite` với `gemini-3.5-flash` trên 20 bài toán thật (đúng/sai, độ trễ, quota) | Flash-Lite là bậc yếu nhất cho giải toán |
-| S5 | Đăng ký Meta sau khi Sideloadly ký lại: `MWDAT.TeamID` trong Info.plist đang rỗng (CI build với `DEVELOPMENT_TEAM=`). Có cần Team ID khớp không? | Có thể là lý do đăng ký thất bại; chưa xác minh |
-| S6 | Port giao thức Visor lên iOS qua BLE L2CAP (`CBPeripheral.openL2CAPChannel`, PSM 0x80) | Cách duy nhất để ngang Visor. Rất lớn; phải chiếm quyền owner bằng token trích từ Meta AI; rủi ro điều khoản/pháp lý; iOS không có Wi-Fi Direct |
+| D1 | Chế độ đọc mặc định: `auto`, `summary` hay `detailed`? | `auto` |
+| D2 | Kết nối kính: giữ Bluetooth Classic hay chuyển BLE + Wi-Fi (cần Hotspot Configuration, Wi-Fi info, bỏ `external-accessory`)? | Giữ Bluetooth Classic |
+| D3 | Tên chữ cái: để giọng đọc tự đọc chữ Latinh, hay đọc tên tiếng Việt (ích, i dài, dét…)? | Sau S7; tạm `asWritten` |
+| D4 | Nút kính điều khiển việc đọc khi đang đọc? | Tắt |
+| D5 | Màn hình chỉ hiện công thức dạng chữ làm đẹp đơn giản (không KaTeX). Đồng ý? | Đồng ý |
+| D6 | Chế độ `detailed` có dùng model mạnh hơn (`gemini-3.5-flash`) không? | Không (S4) |
+
+Spike (chỉ làm khi chủ dự án yêu cầu; kết quả là ghi chú trong PR hoặc mục mới ở đây):
+| ID | Nội dung |
+|---|---|
+| S1 | `VoiceInvocation` (DAT, experimental): "Hey Meta, mở OpenVision" |
+| S2 | `MWDATSpeech`: nhận dạng trên kính thay `SFSpeechRecognizer` + HFP |
+| S3 | `SpeechAnalyzer` / `SpeechTranscriber` (iOS 26) cho vi-VN |
+| S4 | So `gemini-3.5-flash-lite` với `gemini-3.5-flash` trên 20 bài tự luận (đúng/sai, độ trễ, quota) |
+| S5 | `MWDAT.TeamID` rỗng khi build CI + Sideloadly ký lại: có làm đăng ký thất bại không? |
+| S6 | Port giao thức Visor lên iOS qua BLE L2CAP (rất lớn, rủi ro điều khoản) |
+| S7 | Nghe thử giọng tiếng Việt bằng màn hình Thử đọc: chữ cái đứng riêng, số, thập phân, chữ Hy Lạp, "lốc", "cốt", "sin"; ghi lại chỗ sai để chỉnh từ điển mặc định |
+| S8 | SSML (`ssmlRepresentation`) cho nghỉ và nhấn giọng: có ổn với giọng vi-VN không? |
+| S9 | Đọc lời giải dài qua A2DP (rõ hơn HFP) mà không vi phạm lesson 2: có cách nào không? |
 
 ---
 
-## 7. Quy trình kiểm thử trên phần cứng (chủ dự án chạy)
+## 7. Kiểm thử trên phần cứng (chủ dự án chạy)
 
 Chuẩn bị: iPhone 15 Pro (iOS 18+), kính đã ghép đôi và bật Developer Mode, app cài bằng Sideloadly,
-quyền Ảnh = **Toàn bộ ảnh**. Mở Console.app trên Mac, lọc `OpenVision`.
+quyền Ảnh = Toàn bộ ảnh. Log xem trong Cài đặt → Gỡ lỗi → Log (sau T6.5), hoặc Console.app trên Mac.
 
-| # | Bước | Đạt khi | Log cần thấy |
-|---|---|---|---|
-| H1 | Nhìn đề toán, bấm nút chụp trên gọng, nói "Ok Vision, giải câu này" | Kính đọc lời giải, iPhone hiện LaTeX, không báo thiếu ảnh | `[GlassesManager] Photo: <source> <w>x<h>` → `[GeminiLive] Attached image payload` |
-| H2 | Nghe hết câu trả lời | Đọc 2–4 câu liền mạch, không đọc `$`, `\frac` | Không có `Stop command detected` khi đang đọc |
-| H3 | Quan sát thanh âm lượng và loa kính khi trả lời | Không nhảy, không tiếng click | |
-| H4 | Trong 120 s hỏi "Tại sao lại ra kết quả đó?" | Trả lời đúng ngữ cảnh | `Photo already in conversation history — not re-uploading` |
-| H5 | Bấm ghi hình POV khi đang hội thoại | App không đơ | `Using shared microphone tap` |
-| H6 | Không có ảnh, hỏi "giải câu này"; rồi hỏi "Thủ đô của Pháp là gì?" | Câu 1: app tự chụp (qua `[[CAPTURE]]`) rồi trả lời, hoặc nói không có ảnh. Câu 2: "Paris", không gắn ảnh | `Model asked to see — capturing a photo`; câu 2 không có `Attached image payload` |
-| H7 | Hỏi bằng tiếng Anh sau khi chụp | Trả lời và đọc bằng tiếng Anh | |
-| H8 | Mạng yếu (Network Link Conditioner 3G) | Có câu trả lời, hoặc kính nói "Mạng đang chậm…" trong ≤ 2 phút | `Sending request (attempt …)` |
-| H9 | Cài đặt → Kính → **Chụp thử**, 3 lần mỗi chế độ (nhanh / 12 MP) | Ghi lại kích thước, thời gian, nguồn | Kết quả trên màn hình |
-| H10 | Khoá màn hình, để iPhone trong túi, nói "Ok Vision…" và bấm nút chụp | Ghi lại cái gì chạy, cái gì không | |
-| H11 | Ngay sau một lần chụp, nghe câu trả lời qua kính; thử cả khi đang phát nhạc | Kính vẫn phát tiếng; ghi lại nhạc có bật lại không | Dòng log route sau khi chụp (T4.4) |
-| H12 | Chụp 1 ảnh bằng **camera iPhone**, rồi hỏi một câu không liên quan tới ảnh | Ảnh iPhone **không** được gửi | Không có `Attached image payload` |
+| # | Bước | Đạt khi |
+|---|---|---|
+| H1 | Nhìn đề toán, bấm chụp trên gọng, nói "Ok Vision, giải câu này" | Kính đọc đáp án; log có `Photo: <nguồn> <w>x<h>` và `Attached image payload` |
+| H2 | Nghe hết câu trả lời ở chế độ Tóm tắt | Đọc liền mạch, không đọc "đô la", "gạch chéo", tên lệnh LaTeX |
+| H3 | Quan sát thanh âm lượng và loa kính | Không nhảy, không tiếng click |
+| H4 | Trong 120 s hỏi "Tại sao lại ra kết quả đó?" | Trả lời đúng ngữ cảnh; log `not re-uploading` |
+| H5 | Ghi hình POV khi đang hội thoại | App không đơ |
+| H6 | Không có ảnh, hỏi "giải câu này"; rồi hỏi "Thủ đô của Pháp là gì?" | Câu 1: app tự chụp (`Model asked to see`) hoặc nói không có ảnh. Câu 2: "Paris", không gắn ảnh |
+| H7 | Hỏi bằng tiếng Anh sau khi chụp | Trả lời và đọc bằng tiếng Anh, công thức đọc bằng tiếng Anh |
+| H8 | Mạng yếu (Network Link Conditioner 3G) | Có câu trả lời, hoặc kính nói "Mạng đang chậm…" trong ≤ 2 phút |
+| H9 | Cài đặt → Kính → Chụp thử, 3 lần mỗi chế độ | Ghi kích thước, thời gian, nguồn |
+| H10 | Khoá màn hình, iPhone trong túi, nói "Ok Vision…" và bấm chụp | Ghi lại cái gì chạy, cái gì không |
+| H11 | Ngay sau một lần chụp, nghe câu trả lời; thử cả khi đang phát nhạc | Kính vẫn phát tiếng |
+| H12 | Chụp 1 ảnh bằng camera iPhone, rồi hỏi câu không liên quan | Ảnh iPhone không được gửi |
+| H13 | Cài đặt → Đọc toán → Thử đọc 15 mẫu dưới đây, nghe qua kính | Đúng câu mong đợi, nghe rõ; ghi lại chỗ sai |
+| H14 | Chế độ Chi tiết, bài tự luận ≥ 5 bước | Đọc hết, không bị cắt sau 30 s, mic vẫn nghe được lệnh sau 1 phút |
+| H15 | Khi đang đọc: "Ok Vision tạm dừng", "tiếp tục", "đọc lại", "bước tiếp", "bước trước", "chậm lại", "nhanh lên", "dừng lại" | Mỗi lệnh có tác dụng trong ≤ 1,5 s; tiếng đọc của app không tự kích hoạt lệnh |
+| H16 | Bật Đọc chép, giải một bài 4 bước | Dừng sau mỗi bước; nói "tiếp" (không cần wake word) thì đọc bước sau |
+| H17 | Khi đang đọc: "Ok Vision, còn câu 2 thì sao?" | Dừng đọc, câu hỏi mới được gửi nguyên văn, không phải hỏi lại |
+| H18 | Xem màn hình Trực tiếp và Lịch sử khi đang đọc | Đoạn đang đọc được tô sáng; chạm đoạn để đọc từ đó; Lịch sử "Đọc lại" chạy không cần mạng |
+| H19 | Cài đặt → Gỡ lỗi | Log có các danh mục gemini/glasses/voice/tts/reading; Xuất log ra file .txt |
 
-Mẫu báo cáo:
+15 mẫu cho H13 (cũng là mẫu có sẵn trong màn hình Thử đọc và ca test ở T3.2):
+| # | Công thức | Câu đọc mong đợi (tự nhiên) |
+|---|---|---|
+| 1 | `$x^2 - 5x + 6 = 0$` | x bình phương trừ 5 x cộng 6 bằng 0 |
+| 2 | `$\frac{3}{4}$` | ba phần tư |
+| 3 | `$\sqrt{x^2+1}$` | căn của x bình phương cộng 1 |
+| 4 | `$\int_0^1 x e^x\,dx$` | tích phân từ 0 đến 1 của x e mũ x, đê x |
+| 5 | `$\lim_{x \to 0} \frac{\sin x}{x} = 1$` | giới hạn khi x tiến tới 0 của sin x trên x bằng 1 |
+| 6 | `$\log_2 8 = 3$` | lô-ga-rít cơ số 2 của 8 bằng 3 |
+| 7 | `$f'(x) = 3x^2 - 3$` | f phẩy x bằng 3 x bình phương trừ 3 |
+| 8 | `$\overrightarrow{AB} \perp \overrightarrow{CD}$` | véc-tơ A B vuông góc với véc-tơ C D |
+| 9 | `$x \in [1; 3]$` | x thuộc đoạn từ 1 đến 3 |
+| 10 | `$\Delta = b^2 - 4ac$` | đen-ta bằng b bình phương trừ 4 a c |
+| 11 | `2,5 cm` (trong câu tiếng Việt) | 2 phẩy 5 xen-ti-mét |
+| 12 | `$(x+1)^2$` | x cộng 1, tất cả bình phương |
+| 13 | `$\begin{cases} x+y=3 \\ x-y=1 \end{cases}$` | hệ phương trình: x cộng y bằng 3; x trừ y bằng 1 |
+| 14 | `$C_5^2 = 10$` | tổ hợp chập 2 của 5 bằng 10 |
+| 15 | `$-3 < x \le 2$` | âm 3 nhỏ hơn x nhỏ hơn hoặc bằng 2 |
+
+Mẫu báo cáo phần cứng:
 ```
 Ngày / build: ____  iOS: ____  Firmware kính: ____  Meta AI: ____  Mạng: ____
 H1 ☐ H2 ☐ H3 ☐ H4 ☐ H5 ☐ H6 ☐ H7 ☐ H8 ☐ H9 ☐ H10 ☐ H11 ☐ H12 ☐
+H13 ☐ (mẫu sai: ___) H14 ☐ H15 ☐ H16 ☐ H17 ☐ H18 ☐ H19 ☐
 H9 nhanh: ___×___ ___ s | 12 MP: ___×___ ___ s
-Thời gian từ lúc nói xong tới câu đầu tiên được đọc (H1): ____ s
-Ghi chú / log lỗi:
+Thời gian từ lúc nói xong tới tiếng đầu tiên (H1): ____ s
+Ghi chú / log lỗi (đính kèm file Xuất log):
 ```
 
 ---
 
-## 8. Thiết lập tài khoản và thiết bị (gộp từ SETUP.md cũ)
+## 8. Thiết lập tài khoản và thiết bị
 
-1. `cp Config.xcconfig.example Config.xcconfig` và `cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift`
-   (cả hai bị gitignore). Điền `DEVELOPMENT_TEAM`, `PRODUCT_BUNDLE_IDENTIFIER`, `META_APP_ID`,
-   `CLIENT_TOKEN` (dạng đầy đủ `AR|<app id>|<hash>`), `APP_LINK_URL_SCHEME`. Ở Developer Mode,
-   `META_APP_ID` có thể là `0`.
+1. `cp Config.xcconfig.example Config.xcconfig` và
+   `cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift` (cả hai bị gitignore).
+   Điền `DEVELOPMENT_TEAM`, `PRODUCT_BUNDLE_IDENTIFIER`, `META_APP_ID`, `CLIENT_TOKEN`
+   (dạng đầy đủ `AR|<app id>|<hash>`), `APP_LINK_URL_SCHEME`. Ở Developer Mode, `META_APP_ID` có thể là `0`.
 2. [Wearables Developer Center](https://wearables.developer.meta.com/): tạo app, điền Apple Team ID,
-   bật quyền Camera. Sau khi đổi cấu hình: trong app bấm Huỷ đăng ký → Đăng ký lại.
-3. Meta AI app: bật **Developer Mode**. Tuỳ phiên bản Meta AI: Cài đặt → Thiết bị → Kính →
-   Developer Mode, hoặc Cài đặt → Giới thiệu → chạm số phiên bản 5 lần.
-4. Trong app: Cài đặt → Kính → **"Cài/cập nhật thành phần trên kính"** (gọi
-   `Wearables.shared.openDATGlassesAppUpdate()`; thiếu bước này session chết với "Device
-   unavailable"). Cần firmware kính V126+, Meta AI V282+, iOS 17.2+.
-5. Cài đặt → Gemini: dán API key (nhiều key cách nhau bằng dấu phẩy; nên từ các project Google
-   Cloud khác nhau). Key lưu trong Keychain, không bao giờ nằm trong code.
+   bật quyền Camera. Sau khi đổi cấu hình: trong app bấm Huỷ đăng ký rồi Đăng ký lại.
+3. Meta AI app: bật Developer Mode (Cài đặt → Thiết bị → Kính → Developer Mode, hoặc
+   Cài đặt → Giới thiệu → chạm số phiên bản 5 lần, tuỳ phiên bản).
+4. Trong app: Cài đặt → Kính → "Cài/cập nhật thành phần trên kính"
+   (`Wearables.shared.openDATGlassesAppUpdate()`). Cần firmware kính V126+, Meta AI V282+, iOS 17.2+.
+5. Cài đặt → Gemini: dán API key (nhiều key cách nhau bằng dấu phẩy, nên từ các project khác nhau).
+   Key lưu trong Keychain, không bao giờ nằm trong code.
 6. Cài đặt iOS → Trợ năng → Nội dung được đọc → Giọng nói: tải giọng tiếng Việt Enhanced/Premium.
-7. Cài IPA: chạy workflow **Build Unsigned IPA** (Actions → Run workflow), tải artifact
-   `OpenVision-unsigned`, ký và cài bằng Sideloadly, rồi tin cậy nhà phát triển trong
-   Cài đặt → Cài đặt chung → Quản lý VPN & Thiết bị. Với Apple ID miễn phí, app hết hạn sau 7 ngày.
+7. Cài IPA: chạy workflow **Build Unsigned IPA**, tải artifact `OpenVision-unsigned`, ký và cài bằng
+   Sideloadly, tin cậy nhà phát triển trong Cài đặt → Cài đặt chung → Quản lý VPN & Thiết bị.
+   Với Apple ID miễn phí, app hết hạn sau 7 ngày.
 
 ---
 
 ## 9. Cách xem CI từ sandbox Linux
 
-`gh run list` **không chạy** trong sandbox này (GH_HOST không khớp remote). Dùng `gh api`:
-
+`gh run list` **không chạy** trong sandbox (GH_HOST không khớp remote). Dùng `gh api`:
 ```bash
 REPO=darwnlinz1/Visor-iOS-Solver
-BR=feature/fix-ios-pipeline
+BR=feature/voice-v2
 
 # Mở PR (một lần). Không dùng `gh pr create`.
-gh api repos/$REPO/pulls -f title="Fix iOS pipeline per PLAN.md" -f head="$BR" -f base="main" \
-  -f body="Thực hiện PLAN.md. Xem từng commit (Task: Tx.y)."
+gh api repos/$REPO/pulls -f title="Voice-only answers per PLAN.md v2" -f head="$BR" -f base="main" \
+  -f body="Thực hiện PLAN.md v2. Xem từng commit (Task: Tx.y)."
 
-# Các lần chạy của branch
+# Các lần chạy của branch, rồi job và log job lỗi
 gh api "repos/$REPO/actions/runs?branch=$BR&per_page=10" \
   --jq '.workflow_runs[] | "\(.id) \(.name) \(.status)/\(.conclusion) \(.head_sha[0:7])"'
-
-# Job của một lần chạy, rồi log job lỗi
 gh api repos/$REPO/actions/runs/<RUN_ID>/jobs --jq '.jobs[] | "\(.id) \(.name) \(.conclusion)"'
-gh api repos/$REPO/actions/jobs/<JOB_ID>/logs | grep -n -iE "error:|failed|XCTAssert|Test Case .* failed" | head -80
+gh api repos/$REPO/actions/jobs/<JOB_ID>/logs > /projects/sandbox/ci.log
+grep -n -E "##\[error\]|Executed [0-9]+ tests|error:" /projects/sandbox/ci.log | head -80
 ```
-
-CI mất 10–40 phút. Chờ bằng `sleep 300` rồi kiểm tra lại; không chờ quá 90 phút cho một lần chạy.
-Có thể đẩy vài task rồi mới chờ, nhưng nếu CI đỏ thì phải tìm đúng commit gây lỗi.
+- Lưu log ra `/projects/sandbox/` (thư mục `/tmp` không giữ file giữa các lệnh). Xoá file tạm khi xong.
+- CI mất 10–40 phút; chờ bằng vòng `sleep 45` kiểm tra trạng thái, tối đa 90 phút cho một lần chạy.
+- Workflow có `cancel-in-progress`: push mới sẽ **huỷ** run đang chạy. Muốn biết kết quả một commit
+  thì chờ run của nó xong rồi mới push tiếp (có thể commit nhiều task ở local trong lúc chờ).
+- Khi app test host chết lúc khởi động, xem nhóm log "App launch console" và "OpenVision crash
+  reports" do `run-simulator-tests.sh` in ra.
+- Không chạy song song hai lệnh sửa cùng một file.
 
 ---
 
@@ -443,9 +820,23 @@ Có thể đẩy vài task rồi mới chờ, nhưng nếu CI đỏ thì phải 
 
 ```
 PR: <link>
-Task đã xong: T0.1 (sha) ✅ CI xanh | T0.2 (sha) ✅ | …
+Task đã xong: T2.1 (sha) ✅ CI xanh | T2.2 (sha) ✅ | …
 Task chưa xong / bị chặn: Tx.y: lý do, đã thử gì
 Test fail còn lại: <tên test>: có từ trước? nguyên nhân?
-Cần chủ dự án chạy trên kính: H…
+Cần chủ dự án chạy trên kính / xem giao diện: H…
+Quyết định đã dùng giá trị mặc định tạm: D…
 Phát hiện mới (không có trong PLAN): …
 ```
+
+## 11. Chia việc theo phiên làm việc của agent
+
+Mỗi phiên chỉ làm một nhóm, kết thúc bằng báo cáo mục 10:
+| Phiên | Phạm vi | Ghi chú |
+|---|---|---|
+| A | Phase 2 (T2.1 → T2.5) | Nền móng cho mọi phiên sau |
+| B | Phase 3 (T3.1 → T3.4) | Module đọc toán, thuần logic, nhiều test |
+| C | Phase 4 (T4.1 → T4.4) | Sau phiên này app đọc toàn bộ câu trả lời, chưa có điều khiển |
+| D | Phase 5 (T5.1 → T5.5) | Cần chủ dự án chạy H14–H17 sau đó |
+| E | Phase 6 (T6.1 → T6.6) | Cần chủ dự án xem giao diện (H18, H19) |
+| F | Phase 7–8 | Chờ quyết định D2; có thể đưa lên trước C nếu ảnh đang chặn việc dùng app |
+| G | Phase 9 | Tài liệu |
