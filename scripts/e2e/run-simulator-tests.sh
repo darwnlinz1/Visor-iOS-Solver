@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# Run the Blueprint end-to-end suites (see PLAN.md) on an iOS 18+ iPhone simulator.
+# Run the OpenVisionTests suites (see PLAN.md) on an iOS 18+ iPhone simulator.
 # Works the same on a Mac and in CI (.github/workflows/e2e.yml).
 #
-#   scripts/e2e/run-simulator-tests.sh                 # Blueprint suites (default)
-#   SUITE=all scripts/e2e/run-simulator-tests.sh       # every test in OpenVisionTests
+#   scripts/e2e/run-simulator-tests.sh                   # every suite in OpenVisionTests (default)
+#   SUITE=blueprint scripts/e2e/run-simulator-tests.sh   # only the Blueprint suites
 #   TEST_RUNNER_OPENVISION_LIVE_GEMINI=1 scripts/e2e/run-simulator-tests.sh   # + real Gemini API
-#   SIMULATOR_UDID=<udid> ...                          # pick the simulator yourself
+#   SIMULATOR_UDID=<udid> ...                            # pick the simulator yourself
+#
+# A new test file runs as soon as it is in the test target (scripts/pbxproj_files.py add ...);
+# GeminiLiveSmokeTests skips itself unless TEST_RUNNER_OPENVISION_LIVE_GEMINI=1.
 #
 # The simulator cannot do Bluetooth (glasses) or the on-device MLX models; checklist tests that
 # need the real Ray-Ban hardware are in PLAN.md section 7 (manual protocol).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-SUITE="${SUITE:-blueprint}"
+SUITE="${SUITE:-all}"
+case "$SUITE" in
+  all|blueprint) ;;
+  *) echo "error: SUITE must be 'all' (default) or 'blueprint', not '$SUITE'" >&2; exit 2 ;;
+esac
 DERIVED="${DERIVED_DATA:-DerivedData-sim}"
 RESULT="${RESULT_BUNDLE:-build/E2E.xcresult}"
 
@@ -124,12 +131,14 @@ xcrun simctl install "$UDID" "$APP"
 xcrun simctl privacy "$UDID" grant photos "$BUNDLE_ID" || echo "warning: could not grant Photos access; library tests will skip"
 launch_smoke
 
+# SUITE=all runs the whole OpenVisionTests target (no -only-testing list to keep in step).
 ONLY=()
 if [ "$SUITE" = "blueprint" ]; then
   for suite in BlueprintSolverTests BlueprintGeminiE2ETests BlueprintPhotoLibraryE2ETests GeminiLiveSmokeTests; do
     ONLY+=("-only-testing:OpenVisionTests/$suite")
   done
 fi
+echo "Test suites: $SUITE"
 
 rm -rf "$RESULT"
 mkdir -p "$(dirname "$RESULT")"
