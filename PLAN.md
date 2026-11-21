@@ -592,9 +592,11 @@ Làm trước Phase 4 để khi bỏ DISPLAY, công thức đã được đọc 
 **T4.1 Prompt v2**
 - Việc: viết lại `buildSystemPrompt()` theo 4.2 (Gemini tự nhận loại bài). Giữ các phần ảnh, `[[CAPTURE]]`,
   `[[END]]`, ngôn ngữ, kiểm tra lại kết quả toán, ngày giờ, hướng dẫn riêng, ghi nhớ. Bỏ hẳn
-  "DUAL-CHANNEL", `SPOKEN:`, `DISPLAY:`, "2 to 4 complete sentences", "phone screen". Sửa N17.
+  "DUAL-CHANNEL", `SPOKEN:`, `DISPLAY:`, "2 to 4 complete sentences", câu "shown on the phone screen".
+  Sửa N17.
 - Guard (sửa `verify_blueprint.py`): thay check "2 to 4 complete sentences" và "SPOKEN:/DISPLAY:"
-  bằng: prompt chứa `TYPE:`, `Q1:`, `L1:`, `FINAL:`; không chứa `DISPLAY:`; không chứa "phone screen".
+  bằng: prompt chứa `TYPE:`, `Q1:`, `L1:`, `FINAL:`; không chứa `DISPLAY:`; không còn câu cũ
+  "shown on the phone screen"; có câu cấm bảo người dùng nhìn điện thoại hoặc màn hình.
   Giữ check "language the user used", "under 250 characters" (không có), `captureToken`.
 - Test: thay `testSystemPromptKeepsTheDualChannelContractAndIsBilingual` bằng bản v2.1 (có đủ khuôn
   MCQ / ESSAY / MIXED / OTHER, có câu cấm nhắc màn hình điện thoại, không còn chế độ Gia sư).
