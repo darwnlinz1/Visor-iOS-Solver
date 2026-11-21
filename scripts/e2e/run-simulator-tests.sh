@@ -47,11 +47,11 @@ xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
 pretty() { if command -v xcbeautify >/dev/null 2>&1; then xcbeautify "$@"; else cat; fi; }
-# META_APP_ID=0: the Meta SDK treats 0 / empty as "Developer Mode, no app ID" and skips
-# attestation, which cannot run on a simulator. With the example placeholder (or a real ID) the
-# test host app aborts at launch: Wearables.configure() fails, then GlassesManager.shared hits
-# "Call configure() before attempting to access Wearables!". A command-line setting overrides
-# Config.xcconfig, so a developer's real config is untouched.
+# Ad-hoc signing (CODE_SIGN_IDENTITY=-), NOT CODE_SIGNING_ALLOWED=NO: an unsigned simulator
+# binary carries no entitlements, so every Keychain call fails with -34018 (errSecMissingEntitlement)
+# and Wearables.configure() throws WearablesError.internalError. The test host app then traps at
+# launch ("Call configure() before attempting to access Wearables!") before any test runs.
+# Ad-hoc signing needs no certificate, account or provisioning profile on a simulator.
 COMMON=(
   -project OpenVision.xcodeproj
   -scheme OpenVision
@@ -60,8 +60,9 @@ COMMON=(
   -clonedSourcePackagesDirPath .spm
   -skipPackagePluginValidation
   -skipMacroValidation
-  CODE_SIGNING_ALLOWED=NO
-  META_APP_ID=0
+  CODE_SIGN_IDENTITY=-
+  CODE_SIGNING_REQUIRED=NO
+  CODE_SIGNING_ALLOWED=YES
 )
 
 # Launch the app alone for a few seconds and print its console. Informational (never fails the
