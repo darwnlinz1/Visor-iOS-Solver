@@ -488,9 +488,10 @@ private final class DataBox: @unchecked Sendable {
 // MARK: - Photo payload (pure, unit-testable)
 
 enum PhotoPayload {
-    /// Long edge of the uploaded photo (4032 px keeps full 12 MP Ray-Ban Meta resolution).
-    static let uploadMaxDimension = 4032
-    static let uploadQuality: CGFloat = 0.92
+    /// Long edge of the uploaded photo. Gemini 3 spends a fixed token budget per image, so pixels
+    /// beyond ~3072 px only add upload time (detail comes from MEDIA_RESOLUTION_ULTRA_HIGH).
+    static let uploadMaxDimension = 3072
+    static let uploadQuality: CGFloat = 0.85
 
     /// Long edge of the copy kept in conversation history: follow-up questions re-send the
     /// whole history, so they carry this lighter copy.
