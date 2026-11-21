@@ -15,10 +15,11 @@ import Speech
 
 /// Pre-captured photo context for Visor "Capture First, Ask Later" workflow
 struct CapturedPhotoContext {
-    /// How long a captured photo stays attached to follow-up questions (Extended to 5 min for Meta View sync resilience).
-    static let ttl: TimeInterval = 300.0
+    /// How long a captured photo stays attached to follow-up questions (matches
+    /// `SolverIntent.recentPhotoWindow`; the tests pin 120 s).
+    static let ttl: TimeInterval = 120.0
     /// How many questions may reuse one photo before a fresh capture is required.
-    static let maxUses = 10
+    static let maxUses = 5
 
     let id: UUID = UUID()
     let data: Data
