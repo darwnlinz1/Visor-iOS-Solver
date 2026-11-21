@@ -364,11 +364,12 @@ struct MathParser {
         return false
     }
 
-    /// The adjacent letters starting at `pos` ("sinx" → ["s","i","n","x"]).
+    /// The adjacent letters starting at `pos` ("sinx" → ["s","i","n","x"]), at most 8: enough for
+    /// the longest function name, and linear on long runs of letters.
     private func letterRun() -> [Character] {
         var run: [Character] = []
         var j = pos
-        while j < tokens.count, case .letter(let c) = tokens[j].kind, j == pos || !tokens[j].spaceBefore {
+        while j < tokens.count, run.count < 8, case .letter(let c) = tokens[j].kind, j == pos || !tokens[j].spaceBefore {
             run.append(c)
             j += 1
         }

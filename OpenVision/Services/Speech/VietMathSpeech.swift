@@ -109,9 +109,9 @@ enum VietMathSpeech {
         for piece in pieces {
             switch piece {
             case .words(let raw, let isMath):
-                let text = sanitized(raw)
-                guard text.contains(where: { $0.isLetter || $0.isNumber }) else { continue }
-                for part in splitLong(text) { out.append(.words(part, isMath: isMath)) }
+                for part in splitLong(sanitized(raw)) where part.contains(where: { $0.isLetter || $0.isNumber }) {
+                    out.append(.words(part, isMath: isMath))
+                }
             case .pause(let ms):
                 guard ms > 0 else { continue }
                 if case .pause(let previous)? = out.last {
