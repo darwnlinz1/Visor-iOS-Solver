@@ -329,7 +329,7 @@ struct VietnameseMathReader {
     private func readRoot(_ index: MathNode?, _ radicand: MathNode) -> [MathReadingItem] {
         let x = radicand.unwrappingGroups
         let simple = isAtomic(x) || isProductOfAtoms(x) && !isSimplePower(x)
-        let square = index == nil || integerValue(index!) == 2
+        let square = index == nil || index == .empty || integerValue(index!) == 2
         var out: [MathReadingItem]
         if square {
             if simple {

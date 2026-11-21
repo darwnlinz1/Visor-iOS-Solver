@@ -16,12 +16,14 @@ enum MathSpan: Equatable {
 /// Conservative on purpose: "1-5", "Ray-Ban", "12/5/2026", "10:30", "2,5 cm" stay prose (numbers and
 /// units in prose are normalised by the readers, not parsed as formulas).
 enum MathSpanSplitter {
-    static func split(_ text: String) -> [MathSpan] {
+    /// - Parameter vietnamese: in English prose the words "a", "A" and "I" are never part of a bare
+    ///   formula ("Is x = 2 a solution?").
+    static func split(_ text: String, vietnamese: Bool = true) -> [MathSpan] {
         var spans: [MathSpan] = []
         for span in splitDelimited(text) {
             switch span {
             case .math: spans.append(span)
-            case .prose(let prose): spans.append(contentsOf: splitBareFormulas(prose))
+            case .prose(let prose): spans.append(contentsOf: splitBareFormulas(prose, vietnamese: vietnamese))
             }
         }
         return merged(spans)
@@ -135,7 +137,7 @@ enum MathSpanSplitter {
     private static let trailingPunctuation: Set<Character> = [".", ",", ";", ":", "?", "!", "…", "\"", "”", "’", "»"]
     private static let leadingPunctuation: Set<Character> = ["\"", "“", "‘", "«"]
 
-    static func splitBareFormulas(_ prose: String) -> [MathSpan] {
+    static func splitBareFormulas(_ prose: String, vietnamese: Bool = true) -> [MathSpan] {
         let chars = Array(stripMarkdown(prose))
         guard chars.contains(where: { !$0.isWhitespace }) else { return chars.isEmpty ? [] : [.prose(String(chars))] }
         var chunks: [Chunk] = []
@@ -149,6 +151,9 @@ enum MathSpanSplitter {
         }
         for n in chunks.indices {
             classify(&chunks[n], chars, previous: n > 0 ? String(chars[chunks[n - 1].start..<chunks[n - 1].end]) : nil)
+            if !vietnamese, ["a", "A", "I"].contains(String(chars[chunks[n].coreStart..<chunks[n].coreEnd])) {
+                chunks[n].compatible = false  // English words, not variables
+            }
         }
 
         var spans: [MathSpan] = []

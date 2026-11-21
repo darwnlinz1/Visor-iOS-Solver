@@ -343,6 +343,17 @@ final class VietMathSpeechTests: XCTestCase {
         ])
     }
 
+    func testSpeechPieceIsCodable() throws {
+        let pieces: [SpeechPiece] = [.words("ích bình phương", isMath: true), .pause(milliseconds: 200),
+                                     .words("Ta có", isMath: false)]
+        let data = try JSONEncoder().encode(pieces)
+        XCTAssertEqual(try JSONDecoder().decode([SpeechPiece].self, from: data), pieces)
+    }
+
+    func testEmptyRootIndexIsASquareRoot() {
+        XCTAssertEqual(reading("$\\sqrt[]{x}$"), "căn ích")
+    }
+
     func testCompoundExponentPausesOnlyWhenTheFormulaGoesOn() {
         XCTAssertEqual(VietMathSpeech.render("$e^{2x+1} - 1$", vietnamese: true, style: asWritten), [
             .words("e mũ 2 x cộng 1", isMath: true),
@@ -609,6 +620,15 @@ final class VietMathSpeechTests: XCTestCase {
         XCTAssertEqual(en("$30^\\circ$"), "30 degrees")
         XCTAssertEqual(en("$2{,}5$"), "2.5")
         XCTAssertEqual(en("$\\Delta = b^2 - 4ac$"), "delta equals b squared minus 4 a c")
+    }
+
+    func testEnglishArticlesStayOutOfBareFormulas() {
+        XCTAssertEqual(VietMathSpeech.render("Is x = 2 a solution?", vietnamese: false, style: .default), [
+            .words("Is", isMath: false),
+            .words("x equals 2", isMath: true),
+            .words("a solution?", isMath: false),
+        ])
+        XCTAssertEqual(reading("Vậy a = 2 và b = 3."), "Vậy a bằng 2 và bê bằng 3", "Vietnamese keeps single letters")
     }
 
     func testEnglishAnswersKeepProseAndIgnoreTheVietnameseDictionary() {

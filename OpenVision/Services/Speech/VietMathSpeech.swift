@@ -45,7 +45,7 @@ enum VietMathSpeech {
         let reader = VietnameseMathReader(style: style)
         var pieces: [SpeechPiece] = []
         var warnings: [String] = []
-        for span in MathSpanSplitter.split(text) {
+        for span in MathSpanSplitter.split(text, vietnamese: vietnamese) {
             switch span {
             case .prose(let prose):
                 let normalized = vietnamese ? reader.normalizeProse(prose) : prose
