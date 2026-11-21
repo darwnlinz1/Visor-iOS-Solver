@@ -913,13 +913,18 @@ Phát hiện mới (không có trong PLAN): …
 | Agent | Branch | Task | Chỉ được sửa / tạo |
 |---|---|---|---|
 | A (hạ tầng) | `feature/voice-v2-infra` | T2.1, T2.2, T2.3, T2.5 | `scripts/pbxproj_files.py` (mới), `scripts/blueprint/verify_blueprint.py`, `scripts/e2e/run-simulator-tests.sh`, `OpenVisionTests/BlueprintPhotoLibraryE2ETests.swift`, `OpenVision/App/OpenVisionApp.swift`, `OpenVision/Managers/GlassesManager.swift`, `OpenVision/Views/Settings/GlassesSettingsView.swift` |
-| B (đọc toán) | `feature/voice-v2-math` | T3.1, T3.2, T3.4 | File **mới** trong `OpenVision/Services/Speech/` (splitter, lexer, parser, node, reader, từ điển, `VietMathSpeech`) và `OpenVisionTests/VietMath*Tests.swift` |
-| C (định dạng) | `feature/voice-v2-format` | T4.2 (chỉ phần thuần), `ReadingModel`, `ReplyAssembler`, văn bản prompt v2.1 | File **mới**: `OpenVision/Services/Speech/AnswerFormat.swift`, `ReadingModel.swift`, `ReplyAssembler.swift`, `PromptV2.swift` (hàm trả về chuỗi prompt, **chưa nối** vào `GeminiLiveService`), `OpenVisionTests/AnswerFormatTests.swift`, `ReplyAssemblerTests.swift`, `PromptV2Tests.swift` |
+| B (đọc toán) | `feature/voice-v2-math` | T3.1, T3.2, T3.4 và phần thuần của T3.3 (chuẩn hoá lời văn, số, đơn vị, `EnglishMathReader`; **không** sửa `TTSService`) | File **mới** trong `OpenVision/Services/Speech/` (splitter, lexer, parser, node, reader, từ điển, `VietMathSpeech`) và `OpenVisionTests/VietMath*Tests.swift` |
+| C (định dạng) | `feature/voice-v2-format` | T4.2 (chỉ phần thuần), `ReadingModel`, `ReplyAssembler` (gồm câu đọc của từng mục: "Câu 3: a đúng, b sai.", "Dòng 1. …"), văn bản prompt v2.1 | File **mới**: `OpenVision/Services/Speech/AnswerFormat.swift`, `ReadingModel.swift`, `ReplyAssembler.swift`, `PromptV2.swift` (hàm trả về chuỗi prompt, **chưa nối** vào `GeminiLiveService`), `OpenVisionTests/AnswerFormatTests.swift`, `ReplyAssemblerTests.swift`, `PromptV2Tests.swift` |
 
 Quy tắc Đợt 1:
-- B và C **không** sửa `project.pbxproj`, `run-simulator-tests.sh`, `PLAN.md` hay file có sẵn. File mới của
-  họ được đăng ký vào pbxproj ở bước tích hợp (bằng script của A). Vì vậy B và C kiểm chứng bằng
-  `scripts/swift-local/run.sh` (test thuần trên Linux), CI của PR họ chỉ chứng minh không làm hỏng app.
+- B và C **không** sửa `project.pbxproj`, `run-simulator-tests.sh`, `PLAN.md` hay bất kỳ file có sẵn nào;
+  chỉ tạo file mới trong danh sách của mình. File mới được đăng ký vào pbxproj ở bước tích hợp (bằng
+  script của A).
+- Vì file chưa đăng ký, trên branch B và C check `project` của guard **sẽ báo lỗi cho đúng các file
+  mới đó**. Đó là lỗi duy nhất được phép; mọi check khác phải xanh.
+- B và C **chỉ push branch, không mở PR** (CI của họ chưa có ý nghĩa). Họ kiểm chứng bằng
+  `scripts/swift-local/run.sh`: phải biên dịch sạch (không warning mới) và mọi test pass.
+- A mở PR vào `feature/voice-v2` và chờ CI như mục 9.
 - Code thuần phải biên dịch được cả trên Linux lẫn iOS: chỉ `import Foundation`; không dùng
   `as NSString` (Linux không tự chuyển `String` sang `NSString`), dùng `NSRange(s.startIndex..., in: s)`
   và `Range(nsRange, in: s)`; không dùng API chỉ có trên Apple.
