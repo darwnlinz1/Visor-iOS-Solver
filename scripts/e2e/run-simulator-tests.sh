@@ -47,6 +47,11 @@ xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
 pretty() { if command -v xcbeautify >/dev/null 2>&1; then xcbeautify "$@"; else cat; fi; }
+# META_APP_ID=0: the Meta SDK treats 0 / empty as "Developer Mode, no app ID" and skips
+# attestation, which cannot run on a simulator. With the example placeholder (or a real ID) the
+# test host app aborts at launch: Wearables.configure() fails, then GlassesManager.shared hits
+# "Call configure() before attempting to access Wearables!". A command-line setting overrides
+# Config.xcconfig, so a developer's real config is untouched.
 COMMON=(
   -project OpenVision.xcodeproj
   -scheme OpenVision
@@ -56,7 +61,40 @@ COMMON=(
   -skipPackagePluginValidation
   -skipMacroValidation
   CODE_SIGNING_ALLOWED=NO
+  META_APP_ID=0
 )
+
+# When the test host dies at launch there is no test output at all; print what crashed.
+dump_crash_reports() {
+  echo "::group::OpenVision crash reports"
+  local found=0 report
+  while IFS= read -r report; do
+    [ -n "$report" ] || continue
+    found=1
+    echo "== $report"
+    python3 - "$report" <<'PY' || true
+import json, sys
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+body = raw.split("\n", 1)[1] if raw.startswith("{") and "\n" in raw else raw
+try:
+    d = json.loads(body)
+    print("exception:", d.get("exception"))
+    print("termination:", d.get("termination"))
+    print("asi:", d.get("asi"))
+    images = d.get("usedImages", [])
+    thread = d["threads"][d.get("faultingThread", 0)]
+    for frame in thread["frames"][:25]:
+        idx = frame.get("imageIndex")
+        image = images[idx]["name"] if idx is not None and idx < len(images) else "?"
+        print("  ", image, frame.get("symbol", "?"))
+except Exception as e:
+    print("(could not parse: %s)" % e)
+    print(raw[:4000])
+PY
+  done < <(find "$HOME/Library/Logs/DiagnosticReports" -name 'OpenVision*' -mmin -60 2>/dev/null | head -3)
+  [ "$found" = 1 ] || echo "no OpenVision crash report found"
+  echo "::endgroup::"
+}
 
 xcodebuild build-for-testing "${COMMON[@]}" | pretty ${XCBEAUTIFY_ARGS:-}
 
@@ -74,4 +112,7 @@ fi
 
 rm -rf "$RESULT"
 mkdir -p "$(dirname "$RESULT")"
-xcodebuild test-without-building "${COMMON[@]}" ${ONLY[@]+"${ONLY[@]}"} -resultBundlePath "$RESULT" | pretty ${XCBEAUTIFY_ARGS:-}
+if ! xcodebuild test-without-building "${COMMON[@]}" ${ONLY[@]+"${ONLY[@]}"} -resultBundlePath "$RESULT" | pretty ${XCBEAUTIFY_ARGS:-}; then
+  dump_crash_reports
+  exit 1
+fi
