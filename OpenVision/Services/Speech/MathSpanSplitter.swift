@@ -270,9 +270,7 @@ enum MathSpanSplitter {
         while e < core.count, MathLexer.isASCIILetter(core[e]) { e += 1 }
         let left = String(core[s..<k])
         let right = String(core[(k + 1)..<e])
-        if MathParser.unitSymbols.contains(left), MathParser.unitSymbols.contains(right), left.count + right.count > 2 {
-            return false
-        }
+        if MathParser.unitSymbols.contains(left), MathParser.unitSymbols.contains(right) { return false }
         return true
     }
 
