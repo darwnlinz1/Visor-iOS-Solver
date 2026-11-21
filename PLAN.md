@@ -38,8 +38,6 @@
    `isBargeInPaused = true` **trước** khi xếp câu nói. Không đổi category/mode khi đang đọc.
 8. **Logic thuần phải test được:** parser, bộ đọc toán, lệnh giọng nói, máy trạng thái đọc nằm
    trong enum/struct không phụ thuộc UIKit/AVFoundation, có unit test chạy trên simulator.
-   Mỗi file test mới phải được thêm vào danh sách suite trong `scripts/e2e/run-simulator-tests.sh`
-   (nếu không, CI biên dịch nhưng không chạy nó).
    Giữ các tên mà `scripts/blueprint/verify_ipa_symbols.sh` tìm trong IPA: `RecentPhotoScanner`,
    `cleanSpokenAudio`, `conversationHistory`, `PhotoPayload`, `streamGenerateContent`, `SolverIntent`.
    Khi một check của guard không còn đúng với thiết kế v2, **sửa check** cho đúng tên/hành vi mới
@@ -268,10 +266,10 @@ Thành phần:
 | `MathSpanSplitter` | Tách văn bản thành mẩu lời văn và mẩu công thức: `$…$`, `\(…\)`, `\[…\]`, `$$…$$` (coi như một dòng). Nhận cả "công thức trần" trong lời văn: ký tự Unicode toán (² ³ √ ≤ ≥ ≠ ≈ × ÷ ± ∞ ∫ ∑ π Δ → ⇒ ⇔ ∈ ∉ ⊂ ∪ ∩ ∅ °) và mẫu ASCII rõ ràng (`x^2`, `3/4`, `f(x) =`). Thận trọng: "1-5", "Ray-Ban", ngày "12/5/2026" giữ nguyên. |
 | `MathLexer`, `MathParser` | LaTeX tập con → cây `MathNode` (đệ quy xuống). **Không bao giờ throw**: lệnh lạ thành `.unknown(name, args)`. |
 | `MathNode` | `number`, `identifier`, `binary(op)`, `unary(op)`, `fraction`, `power`, `subscript`, `root(index)`, `function(name, arg)`, `group`, `abs`, `integral(lower, upper, body, variable)`, `limit(variable, target, body)`, `sum/product(from, to, body)`, `vector`, `angle`, `triangle`, `set`, `interval`, `cases([rows])`, `matrix(rows)`, `text`, `unknown`. |
-| `VietnameseMathReader` | `MathNode` → mảng `SpeechPiece` (`.words(String)`, `.pause(ms)`), theo `MathReadingStyle`. |
+| `VietnameseMathReader` | `MathNode` → mảng `SpeechPiece`, theo `MathReadingStyle`. `enum SpeechPiece: Equatable, Codable { case words(String, isMath: Bool); case pause(milliseconds: Int) }` định nghĩa trong `VietMathSpeech.swift`. |
 | `EnglishMathReader` | Bộ đọc tối giản cho câu trả lời tiếng Anh (chuyển các từ tiếng Anh của `SpokenMath` sang đây). |
 | `PronunciationDictionary` | Bảng mặc định (hàm, chữ Hy Lạp, đơn vị, tên chữ cái) + ghi đè của người dùng (Cài đặt). Áp dụng theo **token nguyên**, không theo chuỗi con. |
-| `VietMathSpeech.render(_ text:, language:, style:) -> [SpeechPiece]` | Điểm vào duy nhất. Lời văn giữ nguyên (chỉ chuẩn hoá số, đơn vị, ký hiệu). |
+| `VietMathSpeech.render(_ text: String, vietnamese: Bool, style: MathReadingStyle) -> [SpeechPiece]` | Điểm vào duy nhất. Lời văn giữ nguyên (chỉ chuẩn hoá số, đơn vị, ký hiệu). `vietnamese == false` dùng `EnglishMathReader`. |
 
 `MathReadingStyle` (lấy từ Cài đặt, mục 4.6):
 - `verbosity`: `natural` (tự nhiên) hoặc `explicit` (rõ ràng: thêm "hết căn", "hết mũ",
@@ -343,10 +341,13 @@ ngoài `\iint` cơ bản. Ghi vào Gỡ lỗi khi gặp để bổ sung sau.
 File mới `OpenVision/Services/Speech/ReadingEngine.swift` (logic) và mở rộng `TTSService` (âm thanh).
 
 Kiểu dữ liệu (thuần, `Codable` để lưu vào Lịch sử):
-- `ReadingSegment { id, kind, title, displayText }` (file `Services/Speech/ReadingModel.swift`), với `kind` là
+- `ReadingSegment { id, kind, title, displayText, speechText }` (file `Services/Speech/ReadingModel.swift`):
+  `displayText` để hiện trên màn hình ("Câu 3: a Đ, b S"), `speechText` là câu sẽ đưa qua `VietMathSpeech`
+  ("Câu 3: a đúng, b sai.", "Dòng 1. Ta có $\Delta = 9$."), do `ReplyAssembler` dựng theo ngôn ngữ và
+  `readLineNumbers`. `kind` là
   `mcq(n) | problem(n) | line(n) | final | answer | notice`. `title` ví dụ "Câu 3", "Dòng 2".
-  `displayText` là chữ model viết (công thức giữ dạng chữ, hiển thị bằng bộ làm đẹp đơn giản ở 4.5).
-- `ReadingPlan { turnID, language (vi|en), answerType (mcq|essay|mixed|other), segments, isComplete }`,
+  Công thức trong `displayText` giữ dạng chữ model viết, màn hình làm đẹp bằng `MathPrettyText` (4.5).
+- `ReadingPlan { turnID, languageCode ("vi"|"en"), answerType (mcq|essay|mixed|other), segments, isComplete }`,
   được **nối thêm đoạn** khi stream tới. Mẩu đọc (`[SpeechPiece]`) **không** lưu trong đoạn: `ReadingEngine`
   dựng chúng bằng `VietMathSpeech` lúc đọc tới đoạn đó, theo cài đặt hiện tại.
 - `ReadingRecord { language, answerType, segments }`: bản lưu vào Lịch sử (trường tuỳ chọn
@@ -526,8 +527,8 @@ Mỗi task: **Việc**, **Không làm**, **Xong khi**. Sau mỗi task: guard loc
 - Xong khi: `--self-test` pass ở local; guard xanh; CI build xanh.
 
 **T2.2 CI chạy mọi suite test (N13)**
-- Việc: trong `run-simulator-tests.sh`, chế độ `blueprint` chạy thêm `SettingsSecretsTests`,
-  `TextChunkingTests` và mọi suite mới của plan này (liệt kê tường minh). `GeminiLiveSmokeTests` tự skip.
+- Việc: trong `run-simulator-tests.sh`, mặc định chạy **toàn bộ** target `OpenVisionTests` (bỏ danh sách
+  `-only-testing`), giữ `SUITE=blueprint` làm tuỳ chọn. Suite mới tự được chạy. `GeminiLiveSmokeTests` tự skip.
 - Xong khi: log E2E có dòng "Executed" cho từng suite, 0 fail.
 
 **T2.3 Test thư viện Ảnh không bị skip (N1)**
