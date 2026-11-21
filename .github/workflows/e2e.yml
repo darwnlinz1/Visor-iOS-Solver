@@ -1,6 +1,6 @@
 name: E2E (Blueprint)
 
-# End-to-end checks from MASTER_HANDOVER_BLUEPRINT.md.
+# End-to-end checks for the glasses solver workflow (see PLAN.md).
 #   1. blueprint-guard  — seconds, on Linux: source-level guards for the 7 "fatal pitfalls"
 #                         and project integrity (scripts/blueprint/verify_blueprint.py).
 #   2. simulator-e2e    — the Blueprint XCTest suites on an iOS 18+ iPhone simulator: the real
@@ -9,7 +9,7 @@ name: E2E (Blueprint)
 #   3. live Gemini      — opt-in (workflow_dispatch → live_gemini): the same app code against the
 #                         real Gemini API, to catch prompt/model drift. Uses API quota.
 # Hardware-only checks (glasses shutter, temple speaker, volume HUD) are the manual protocol in
-# docs/testing/E2E_TEST_PLAN.md.
+# PLAN.md section 7 (H1-H12).
 
 on:
   pull_request:

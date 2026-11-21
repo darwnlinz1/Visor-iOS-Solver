@@ -43,7 +43,7 @@ struct CapturedPhotoContext {
 
 /// Pure command classification for the solver flow. Kept free of state so the Blueprint
 /// end-to-end suite can pin the routing rules that protect against the "fatal pitfalls"
-/// (MASTER_HANDOVER_BLUEPRINT.md §3 and checklist §7).
+/// (see PLAN.md).
 enum SolverIntent {
     /// Window in which a photo synced to Camera Roll by the temple shutter counts as "the
     /// photo the user is asking about" (Visor `hasRecentShutterPhoto`, Blueprint lesson 6).

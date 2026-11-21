@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the MASTER_HANDOVER_BLUEPRINT.md end-to-end suites on an iOS 18+ iPhone simulator.
+# Run the Blueprint end-to-end suites (see PLAN.md) on an iOS 18+ iPhone simulator.
 # Works the same on a Mac and in CI (.github/workflows/e2e.yml).
 #
 #   scripts/e2e/run-simulator-tests.sh                 # Blueprint suites (default)
@@ -8,7 +8,7 @@
 #   SIMULATOR_UDID=<udid> ...                          # pick the simulator yourself
 #
 # The simulator cannot do Bluetooth (glasses) or the on-device MLX models; checklist tests that
-# need the real Ray-Ban hardware are in docs/testing/E2E_TEST_PLAN.md (manual protocol).
+# need the real Ray-Ban hardware are in PLAN.md section 7 (manual protocol).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

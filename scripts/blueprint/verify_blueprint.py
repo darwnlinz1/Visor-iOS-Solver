@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Static guard for MASTER_HANDOVER_BLUEPRINT.md.
+"""Static guard for the glasses solver workflow (see PLAN.md).
 
-Fails fast (seconds, any OS, no Xcode) when a change re-introduces one of the blueprint's
-"fatal pitfalls" (section 3) or breaks the wearer's workflow (section 2). Runtime behaviour is
+Fails fast (seconds, any OS, no Xcode) when a change re-introduces one of the seven "lessons"
+(audio deadlock, volume flapping, deaf glasses mic, TTS echo cut-off, truncated speech, missing
+Photos access, lost follow-up context) or breaks the wearer's workflow. Runtime behaviour is
 covered by the XCTest suites (OpenVisionTests/Blueprint*); this script guards the invariants
 that are cheapest to check in source.
 

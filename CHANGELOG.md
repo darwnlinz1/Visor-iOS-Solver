@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 One workflow, done well: Ray-Ban Meta photo + free-form question (Vietnamese or English) →
 Gemini → spoken answer on the glasses + rendered solution on the phone. See
-[ADR-001](docs/architecture/ADR-001-solver-pipeline.md).
+[PLAN.md](PLAN.md).
 
 ### Security
 - **The six Gemini API keys embedded (base64) in the source were removed.** They remain in git
@@ -29,7 +29,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
   photo; the app takes one and asks again. Saying "cảm ơn / tạm biệt / bye" ends the session.
 - Separate Vietnamese and English voices, speech rate, listening-language setting; math
   symbols read as words (`SpokenMath`); History "Continue" restores Gemini's context.
-- End-to-end suite for MASTER_HANDOVER_BLUEPRINT.md: static guard, simulator XCTest suites
+- End-to-end suite: static guard, simulator XCTest suites
   with a scripted Gemini endpoint, opt-in live smoke test, IPA symbol check.
 
 ### Changed
@@ -85,7 +85,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
 
 ### Changed
 - **Meta DAT SDK 0.5.0 → 0.9.0** — newer glasses (Ray-Ban Meta Gen 2 "Blayzer Optics", Meta Glasses, Oakley Meta) were invisible because the pinned SDK predated the hardware. Migrated to the 0.9.0 camera lifecycle (`DeviceSession` → `addCamera` → `camera.stream`, session must reach `.started` first). Field-verified on Ray-Ban Meta Gen 1/2 and Blayzer Gen 2 (#55)
-- **Required one-time setup for source builders**: in the Wearables Developer Center fill your Apple Team ID and toggle Camera access ON, then Unregister → Register in the app, then tap the new **Install/Update Glasses App** button. Requires glasses firmware V126+, Meta AI V282+, iOS 17.2+. See SETUP.md
+- **Required one-time setup for source builders**: in the Wearables Developer Center fill your Apple Team ID and toggle Camera access ON, then Unregister → Register in the app, then tap the new **Install/Update Glasses App** button. Requires glasses firmware V126+, Meta AI V282+, iOS 17.2+.
 
 ### Added
 - **Install/Update Glasses App** button in glasses settings, which stages the on-glasses developer component via Meta AI. Without it, sessions die with "Device unavailable" (#55)
@@ -137,7 +137,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
 
 ### Changed
 - `mlx-swift` now resolves to the [PrismML fork](https://github.com/PrismML-Eng/mlx-swift) (pinned to `v0.31.6_prism`), which supplies the 1-bit Metal kernels that upstream mlx-swift does not have yet. All existing local models and the vendored Kokoro TTS run unchanged against it
-- **Building now requires the Metal Toolchain** (`xcodebuild -downloadComponent MetalToolchain`) and `-skipPackagePluginValidation` — see [SETUP.md](SETUP.md)
+- **Building now requires the Metal Toolchain** (`xcodebuild -downloadComponent MetalToolchain`) and `-skipPackagePluginValidation`
 
 ### Fixed
 - Apple Intelligence web search no longer overflows the model's 4096-token context — the Tavily payload is capped and the session retries on failure (#53)
@@ -165,7 +165,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
 - README badges and modern GitHub issue forms (#43)
 
 ### Changed
-- Architecture refactor to MVVM behind an `AIBackend` protocol — views render, view models orchestrate, and adding a backend is now a conformance plus two lines. Extension guides in [docs/architecture.md](docs/architecture.md) (#49)
+- Architecture refactor to MVVM behind an `AIBackend` protocol — views render, view models orchestrate, and adding a backend is now a conformance plus two lines. (#49)
 - Relative time requests ("in 15 minutes") are resolved in code rather than trusted to the model, which routinely got absolute times wrong (#48)
 
 ## [2.7.0] - 2026-07-15

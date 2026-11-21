@@ -11,7 +11,7 @@ help:
 	@echo "  make open      - Open project in Xcode"
 	@echo "  make clean     - Remove generated files"
 	@echo ""
-	@echo "Testing (MASTER_HANDOVER_BLUEPRINT.md, see docs/testing/E2E_TEST_PLAN.md):"
+	@echo "Testing (see PLAN.md):"
 	@echo "  make blueprint-check   - Static blueprint guard (seconds, any OS)"
 	@echo "  make e2e               - Blueprint E2E suites on an iOS 18+ simulator"
 	@echo "  make e2e-all           - Every test suite on the simulator"
@@ -74,7 +74,7 @@ lint:
 	@which swiftlint > /dev/null || (echo "Installing swiftlint..." && brew install swiftlint)
 	@swiftlint OpenVision
 
-# --- Testing (MASTER_HANDOVER_BLUEPRINT.md) ---
+# --- Testing (see PLAN.md) ---
 
 blueprint-check:
 	@python3 scripts/blueprint/verify_blueprint.py

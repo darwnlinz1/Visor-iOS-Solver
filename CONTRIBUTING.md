@@ -61,8 +61,7 @@ func capPh() -> Data?
 
 ### Architecture Patterns
 
-See [docs/architecture.md](docs/architecture.md) for the full map — layout, MVVM, the
-`AIBackend` seam, and step-by-step guides for adding a backend or a native tool.
+See [PLAN.md](PLAN.md) §3 for the code map.
 
 - **MVVM**: Views render and forward interactions; ViewModels (`@MainActor ObservableObject`) orchestrate
 - **@MainActor**: Use for all UI-related code and managers
@@ -307,7 +306,7 @@ The app is distributed as source; there is no App Store or TestFlight step in th
 
 - Open a [Discussion](https://github.com/rayl15/OpenVision/discussions)
 - Check existing issues and PRs
-- Read `CLAUDE.md` for technical context
+- Read [PLAN.md](PLAN.md) for technical context
 
 ---
 

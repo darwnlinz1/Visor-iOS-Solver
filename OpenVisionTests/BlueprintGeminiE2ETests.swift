@@ -1,7 +1,7 @@
 // OpenVision - BlueprintGeminiE2ETests.swift
 // End-to-end through the REAL GeminiLiveService (request building, SSE streaming, retry policy,
 // conversation history) and the REAL TTSService, with only the network replaced by a scripted
-// URLProtocol. Mirrors the wearer's workflow from MASTER_HANDOVER_BLUEPRINT.md §2.1:
+// URLProtocol. Mirrors the wearer's workflow (see PLAN.md):
 // temple-shutter photo → "Ok Vision" + a free-form question (Vietnamese or English) → spoken
 // answer on the glasses + LaTeX on the phone → follow-up questions on the same photo.
 

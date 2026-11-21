@@ -11,8 +11,7 @@ step-by-step solution with rendered formulas.
 [![iOS 18+](https://img.shields.io/badge/iOS-18+-blue.svg)](https://developer.apple.com/ios/)
 
 > Fork of [rayl15/OpenVision](https://github.com/rayl15/OpenVision), narrowed to one workflow.
-> Why: [ADR-001](docs/architecture/ADR-001-solver-pipeline.md). How it fits together:
-> [docs/architecture.md](docs/architecture.md).
+> Design notes, known issues and the work plan: [PLAN.md](PLAN.md).
 
 ## What it does
 
@@ -57,7 +56,7 @@ open OpenVision.xcodeproj
 
 `Config.xcconfig` holds your Apple Team ID, bundle id and (optionally) Meta App ID / Client Token
 from the [Meta developer console](https://developer.meta.com). In Developer Mode the App ID may be
-`0`. Both config files are gitignored. More: [SETUP.md](SETUP.md).
+`0`. Both config files are gitignored. More: [PLAN.md](PLAN.md) §8.
 
 First run:
 1. Settings → **Kính Ray-Ban Meta** → **Đăng ký app** (opens Meta AI to grant access).
@@ -74,7 +73,7 @@ xcodebuild test -project OpenVision.xcodeproj -scheme OpenVision \
   -destination "platform=iOS Simulator,name=iPhone 16 Pro"
 ```
 
-See [docs/testing](docs/testing) for the end-to-end plan.
+See [PLAN.md](PLAN.md) §7 for the hardware test protocol.
 
 ## License & acknowledgments
 
