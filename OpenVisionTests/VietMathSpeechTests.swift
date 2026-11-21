@@ -514,6 +514,114 @@ final class VietMathSpeechTests: XCTestCase {
         XCTAssertEqual(VietMathSpeech.render("  \n ", vietnamese: true, style: .default), [])
     }
 
+    // MARK: - N4 regressions (T3.3): math meaning survives, nothing is glued together
+
+    func testN4FormulasAreReadNotStripped() {
+        // Old cleanSpokenAudio: "\frac{1}{2}" → "12", "\sqrt{x}" → "x", "x \le 2" → "x 2".
+        XCTAssertEqual(reading("$\\frac{1}{2}$"), "một phần hai")
+        XCTAssertEqual(reading("\\frac{1}{2}"), "một phần hai", "bare LaTeX in prose")
+        XCTAssertEqual(reading("$\\sqrt{x}$"), "căn ích")
+        XCTAssertEqual(reading("\\sqrt{x}"), "căn ích")
+        XCTAssertEqual(reading("$x \\le 2$"), "ích nhỏ hơn hoặc bằng 2")
+        XCTAssertEqual(reading("Vì x \\le 2 nên"), "Vì ích nhỏ hơn hoặc bằng 2 nên")
+        // Old: the leading "-" was dropped ("-2x+4=0" → "2x+4=0") and "2*3*4" became "234".
+        XCTAssertEqual(reading("-2x + 4 = 0"), "âm 2 ích cộng 4 bằng 0")
+        XCTAssertEqual(reading("-2x+4=0"), "âm 2 ích cộng 4 bằng 0")
+        XCTAssertEqual(reading("2*3*4"), "2 nhân 3 nhân 4")
+        XCTAssertEqual(reading("2 * 3 = 6"), "2 nhân 3 bằng 6")
+        XCTAssertEqual(reading("Ta có $\\frac{1}{2}$ cộng $\\sqrt{4}$ bằng **2,5** và ## Hết"),
+                       "Ta có một phần hai cộng căn 4 bằng 2 phẩy 5 và Hết")
+    }
+
+    // MARK: - Prose: numbers, units, symbols (T3.3)
+
+    func testProseNumbers() {
+        XCTAssertEqual(reading("Câu 4: 2,5."), "Câu 4: 2 phẩy 5.")
+        XCTAssertEqual(reading("Lấy 3.14 làm pi."), "Lấy 3 phẩy 14 làm pi.")
+        XCTAssertEqual(reading("Xác suất 0.125 thôi."), "Xác suất 0 phẩy 125 thôi.")
+        XCTAssertEqual(reading("Giá 2.500 đồng, dân số 1.000.000 người."), "Giá 2.500 đồng, dân số 1.000.000 người.",
+                       "dot thousands separators are left to the voice")
+        XCTAssertEqual(reading("Được 1.000.000,5 đồng."), "Được 1.000.000 phẩy 5 đồng.")
+        XCTAssertEqual(reading("Bản 2.14.0 và dãy 1,2,3."), "Bản 2.14.0 và dãy 1,2,3.")
+        XCTAssertEqual(reading("Đáp số: -3."), "Đáp số: âm 3.")
+        XCTAssertEqual(reading("Nhiệt độ (-5) độ."), "Nhiệt độ (âm 5) độ.")
+        XCTAssertEqual(reading("Đáp số: -3.", MathReadingStyle(negativeWord: .tru)), "Đáp số: trừ 3.")
+        XCTAssertEqual(reading("Làm câu 1-5 trước."), "Làm câu 1-5 trước.", "a range keeps its dash")
+    }
+
+    func testProseUnitsPercentAndDegrees() {
+        XCTAssertEqual(reading("Dài 5cm."), "Dài 5 xen-ti-mét.")
+        XCTAssertEqual(reading("Diện tích 5 cm2."), "Diện tích 5 xen-ti-mét vuông.")
+        // "²" makes the quantity a formula: its own piece, the formula pause replaces ", " and ".".
+        XCTAssertEqual(VietMathSpeech.render("Diện tích 10 m², thể tích 2 cm³.", vietnamese: true, style: .default), [
+            .words("Diện tích", isMath: false), .words("10 mét vuông", isMath: true),
+            .words("thể tích", isMath: false), .words("2 xen-ti-mét khối", isMath: true),
+        ])
+        XCTAssertEqual(reading("Gia tốc 9,8 m/s²."), "Gia tốc 9 phẩy 8 mét trên giây bình phương")
+        XCTAssertEqual(reading("Đi 2 h rồi nghỉ 30 min."), "Đi 2 giờ rồi nghỉ 30 phút.")
+        XCTAssertEqual(reading("Lực 10 N."), "Lực 10 niu-tơn.")
+        XCTAssertEqual(reading("Giảm 50% rồi 20 %."), "Giảm 50 phần trăm rồi 20 phần trăm.")
+        XCTAssertEqual(reading("Nước sôi ở 100°C."), "Nước sôi ở 100 độ xê.")
+        XCTAssertEqual(reading("Nước sôi ở 100°C.", asWritten), "Nước sôi ở 100 độ C.")
+        XCTAssertEqual(reading("Câu 2 A đúng."), "Câu 2 a đúng.", "a capital A after a number is an answer, not amperes")
+        XCTAssertEqual(reading("Giấy A4 và vitamin C."), "Giấy A4 và vitamin xê.")
+    }
+
+    func testUnicodeMathInProse() {
+        XCTAssertEqual(reading("Ta có x² + 1 > 0 với mọi x."), "Ta có ích bình phương cộng 1 lớn hơn 0 với mọi ích.")
+        XCTAssertEqual(reading("Góc bằng π/2 rad."), "Góc bằng pi trên 2 ra-đi-an")
+        XCTAssertEqual(reading("Vì Δ ≥ 0 nên có nghiệm."), "Vì đen-ta lớn hơn hoặc bằng 0 nên có nghiệm.")
+        XCTAssertEqual(reading("√2 ≈ 1,41"), "căn 2 xấp xỉ 1 phẩy 41")
+        XCTAssertEqual(reading("**Đáp án:** C"), "Đáp án: xê")
+    }
+
+    // MARK: - English answers (EnglishMathReader, T3.3)
+
+    func testEnglishReaderUsesTheSpokenMathWords() {
+        let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
+        XCTAssertEqual(en("$x^2 + 1 = 5$"), "x squared plus 1 equals 5")
+        XCTAssertEqual(en("$x^3 - 1$"), "x cubed minus 1")
+        XCTAssertEqual(en("$2^{10}$"), "2 to the power of 10")
+        XCTAssertEqual(en("$\\sqrt{x}$"), "the square root of x")
+        XCTAssertEqual(en("$\\frac{a}{b}$"), "a over b")
+        XCTAssertEqual(en("$3/4$"), "3 over 4")
+        XCTAssertEqual(en("$a \\times b \\div c$"), "a times b divided by c")
+        XCTAssertEqual(en("$a \\neq b$"), "a is not equal to b")
+        XCTAssertEqual(en("$a \\le b$"), "a is less than or equal to b")
+        XCTAssertEqual(en("$a \\ge b$"), "a is greater than or equal to b")
+        XCTAssertEqual(en("$\\pi \\approx 3.14$"), "pi is approximately 3.14")
+        XCTAssertEqual(en("$-3 < x$"), "negative 3 is less than x")
+        XCTAssertEqual(en("$x > 0$"), "x is greater than 0")
+        XCTAssertEqual(en("$50\\%$"), "50 percent")
+    }
+
+    func testEnglishReaderStructures() {
+        let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
+        XCTAssertEqual(en("$\\frac{x+1}{x-1}$"), "x plus 1, over x minus 1")
+        XCTAssertEqual(en("$f'(x) = 3x^2$"), "f prime of x equals 3 x squared")
+        XCTAssertEqual(en("$\\sin^2 x + \\cos^2 x = 1$"), "sine squared of x plus cosine squared of x equals 1")
+        XCTAssertEqual(en("$\\log_2 8 = 3$"), "log base 2 of 8 equals 3")
+        XCTAssertEqual(en("$\\int_0^1 x\\,dx$"), "the integral from 0 to 1 of x, d x")
+        XCTAssertEqual(en("$\\lim_{x \\to 0} \\frac{\\sin x}{x}$"), "the limit as x approaches 0 of sine of x over x")
+        XCTAssertEqual(en("$x \\in [1; 3]$"), "x is in the closed interval from 1 to 3")
+        XCTAssertEqual(en("$C_5^2 = 10$"), "5 choose 2 equals 10")
+        XCTAssertEqual(en("$v = 60 km/h$"), "v equals 60 kilometers per hour")
+        XCTAssertEqual(en("$30^\\circ$"), "30 degrees")
+        XCTAssertEqual(en("$2{,}5$"), "2.5")
+        XCTAssertEqual(en("$\\Delta = b^2 - 4ac$"), "delta equals b squared minus 4 a c")
+    }
+
+    func testEnglishAnswersKeepProseAndIgnoreTheVietnameseDictionary() {
+        let style = MathReadingStyle(pronunciationOverrides: ["cos": "cô-sin", "x": "ích-xì"])
+        XCTAssertEqual(VietMathSpeech.render("The answer is $\\cos x = 1$. Option C.", vietnamese: false, style: style), [
+            .words("The answer is", isMath: false),
+            .words("cosine of x equals 1", isMath: true),
+            .words("Option C.", isMath: false),
+        ])
+        XCTAssertEqual(reading("It costs 2,500 dollars, -3 degrees.", .default, vietnamese: false),
+                       "It costs 2,500 dollars, -3 degrees.")
+    }
+
     func testTypicalStepTakesLessThanFiveMilliseconds() {
         let step = "Dòng 2. Vì $\\Delta = b^2 - 4ac = 25 > 0$ nên phương trình có hai nghiệm phân biệt "
             + "$x_1 = \\frac{-b + \\sqrt{\\Delta}}{2a} = 3$ và $x_2 = \\frac{1}{2}$."

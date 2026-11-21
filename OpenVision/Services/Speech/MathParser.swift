@@ -1052,21 +1052,16 @@ struct MathParser {
         let (text, afterHead) = adjacentLetters(at: pos)
         let j = afterHead
         candidates.append((text, j - pos))
-        if j < tokens.count, case .symbol("^") = tokens[j].kind, j + 1 < tokens.count,
-           case .number(let e) = tokens[j + 1].kind, e == "2" || e == "3" {
-            candidates.append((text + "^" + e, j + 2 - pos))
+        if let (e, used) = unitExponent(at: j) {
+            candidates.append((text + "^" + e, j + used - pos))
         }
         if j + 1 < tokens.count, case .symbol("/") = tokens[j].kind, !tokens[j].spaceBefore {
             let (tail, afterTail) = adjacentLetters(at: j + 1)
             if !tail.isEmpty {
-                var compound = text + "/" + tail
-                var end = afterTail
-                candidates.append((compound, end - pos))
-                if end + 1 < tokens.count, case .symbol("^") = tokens[end].kind,
-                   case .number(let e) = tokens[end + 1].kind, e == "2" || e == "3" {
-                    compound += "^" + e
-                    end += 2
-                    candidates.append((compound, end - pos))
+                let compound = text + "/" + tail
+                candidates.append((compound, afterTail - pos))
+                if let (e, used) = unitExponent(at: afterTail) {
+                    candidates.append((compound + "^" + e, afterTail + used - pos))
                 }
             }
         }
@@ -1080,6 +1075,17 @@ struct MathParser {
             }
             for _ in 0..<candidate.count { advance() }
             return .unit(candidate.text)
+        }
+        return nil
+    }
+
+    /// "^2", "^{2}" (also what "²" lexes to) right after a unit: the exponent and the tokens used.
+    private func unitExponent(at j: Int) -> (String, Int)? {
+        guard j < tokens.count, case .symbol("^") = tokens[j].kind else { return nil }
+        if j + 1 < tokens.count, case .number(let e) = tokens[j + 1].kind, e == "2" || e == "3" { return (e, 2) }
+        if j + 3 < tokens.count, case .symbol("{") = tokens[j + 1].kind, case .number(let e) = tokens[j + 2].kind,
+           e == "2" || e == "3", case .symbol("}") = tokens[j + 3].kind {
+            return (e, 4)
         }
         return nil
     }

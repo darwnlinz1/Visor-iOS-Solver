@@ -4,15 +4,6 @@
 
 import Foundation
 
-/// One step of a reading: a word, punctuation glued to the previous word, or a short pause.
-enum MathReadingItem: Equatable {
-    case word(String)
-    case punct(String)
-    /// A short pause (`VietMathSpeech.shortPauseMilliseconds`) after a compound exponent, fraction,
-    /// root…; dropped when nothing follows or when punctuation already pauses.
-    case pause
-}
-
 struct VietnameseMathReader {
     let style: MathReadingStyle
     let dictionary: PronunciationDictionary
@@ -28,37 +19,7 @@ struct VietnameseMathReader {
 
     /// A formula as speech pieces (all `isMath: true`, separated by pauses where needed).
     func pieces(for node: MathNode) -> [SpeechPiece] {
-        Self.pieces(from: items(for: node), isMath: true)
-    }
-
-    /// Words, punctuation and pauses → pieces. A pause splits the words into two pieces.
-    static func pieces(from items: [MathReadingItem], isMath: Bool) -> [SpeechPiece] {
-        var pieces: [SpeechPiece] = []
-        var words: [String] = []
-        var pendingPause = false
-        for item in items {
-            switch item {
-            case .word(let w):
-                let trimmed = w.trimmingCharacters(in: .whitespaces)
-                guard !trimmed.isEmpty else { continue }
-                if pendingPause, !words.isEmpty {
-                    pieces.append(.words(words.joined(separator: " "), isMath: isMath))
-                    pieces.append(.pause(milliseconds: VietMathSpeech.shortPauseMilliseconds))
-                    words.removeAll()
-                }
-                pendingPause = false
-                words.append(trimmed)
-            case .punct(let p):
-                guard !words.isEmpty else { continue }
-                pendingPause = false  // the punctuation is the pause
-                if let last = words.last, let lastChar = last.last, [",", ";", ":"].contains(lastChar) { continue }
-                words[words.count - 1] += p
-            case .pause:
-                pendingPause = true
-            }
-        }
-        if !words.isEmpty { pieces.append(.words(words.joined(separator: " "), isMath: isMath)) }
-        return pieces
+        VietMathSpeech.pieces(from: items(for: node), isMath: true)
     }
 
     /// The reading of one node.
@@ -112,66 +73,14 @@ struct VietnameseMathReader {
 
     private var negative: String { style.negativeWord.word }
 
-    // MARK: - Shape of a node
+    // MARK: - Shape of a node (shared with EnglishMathReader, see MathNode.swift)
 
-    /// One word-ish thing: a number, a letter, a symbol, a signed number.
-    func isAtomic(_ node: MathNode) -> Bool {
-        switch node {
-        case .empty, .number, .identifier, .symbol, .unit:
-            return true
-        case .text(let t):
-            return !t.trimmingCharacters(in: .whitespaces).contains(" ")
-        case .unary(let o, let x):
-            return [.minus, .plus, .degree, .percent].contains(o) && isAtomic(x)
-        case .group(let x):
-            return isAtomic(x)
-        case .subscript(let b, let s):
-            return isAtomic(b) && isAtomic(s)
-        default:
-            return false
-        }
-    }
-
-    /// Short enough to need no "của", no comma and no pause: atoms, 2x, x², sin x, căn 2.
-    func isSimple(_ node: MathNode) -> Bool {
-        if isAtomic(node) { return true }
-        switch node {
-        case .juxtaposition(let xs):
-            return xs.allSatisfy { isAtomic($0) || isSimplePower($0) }
-        case .power:
-            return isSimplePower(node)
-        case .function(let f, let arg):
-            return f.base == nil && (arg.map { isAtomic($0) || isProductOfAtoms($0) } ?? true)
-        case .root(nil, let x):
-            return isAtomic(x)
-        case .unary(.factorial, let x):
-            return isAtomic(x)
-        case .vector, .angle, .triangle:
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func isSimplePower(_ node: MathNode) -> Bool {
-        if case .power(let b, let e) = node { return isAtomic(b) && isAtomic(e) }
-        return false
-    }
-
-    private func isProductOfAtoms(_ node: MathNode) -> Bool {
-        if case .juxtaposition(let xs) = node { return xs.allSatisfy { isAtomic($0) || isSimplePower($0) } }
-        return isSimplePower(node)
-    }
-
-    private func integerValue(_ node: MathNode) -> Int? {
-        if case .number(let s) = node, !s.contains("."), s.count <= 9 { return Int(s) }
-        return nil
-    }
-
-    private func isCompoundGroup(_ node: MathNode) -> Bool {
-        if case .group(let x) = node { return !isAtomic(x) }
-        return false
-    }
+    func isAtomic(_ node: MathNode) -> Bool { node.isAtomicTerm }
+    func isSimple(_ node: MathNode) -> Bool { node.isSimpleTerm }
+    private func isSimplePower(_ node: MathNode) -> Bool { node.isSimplePower }
+    private func isProductOfAtoms(_ node: MathNode) -> Bool { node.isProductOfAtoms }
+    private func integerValue(_ node: MathNode) -> Int? { node.integerValue }
+    private func isCompoundGroup(_ node: MathNode) -> Bool { node.isCompoundGroup }
 
     // MARK: - Reading
 

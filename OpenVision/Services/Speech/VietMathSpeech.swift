@@ -11,6 +11,15 @@ enum SpeechPiece: Equatable, Codable {
     case pause(milliseconds: Int)
 }
 
+/// One step of a formula reading: a word, punctuation glued to the previous word, or a short pause.
+enum MathReadingItem: Equatable {
+    case word(String)
+    case punct(String)
+    /// A short pause (`VietMathSpeech.shortPauseMilliseconds`) after a compound exponent, fraction,
+    /// root…; dropped when nothing follows or when punctuation already pauses.
+    case pause
+}
+
 enum VietMathSpeech {
     /// Longest `.words` text (PLAN.md §2.4: long utterances can stop mid-way).
     static let maxPieceLength = 200
@@ -25,8 +34,9 @@ enum VietMathSpeech {
         var warnings: [String]
     }
 
-    /// The only entry point. Prose keeps its words (numbers, units and symbols are normalised);
-    /// formulas are read in Vietnamese, or in English when `vietnamese` is false.
+    /// The only entry point. Prose keeps its words (in Vietnamese answers numbers, units and symbols
+    /// are normalised); formulas are read in Vietnamese, or by `EnglishMathReader` when `vietnamese`
+    /// is false. The pronunciation dictionary and letter names apply to Vietnamese answers only.
     static func render(_ text: String, vietnamese: Bool, style: MathReadingStyle) -> [SpeechPiece] {
         renderWithDiagnostics(text, vietnamese: vietnamese, style: style).pieces
     }
@@ -40,16 +50,14 @@ enum VietMathSpeech {
             case .prose(let prose):
                 let normalized = vietnamese ? reader.normalizeProse(prose) : prose
                 for sentence in sentences(normalized) {
-                    pieces.append(.words(sentence, isMath: false))
+                    // ", thể tích …" right after a formula: the formula's own pause replaces the comma.
+                    let text = String(sentence.drop(while: { [",", ";", ":", "."].contains($0) || $0.isWhitespace }))
+                    pieces.append(.words(text, isMath: false))
                 }
             case .math(let source):
                 let result = MathParser.parseWithDiagnostics(source, decimalComma: vietnamese)
                 warnings += result.warnings
-                if vietnamese {
-                    pieces += reader.pieces(for: result.node)
-                } else {
-                    pieces.append(.words(source, isMath: true))
-                }
+                pieces += vietnamese ? reader.pieces(for: result.node) : EnglishMathReader().pieces(for: result.node)
             }
         }
         return Rendering(pieces: finalize(pieces), warnings: warnings)
@@ -64,6 +72,36 @@ enum VietMathSpeech {
     }
 
     // MARK: - Pieces
+
+    /// Words, punctuation and pauses → pieces. A pause splits the words into two pieces.
+    static func pieces(from items: [MathReadingItem], isMath: Bool) -> [SpeechPiece] {
+        var pieces: [SpeechPiece] = []
+        var words: [String] = []
+        var pendingPause = false
+        for item in items {
+            switch item {
+            case .word(let w):
+                let trimmed = w.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else { continue }
+                if pendingPause, !words.isEmpty {
+                    pieces.append(.words(words.joined(separator: " "), isMath: isMath))
+                    pieces.append(.pause(milliseconds: shortPauseMilliseconds))
+                    words.removeAll()
+                }
+                pendingPause = false
+                words.append(trimmed)
+            case .punct(let p):
+                guard !words.isEmpty else { continue }
+                pendingPause = false  // the punctuation is the pause
+                if let last = words.last, let lastChar = last.last, [",", ";", ":"].contains(lastChar) { continue }
+                words[words.count - 1] += p
+            case .pause:
+                pendingPause = true
+            }
+        }
+        if !words.isEmpty { pieces.append(.words(words.joined(separator: " "), isMath: isMath)) }
+        return pieces
+    }
 
     /// Sanitises, drops empty or punctuation-only pieces, splits long ones and tidies pauses.
     static func finalize(_ pieces: [SpeechPiece]) -> [SpeechPiece] {

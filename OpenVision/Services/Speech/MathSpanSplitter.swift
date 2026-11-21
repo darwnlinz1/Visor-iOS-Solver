@@ -295,7 +295,7 @@ enum MathSpanSplitter {
 
     // MARK: - Markdown
 
-    /// Removes emphasis markers and code ticks so "**2,5**" is not read as multiplication.
+    /// Removes emphasis markers, code ticks and heading marks so "**2,5**" is not read as multiplication.
     /// A single "*" between two operands ("2*3") or between spaces ("a * b") stays.
     static func stripMarkdown(_ text: String) -> String {
         let chars = Array(text)
@@ -305,6 +305,13 @@ enum MathSpanSplitter {
         while i < chars.count {
             let c = chars[i]
             if c == "`" { i += 1; continue }
+            if c == "#" {
+                // Markdown heading marks ("## Kết luận"): never spoken.
+                var j = i
+                while j < chars.count, chars[j] == "#" { j += 1 }
+                let atLineStart = i == 0 || chars[i - 1].isWhitespace
+                if atLineStart, j == chars.count || chars[j].isWhitespace { i = j; continue }
+            }
             if c == "*" || c == "_" {
                 var j = i
                 while j < chars.count, chars[j] == c { j += 1 }

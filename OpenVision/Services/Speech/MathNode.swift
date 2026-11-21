@@ -212,3 +212,70 @@ extension MathNode {
         }
     }
 }
+
+// MARK: - Shape, as the readers see it
+
+extension MathNode {
+    /// One word-ish thing: a number, a letter, a symbol, a signed number, x₁.
+    var isAtomicTerm: Bool {
+        switch self {
+        case .empty, .number, .identifier, .symbol, .unit:
+            return true
+        case .text(let t):
+            return !t.trimmingCharacters(in: .whitespaces).contains(" ")
+        case .unary(let o, let x):
+            return [.minus, .plus, .degree, .percent].contains(o) && x.isAtomicTerm
+        case .group(let x):
+            return x.isAtomicTerm
+        case .subscript(let b, let s):
+            return b.isAtomicTerm && s.isAtomicTerm
+        default:
+            return false
+        }
+    }
+
+    /// Short enough to need no "of"/"của", no comma and no pause: atoms, 2x, x², sin x, √2.
+    var isSimpleTerm: Bool {
+        if isAtomicTerm { return true }
+        switch self {
+        case .juxtaposition(let xs):
+            return xs.allSatisfy { $0.isAtomicTerm || $0.isSimplePower }
+        case .power:
+            return isSimplePower
+        case .function(let f, let arg):
+            return f.base == nil && (arg.map { $0.isAtomicTerm || $0.isProductOfAtoms } ?? true)
+        case .root(nil, let x):
+            return x.isAtomicTerm
+        case .unary(.factorial, let x):
+            return x.isAtomicTerm
+        case .vector, .angle, .triangle:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// x², xⁿ: an atom to an atomic power.
+    var isSimplePower: Bool {
+        if case .power(let b, let e) = self { return b.isAtomicTerm && e.isAtomicTerm }
+        return false
+    }
+
+    /// 2x, ab, 3x²: atoms side by side.
+    var isProductOfAtoms: Bool {
+        if case .juxtaposition(let xs) = self { return xs.allSatisfy { $0.isAtomicTerm || $0.isSimplePower } }
+        return isSimplePower
+    }
+
+    /// Round brackets around more than an atom: (x + 1).
+    var isCompoundGroup: Bool {
+        if case .group(let x) = self { return !x.isAtomicTerm }
+        return false
+    }
+
+    /// The value of a plain integer literal (up to 9 digits).
+    var integerValue: Int? {
+        if case .number(let s) = self, !s.contains("."), s.count <= 9 { return Int(s) }
+        return nil
+    }
+}
