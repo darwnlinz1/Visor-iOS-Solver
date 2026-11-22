@@ -233,6 +233,13 @@ final class VietMathParserTests: XCTestCase {
             ("(1; 3]", .interval(lowerClosed: false, num("1"), num("3"), upperClosed: true)),
             ("x \\in [1; 3]", bin(.elementOf, x, .interval(lowerClosed: true, num("1"), num("3"), upperClosed: true))),
             ("(x; y) = (1; 2)", bin(.equals, .tuple([x, id("y")]), .tuple([num("1"), num("2")]))),
+            // Review B3: the coordinates of a vector; a solution set or a domain stays an interval.
+            ("\\vec{u} = (1; 2)", bin(.equals, .vector(id("u")), .tuple([num("1"), num("2")]))),
+            ("\\overrightarrow{AB} = (3; -4)",
+             bin(.equals, .vector(juxt(id("A"), id("B"))), .tuple([num("3"), neg(num("4"))]))),
+            ("S = (2; +\\infty)", bin(.equals, id("S"), .interval(lowerClosed: false, num("2"),
+                                                                 .unary(.plus, .symbol("infty")), upperClosed: false))),
+            ("M = (1; 2)", bin(.equals, id("M"), .interval(lowerClosed: false, num("1"), num("2"), upperClosed: false))),
         ])
     }
 

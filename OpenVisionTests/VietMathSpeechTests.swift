@@ -220,6 +220,21 @@ final class VietMathSpeechTests: XCTestCase {
         ])
     }
 
+    func testVectorCoordinatesAreNotAnInterval() {
+        // Review B3: only a vector on the left of "=" makes (a; b) coordinates.
+        check([
+            row("$\\vec{u} = (1; 2)$", "véc-tơ u bằng 1, 2"),
+            row("$\\overrightarrow{AB} = (3; -4)$", "véc-tơ A B bằng 3, âm 4"),
+            row("$\\vec{u} = (1; 2; 3)$", "véc-tơ u bằng 1, 2, 3"),
+            row("$S = (2; +\\infty)$", "S bằng khoảng từ 2 đến dương vô cùng"),
+            row("$D = (1; +\\infty)$", "D bằng khoảng từ 1 đến dương vô cùng"),
+            row("$x \\in (1; 2)$", "x thuộc khoảng từ 1 đến 2"),
+            row("$M = (1; 2)$", "M bằng khoảng từ 1 đến 2"),
+            row("$\\vec{u} = (1; +\\infty)$", "véc-tơ u bằng khoảng từ 1 đến dương vô cùng"),
+        ])
+        XCTAssertEqual(reading("$\\vec{u} = (1; 2)$", .default, vietnamese: false), "vector u equals 1, 2")
+    }
+
     func testLogicAndGreekLetters() {
         check([
             row("$\\forall x$", "với mọi x"),

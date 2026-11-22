@@ -320,6 +320,7 @@ struct MathParser {
 
     private mutating func parseRelation() -> MathNode {
         var left = parseEvaluated()
+        var operand = left  // the operand right before the operator
         while let op = relationOperator() {
             advance()
             var right = parseEvaluated()
@@ -328,10 +329,23 @@ struct MathParser {
                 // (x; y) = (1; 2): a solution pair, not two intervals.
                 left = .tuple([a, b])
                 right = .tuple([c, d])
+            } else if op == .equals, case .vector = operand, case .interval(false, let a, let b, false) = right,
+                      !isInfinity(a), !isInfinity(b) {
+                // \vec{u} = (1; 2): coordinates. S = (2; +\infty) and D = (1; +\infty) stay intervals.
+                right = .tuple([a, b])
             }
             left = .binary(op, left, right)
+            operand = right
         }
         return left
+    }
+
+    /// ∞, +∞, -∞.
+    private func isInfinity(_ node: MathNode) -> Bool {
+        switch node {
+        case .symbol("infty"), .unary(.plus, .symbol("infty")), .unary(.minus, .symbol("infty")): return true
+        default: return false
+        }
     }
 
     /// An additive expression, optionally followed by an evaluation bar `\Big|_a^b`.
