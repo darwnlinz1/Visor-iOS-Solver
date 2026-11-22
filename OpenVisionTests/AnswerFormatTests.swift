@@ -1,8 +1,8 @@
 // OpenVision - AnswerFormatTests.swift
 // Answer format v2.1 parser (PLAN.md §4.2, T4.2): tags and their variants, missing TYPE,
 // untagged text, true/false normalization, protocol tokens, and the streaming contract
-// (every intermediate result is a prefix of the final parse). Pure logic: runs on Linux
-// (scripts/swift-local/run.sh) and in the iOS test target.
+// (every intermediate result is a prefix of the final parse, and the type, once known, is the
+// final type). Pure logic: runs on Linux (scripts/swift-local/run.sh) and in the iOS test target.
 
 import XCTest
 @testable import OpenVision
@@ -220,7 +220,8 @@ final class AnswerFormatTests: XCTestCase {
             ("ANSWER: Paris.", .other),
             ("FINAL: 42", .other),
             ("Đây là đáp án.\nQ1: A", .mcq),
-            ("Q1: A\nP1: Bài 1\nL1: $x = 1$\nFINAL: $x = 1$", .mixed),
+            ("Q1: A\nP1: Bài 1\nL1: $x = 1$\nFINAL: $x = 1$", .mcq),
+            ("L1: $x = 1$\nQ2: B", .essay),
         ]
         for (reply, type) in cases {
             let parsed = AnswerFormat.parse(reply)
@@ -233,7 +234,6 @@ final class AnswerFormatTests: XCTestCase {
 
     func testDeclaredTypeWins() {
         XCTAssertEqual(AnswerFormat.parse("TYPE: ESSAY\nQ3: C").type, .essay)
-        XCTAssertEqual(AnswerFormat.parse("TYPE: MCQ\nQ1: A\nTYPE: ESSAY\nL1: x").type, .mixed)
         XCTAssertEqual(AnswerFormat.parse("**TYPE:** mcq\nQ1: A").declaredType, .mcq)
         XCTAssertEqual(AnswerFormat.parse("type: Trắc nghiệm\nQ1: A").type, .mcq)
         XCTAssertEqual(AnswerFormat.parse("TYPE: tự luận\nL1: x").type, .essay)
@@ -242,6 +242,66 @@ final class AnswerFormatTests: XCTestCase {
         XCTAssertNil(unknown.declaredType)
         XCTAssertEqual(unknown.type, .mcq, "an unreadable TYPE falls back to inference")
         XCTAssertEqual(unknown.sections, [AnswerSection(.question(1), "A")], "the TYPE line is never read")
+    }
+
+    /// The type is decided once, by the first line that can decide it, so the type a streamed
+    /// reply shows early is the type of the finished reply.
+    func testLaterLinesNeverChangeTheType() {
+        let twoTypes = AnswerFormat.parse("TYPE: MCQ\nQ1: A\nTYPE: ESSAY\nL1: x")
+        XCTAssertEqual(twoTypes.type, .mcq, "a second TYPE line does not make it MIXED")
+        XCTAssertEqual(twoTypes.declaredType, .mcq)
+        XCTAssertEqual(twoTypes.sections, [AnswerSection(.question(1), "A"), AnswerSection(.line(1), "x")])
+
+        let lateType = AnswerFormat.parse("Q1: A\nTYPE: ESSAY\nL1: x")
+        XCTAssertEqual(lateType.type, .mcq, "a TYPE line after the first tag comes too late")
+        XCTAssertNil(lateType.declaredType, "the type came from the Q tag")
+
+        XCTAssertEqual(AnswerFormat.parse("TYPE: banana\nL1: x\nTYPE: MCQ\nQ1: A").type, .essay)
+        XCTAssertEqual(AnswerFormat.parse("ANSWER: Có.\nTYPE: MCQ\nQ1: A").type, .other)
+        XCTAssertEqual(AnswerFormat.parse("Đây là đáp án.\nTYPE: ESSAY\nQ1: A").type, .essay,
+                       "untagged text decides nothing")
+        XCTAssertTrue(AnswerFormat.parse("Paris là thủ đô.").isTypeKnown, "a finished reply always has a type")
+    }
+
+    func testPartialAnswerKnowsTheTypeOnceItsLineIsComplete() {
+        let cases: [(String, AnswerType?)] = [   // nil: not decided yet
+            ("", nil),
+            ("TYPE: MC", nil),
+            ("TYPE: MCQ", nil),                  // may still grow into "TYPE: MCQ + ESSAY"
+            ("TYPE: MCQ\n", .mcq),
+            ("TYPE: MCQ\nQ1: A\nQ2: B\n", .mcq),
+            ("**TYPE:** essay\nL1", .essay),
+            ("TYPE: MIXED\r\nQ1", .mixed),
+            ("TYPE: OTHER\nANSWER: Xin", .other),
+            ("TYPE: banana\n", nil),             // a value that is not understood decides nothing
+            ("TYPE: banana\nQ1: A\n", .mcq),
+            ("TYPE: MCQ\nQ1: A\nTYPE: ESSAY\nL1: x\n", .mcq),
+            ("Q1: A", nil),
+            ("Q1: A\n", .mcq),
+            ("Q3:\n", .mcq),
+            ("P1: Bài 1\n", .essay),
+            ("Đây là đáp án.\n", nil),           // untagged text decides nothing
+            ("Đây là đáp án.\nL1: x", nil),
+            ("Đây là đáp án.\nL1: x\n", .essay),
+            ("ANSWER: Xin chào. Mình", nil),     // sentences stream before the line is complete
+            ("ANSWER: Xin chào.\n", .other),
+            ("[[CAPTURE]]", nil),
+        ]
+        for (prefix, type) in cases {
+            let partial = AnswerFormat.partialAnswer(in: prefix)
+            XCTAssertEqual(partial.isTypeKnown, type != nil, prefix.debugDescription)
+            XCTAssertEqual(partial.type, type ?? .other, prefix.debugDescription)
+            XCTAssertEqual(partial.sections, AnswerFormat.completedSections(in: prefix), prefix.debugDescription)
+            XCTAssertFalse(partial.isTruncated, prefix.debugDescription)
+        }
+        XCTAssertEqual(AnswerFormat.partialAnswer(in: "TYPE: MCQ\nQ1: A\nQ2: B\n").sections,
+                       [AnswerSection(.question(1), "A"), AnswerSection(.question(2), "B")])
+        XCTAssertEqual(AnswerFormat.partialAnswer(in: "**TYPE:** mcq\n").declaredType, .mcq)
+        XCTAssertNil(AnswerFormat.partialAnswer(in: "Q1: A\n").declaredType)
+        XCTAssertNil(AnswerFormat.partialAnswer(in: "TYPE: MCQ").declaredType)
+        XCTAssertTrue(AnswerFormat.partialAnswer(in: "[[CAPTURE]]").requestsCapture)
+        XCTAssertTrue(AnswerFormat.partialAnswer(in: "TYPE: OTHER\nANSWER: Tạm biệt! [[END]]").endsConversation)
+        XCTAssertFalse(AnswerFormat.partialAnswer(in: "TYPE: OTHER\nANSWER: Tạm biệt! [[EN").endsConversation)
     }
 
     func testUntaggedReplyIsOtherSplitIntoSentences() {
@@ -486,26 +546,41 @@ final class AnswerFormatTests: XCTestCase {
     // MARK: - Helpers
 
     /// Grows `reply` one Unicode scalar at a time (finer than the network's chunks) and checks that
-    /// what was released never changes, never contains a protocol token, and ends as the final parse.
+    /// what was released never changes, never contains a protocol token, and ends as the final parse;
+    /// and that the type is `.other` until it is known, then the final type for good.
     private func assertStreamingContract(_ reply: String, file: StaticString = #filePath, line: UInt = #line) {
-        let final = AnswerFormat.parse(reply).sections
+        let parsed = AnswerFormat.parse(reply)
+        let final = parsed.sections
         for section in final {
             XCTAssertFalse(containsToken(section.text), "token in \"\(section.text)\" of \(reply.debugDescription)", file: file, line: line)
         }
         var scalars = String.UnicodeScalarView()
         var previous: [AnswerSection] = []
+        var typeWasKnown = false
         for scalar in reply.unicodeScalars {
             scalars.append(scalar)
-            let partial = AnswerFormat.completedSections(in: String(scalars))
-            guard final.starts(with: partial), partial.starts(with: previous) else {
-                XCTFail("streamed \(partial) after \(previous) is not a prefix of \(final) for \(String(scalars).debugDescription)",
+            let text = String(scalars)
+            let answer = AnswerFormat.partialAnswer(in: text)
+            let partial = answer.sections
+            guard final.starts(with: partial), partial.starts(with: previous),
+                  partial == AnswerFormat.completedSections(in: text) else {
+                XCTFail("streamed \(partial) after \(previous) is not a prefix of \(final) for \(text.debugDescription)",
                         file: file, line: line)
                 return
             }
+            guard answer.type == (answer.isTypeKnown ? parsed.type : .other),
+                  answer.declaredType == (answer.isTypeKnown ? parsed.declaredType : nil),
+                  answer.isTypeKnown || !typeWasKnown else {
+                XCTFail("streamed type \(answer.type) (known: \(answer.isTypeKnown), declared: \(String(describing: answer.declaredType))) "
+                        + "for \(text.debugDescription), final \(parsed.type)", file: file, line: line)
+                return
+            }
             previous = partial
+            typeWasKnown = answer.isTypeKnown
         }
-        let truncated = AnswerFormat.parse(reply, finishReason: "MAX_TOKENS").sections
-        XCTAssertEqual(truncated, previous, "MAX_TOKENS reads exactly what streamed", file: file, line: line)
+        let truncated = AnswerFormat.parse(reply, finishReason: "MAX_TOKENS")
+        XCTAssertEqual(truncated.sections, previous, "MAX_TOKENS reads exactly what streamed", file: file, line: line)
+        XCTAssertEqual(truncated.type, parsed.type, "MAX_TOKENS does not change the type", file: file, line: line)
     }
 
     private func containsToken(_ text: String) -> Bool {

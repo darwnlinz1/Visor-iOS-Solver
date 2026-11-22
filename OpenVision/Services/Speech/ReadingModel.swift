@@ -114,6 +114,8 @@ struct ReadingPlan: Codable, Equatable, Sendable {
     var turnID: UUID
     /// "vi" or "en": one voice for the whole answer (fixes N5).
     var languageCode: String
+    /// While the answer streams in: `.other` until its TYPE line (or, without one, its first tag
+    /// line) has arrived, then the final type (`ReplyAssembler.update`).
     var answerType: AnswerType
     var segments: [ReadingSegment]
     var isComplete: Bool

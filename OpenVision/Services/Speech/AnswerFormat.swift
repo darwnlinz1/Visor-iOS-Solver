@@ -8,6 +8,8 @@
 // so every intermediate result is a prefix (same sections, same order) of `parse(_:).sections`
 // for the finished reply. Tagged Q / P / L / FINAL lines are returned when their line is complete;
 // ANSWER and untagged text are returned sentence by sentence as each sentence completes.
+// `partialAnswer(in:)` adds the answer type as soon as the line that decides it is complete; from
+// then on it is the type `parse(_:)` gives for the finished reply.
 
 import Foundation
 
@@ -60,12 +62,19 @@ struct AnswerSection: Equatable, Sendable {
     }
 }
 
-/// A whole reply, parsed.
+/// A whole reply, parsed (`AnswerFormat.parse`), or the part of it that has streamed in so far
+/// (`AnswerFormat.partialAnswer(in:)`).
 struct ParsedAnswer: Equatable, Sendable {
-    /// The declared TYPE, or the type inferred from the tags when the TYPE line is missing.
+    /// Decided once, by the first complete line that can decide it: a TYPE line with a known value,
+    /// or else the first tag (Q → MCQ, L / P → ESSAY, FINAL / ANSWER → OTHER). Later lines never
+    /// change it, so the type known while streaming is the final type. `.other` when no line decides.
     var type: AnswerType
-    /// The TYPE line as written (nil when missing or not understood).
+    /// The value of the TYPE line that decided `type` (nil when the type comes from a tag: no TYPE
+    /// line, a value that is not understood, or a TYPE line after the first tag).
     var declaredType: AnswerType?
+    /// False only while streaming, until the line that decides `type` is complete (`type` is
+    /// `.other` until then). A finished reply always has a known type.
+    var isTypeKnown: Bool
     var sections: [AnswerSection]
     /// The model asked to see (reply starts with `[[CAPTURE]]`): nothing is read, the app takes a photo.
     var requestsCapture: Bool
@@ -89,17 +98,31 @@ enum AnswerFormat {
     /// off (it is dropped, like while streaming) and `isTruncated` is set.
     static func parse(_ raw: String, finishReason: String? = nil) -> ParsedAnswer {
         let full = scan(raw, isFinal: true)
-        let resolved = resolveType(full)
         let truncated = isTruncated(finishReason: finishReason)
         var sections = full.sections
         if truncated && !full.requestsCapture {
             sections = scan(raw, isFinal: false).sections
         }
-        return ParsedAnswer(type: resolved.type, declaredType: resolved.declared,
+        return ParsedAnswer(type: full.type ?? .other, declaredType: full.declaredType, isTypeKnown: true,
                             sections: full.requestsCapture ? [] : sections,
                             requestsCapture: full.requestsCapture,
                             endsConversation: endsConversation(raw),
                             isTruncated: truncated)
+    }
+
+    /// A reply that is still streaming in, as far as it can no longer change: the sections of
+    /// `completedSections(in:)`, and the type once the TYPE line (or, without one, the first tag
+    /// line) is complete. Until then `type` is `.other` and `isTypeKnown` is false; after that the
+    /// type is the one `parse(_:)` gives for the finished reply. `isTruncated` is always false here
+    /// (only the finish reason of the finished reply can tell).
+    static func partialAnswer(in accumulated: String) -> ParsedAnswer {
+        let partial = scan(accumulated, isFinal: false)
+        return ParsedAnswer(type: partial.type ?? .other, declaredType: partial.declaredType,
+                            isTypeKnown: partial.type != nil,
+                            sections: partial.sections,
+                            requestsCapture: partial.requestsCapture,
+                            endsConversation: endsConversation(accumulated),
+                            isTruncated: false)
     }
 
     /// Sections of a reply that is still streaming in: only the ones that can no longer change.
@@ -286,10 +309,20 @@ enum AnswerFormat {
 
     private struct ScanResult {
         var sections: [AnswerSection] = []
-        var declaredTypes: [AnswerType] = []
-        /// Q / P / L / FINAL / ANSWER tags of complete lines, in order (type inference).
-        var tags: [Tag] = []
+        /// Set by the first complete line that decides the answer type; never changed afterwards.
+        var type: AnswerType?
+        /// The value of the TYPE line, when a TYPE line decided `type`.
+        var declaredType: AnswerType?
         var requestsCapture = false
+
+        /// Only the first complete TYPE line with a known value, or else the first complete tag
+        /// line, decides the type. A streamed reply therefore shows its final type early, and the
+        /// type never changes (a later TYPE line or other kinds of tags do not make it MIXED).
+        mutating func decideType(_ decided: AnswerType, declared: Bool) {
+            guard type == nil else { return }
+            type = decided
+            if declared { declaredType = decided }
+        }
     }
 
     /// One pass over the reply. `isFinal == false`: the last line may still grow, so it is
@@ -345,18 +378,18 @@ enum AnswerFormat {
             case .tag(.type, let content):
                 guard isComplete else { break lineLoop }
                 flushPending()
-                if let type = answerType(fromTypeValue: clean(content)) { result.declaredTypes.append(type) }
+                if let type = answerType(fromTypeValue: clean(content)) { result.decideType(type, declared: true) }
             case .tag(.answer, let content):
                 flushPending()
                 sawContent = true
-                if isComplete { result.tags.append(.answer) }
+                if isComplete { result.decideType(inferredType(from: .answer), declared: false) }
                 appendSentences(of: content, isComplete: isComplete)
                 if !isComplete { break lineLoop }
             case .tag(let tag, let content):
                 flushPending()
                 sawContent = true
                 guard isComplete else { break lineLoop }
-                result.tags.append(tag)
+                result.decideType(inferredType(from: tag), declared: false)
                 let text = cleanTagged(content)
                 if text.isEmpty {
                     pending = tag
@@ -393,28 +426,13 @@ enum AnswerFormat {
         }
     }
 
-    private static func resolveType(_ scan: ScanResult) -> (type: AnswerType, declared: AnswerType?) {
-        let declaredSet = Set(scan.declaredTypes)
-        var declared = scan.declaredTypes.first
-        if declaredSet.contains(.mixed) || (declaredSet.contains(.mcq) && declaredSet.contains(.essay)) {
-            declared = .mixed
-        }
-        if let declared { return (declared, declared) }
-
-        // No TYPE line: the first tag decides (Q → MCQ, L / P → ESSAY, anything else → OTHER);
-        // Q and L / P tags together make it MIXED.
-        let hasQuestion = scan.tags.contains { if case .question = $0 { return true } else { return false } }
-        let hasEssay = scan.tags.contains {
-            switch $0 {
-            case .problem, .line: return true
-            default: return false
-            }
-        }
-        if hasQuestion && hasEssay { return (.mixed, nil) }
-        switch scan.tags.first {
-        case .question?: return (.mcq, nil)
-        case .problem?, .line?: return (.essay, nil)
-        default: return (.other, nil)
+    /// The type a tag implies when no TYPE line came before it (PLAN.md §4.2): Q → MCQ,
+    /// L / P → ESSAY, anything else → OTHER.
+    private static func inferredType(from tag: Tag) -> AnswerType {
+        switch tag {
+        case .question: return .mcq
+        case .problem, .line: return .essay
+        case .type, .final, .answer: return .other
         }
     }
 

@@ -53,6 +53,21 @@ final class ReplyAssemblerTests: XCTestCase {
     ANSWER: Nó là biểu tượng của nước Pháp
     """
 
+    /// No TYPE line: the first tag line decides the type (L → ESSAY), the lead-in sentence does not.
+    private let untypedEssayReply = #"""
+    Lời giải như sau.
+    L1: $2x + 3 = 7$ nên $2x = 4$.
+    L2: $x = 2$.
+    FINAL: Vậy $x = 2$.
+    """#
+
+    /// No TYPE line: Q → MCQ.
+    private let untypedMCQReply = """
+    Q1: A
+    Q2: C
+    Q3: a Đ, b S, c Đ, d S
+    """
+
     private let vietnamese = ReplyAssembler(languageCode: "vi")
     private let english = ReplyAssembler(languageCode: "en")
 
@@ -195,26 +210,61 @@ final class ReplyAssemblerTests: XCTestCase {
     // MARK: - Streaming and MAX_TOKENS
 
     func testStreamedPlanGrowsByAppendingAndEndsAsTheFinalPlan() {
-        for reply in [mcqReply, essayReply, mixedReply, otherReply] {
+        // Each reply with the index of the line that decides its type: the TYPE line, or without
+        // one the first tag line.
+        let replies: [(reply: String, typeLine: Int)] = [
+            (mcqReply, 0), (essayReply, 0), (mixedReply, 0), (otherReply, 0),
+            (untypedEssayReply, 1), (untypedMCQReply, 0),
+        ]
+        for (reply, typeLine) in replies {
             let turnID = UUID()
             let parsed = AnswerFormat.parse(reply)
             let expected = vietnamese.plan(turnID: turnID, parsed: parsed)
             var plan = vietnamese.emptyPlan(turnID: turnID)
             var scalars = String.UnicodeScalarView()
+            var completeLines = 0
             for scalar in reply.unicodeScalars {
                 scalars.append(scalar)
+                if scalar == "\n" { completeLines += 1 }
                 let before = plan.segments
-                let added = vietnamese.update(&plan, streamed: AnswerFormat.completedSections(in: String(scalars)))
+                let added = vietnamese.update(&plan, streamed: AnswerFormat.partialAnswer(in: String(scalars)))
                 XCTAssertEqual(plan.segments, before + added)
                 XCTAssertTrue(expected.segments.starts(with: plan.segments), "streamed segments must never change")
+                XCTAssertEqual(plan.segments.map(\.id), Array(plan.segments.indices), "ids are positions")
+                XCTAssertEqual(plan.answerType, completeLines > typeLine ? parsed.type : .other,
+                               "type after \(String(scalars).debugDescription)")
                 XCTAssertFalse(plan.isComplete)
             }
             XCTAssertLessThan(plan.segments.count, expected.segments.count, "the last line waits for the end of the reply")
             vietnamese.finish(&plan, with: parsed)
             XCTAssertEqual(plan, expected)
-            XCTAssertEqual(vietnamese.update(&plan, streamed: parsed.sections + parsed.sections), [], "a complete plan is final")
+            var doubled = parsed
+            doubled.sections += parsed.sections
+            XCTAssertEqual(vietnamese.update(&plan, streamed: doubled), [], "a complete plan is final")
             XCTAssertEqual(vietnamese.finish(&plan, with: parsed), [])
+            XCTAssertEqual(plan, expected)
         }
+        XCTAssertEqual(AnswerFormat.parse(untypedEssayReply).type, .essay)
+        XCTAssertEqual(AnswerFormat.parse(untypedMCQReply).type, .mcq)
+    }
+
+    func testStreamedPlanTakesItsTypeFromTheTypeLine() {
+        var plan = vietnamese.emptyPlan(turnID: UUID())
+        vietnamese.update(&plan, streamed: AnswerFormat.partialAnswer(in: "TYPE: MCQ"))
+        XCTAssertEqual(plan.answerType, .other, "the TYPE line may still grow")
+        let added = vietnamese.update(&plan, streamed: AnswerFormat.partialAnswer(in: "TYPE: MCQ\nQ1: A\nQ2: B\n"))
+        XCTAssertEqual(added.map(\.speechText), ["Câu 1: A.", "Câu 2: B."])
+        XCTAssertEqual(plan.answerType, .mcq)
+        vietnamese.update(&plan, streamed: AnswerFormat.partialAnswer(in: "TYPE: MCQ\nQ1: A\nQ2: B\nTYPE: ESSAY\nL1: x\n"))
+        XCTAssertEqual(plan.answerType, .mcq, "a known type never changes")
+        vietnamese.finish(&plan, with: AnswerFormat.parse("TYPE: MCQ\nQ1: A\nQ2: B\nTYPE: ESSAY\nL1: x"))
+        XCTAssertEqual(plan.answerType, .mcq)
+        XCTAssertEqual(plan.segments.map(\.kind), [.mcq(1), .mcq(2), .line(1)])
+
+        var guessed = vietnamese.emptyPlan(turnID: UUID(), answerType: .essay)
+        vietnamese.update(&guessed, streamed: AnswerFormat.partialAnswer(in: "Lời giải như sau.\nL1"))
+        XCTAssertEqual(guessed.answerType, .essay, "an undecided reply leaves the plan's type alone")
+        XCTAssertEqual(guessed.segments.count, 1)
     }
 
     func testTruncatedReplyEndsWithANotice() {

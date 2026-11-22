@@ -33,14 +33,17 @@ struct ReplyAssembler: Equatable, Sendable {
         ReadingPlan(turnID: turnID, languageCode: languageCode, answerType: answerType)
     }
 
-    /// Adds the segments for the sections not yet in `plan`. `sections` is the cumulative result of
-    /// `AnswerFormat.completedSections(in:)`; returns only the new segments (for `ReadingEngine.append`).
+    /// Adds the segments for the sections not yet in `plan`, and sets `plan.answerType` as soon as
+    /// the reply has decided it (until then the plan keeps its type, `.other` for `emptyPlan`).
+    /// `partial` is `AnswerFormat.partialAnswer(in:)` of everything received so far; its type, once
+    /// known, is final. Returns only the new segments (for `ReadingEngine.append`).
     @discardableResult
-    func update(_ plan: inout ReadingPlan, streamed sections: [AnswerSection]) -> [ReadingSegment] {
-        guard !plan.isComplete, sections.count > plan.segments.count else { return [] }
-        let added = segments(for: Array(sections[plan.segments.count...]), firstID: plan.segments.count)
-        plan.segments.append(contentsOf: added)
-        return added
+    func update(_ plan: inout ReadingPlan, streamed partial: ParsedAnswer) -> [ReadingSegment] {
+        guard !plan.isComplete else { return [] }
+        if partial.isTypeKnown {
+            plan.answerType = partial.type
+        }
+        return appendSegments(for: partial.sections, to: &plan)
     }
 
     /// Completes a streamed plan with the final parse: the sections that had not streamed yet, the
@@ -48,7 +51,7 @@ struct ReplyAssembler: Equatable, Sendable {
     @discardableResult
     func finish(_ plan: inout ReadingPlan, with parsed: ParsedAnswer) -> [ReadingSegment] {
         guard !plan.isComplete else { return [] }
-        var added = update(&plan, streamed: parsed.sections)
+        var added = appendSegments(for: parsed.sections, to: &plan)
         if parsed.isTruncated {
             let notice = noticeSegment(AnswerFormat.truncationNotice(after: parsed.sections, languageCode: languageCode),
                                        id: plan.segments.count)
@@ -78,6 +81,15 @@ struct ReplyAssembler: Equatable, Sendable {
 
     func segments(for sections: [AnswerSection], firstID: Int = 0) -> [ReadingSegment] {
         sections.enumerated().map { segment(for: $0.element, id: firstID + $0.offset) }
+    }
+
+    /// Appends the segments of the sections past the ones already in `plan` (`sections` is
+    /// cumulative: it starts with the sections the plan already has). Returns the new segments.
+    private func appendSegments(for sections: [AnswerSection], to plan: inout ReadingPlan) -> [ReadingSegment] {
+        guard sections.count > plan.segments.count else { return [] }
+        let added = segments(for: Array(sections[plan.segments.count...]), firstID: plan.segments.count)
+        plan.segments.append(contentsOf: added)
+        return added
     }
 
     /// One section → one segment, per the reading table of PLAN.md §4.2.
