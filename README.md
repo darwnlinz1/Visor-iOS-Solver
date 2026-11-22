@@ -11,14 +11,32 @@ step-by-step solution with rendered formulas.
 [![iOS 18+](https://img.shields.io/badge/iOS-18+-blue.svg)](https://developer.apple.com/ios/)
 
 > Fork of [rayl15/OpenVision](https://github.com/rayl15/OpenVision), narrowed to one workflow.
-> Design notes, known issues and the work plan: [PLAN.md](PLAN.md).
+> Design notes, known issues and the work plan: [PLAN.md](PLAN.md). Coding agents: start with
+> [AGENTS.md](AGENTS.md).
+
+## Status (November 2026)
+
+Version 2 is in progress on `feature/voice-v2` ([PLAN.md](PLAN.md) §3 and §11). In v2 every answer is read
+aloud and the phone screen no longer carries the solution. Multiple-choice answers are read as "Câu 1: A.
+Câu 2: C.". Essay solutions are read line by line, with pauses and their own speed. Formulas are read the way
+Vietnamese classrooms say them.
+
+- **Done (wave 1):** the spoken-math module, the v2.1 answer-format parser, the reading model and the new
+  prompt text, with 143 pure-Swift tests. CI now runs every test suite (218 tests). The app no longer
+  crashes at launch when the Meta SDK fails to configure. These new modules are built into the app but
+  **not called yet**.
+- **Next (wave 2):** wire them into speech, the Gemini client and History, then remove the phone display.
+
+Until wave 2 lands, the app behaves as described below.
 
 ## What it does
 
-- **Photo straight from the glasses.** The capture button is routed to the app (Meta DAT 1.0)
-  and the photo is taken at full sensor resolution — no waiting for the Meta AI app to import it
-  into Camera Roll. Short press: photo for your next question. Hold: photo and solve now.
-  Double press: hear the last answer again. (All configurable.)
+- **Photo straight from the glasses.** The capture button is routed to the app (Meta DAT 1.0.1),
+  with no waiting for the Meta AI app to import the photo into Camera Roll. Short press: photo for
+  your next question. Hold: photo and solve now. Double press: hear the last answer again. (All
+  configurable.) A full-resolution photo over Bluetooth takes about 9 s at 720p and 49 s at
+  12 MP, so the app often uses a 1440×1080 still from the camera stream instead; PLAN.md
+  T7.3–T7.5 rework this path.
 - **Ask freely.** No fixed commands: "giải câu 3", "what does this say?", "hướng dẫn mình làm
   câu này", or a question that has nothing to do with the photo.
 - **Answer in your language, pronounced right.** Vietnamese question → Vietnamese answer in a
@@ -47,8 +65,8 @@ Unsigned IPA: run the **Build Unsigned IPA** workflow (Actions tab) and sideload
 (e.g. with AltStore or Sideloadly). To build yourself:
 
 ```bash
-git clone https://github.com/darwnlinz1/OpenVision.git
-cd OpenVision
+git clone https://github.com/darwnlinz1/Visor-iOS-Solver.git
+cd Visor-iOS-Solver
 cp Config.xcconfig.example Config.xcconfig
 cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
 open OpenVision.xcodeproj
@@ -68,12 +86,16 @@ First run:
 ## Tests
 
 ```bash
-python3 scripts/blueprint/verify_blueprint.py      # static workflow + security guard
-xcodebuild test -project OpenVision.xcodeproj -scheme OpenVision \
-  -destination "platform=iOS Simulator,name=iPhone 16 Pro"
+python3 scripts/blueprint/verify_blueprint.py   # static workflow + security guard (any OS, seconds)
+scripts/swift-local/run.sh                      # pure-Swift suites (spoken math, answer format) with SwiftPM, no Xcode
+make e2e                                        # every XCTest suite on an iOS 18+ simulator (macOS + Xcode)
+make e2e-blueprint                              # only the Blueprint workflow suites
 ```
 
-See [PLAN.md](PLAN.md) §7 for the hardware test protocol.
+Every pull request runs two GitHub Actions workflows. **CI** builds the app and the tests for a device.
+**E2E** runs the static guard and then every test suite on a simulator: Gemini is replaced by a scripted
+endpoint, and the tests use the simulator's real photo library. The opt-in `live_gemini` run calls the real
+API. [PLAN.md](PLAN.md) §12 describes the test layers, and §7 the hardware test protocol (H1–H22).
 
 ## License & acknowledgments
 
