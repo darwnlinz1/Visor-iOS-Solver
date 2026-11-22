@@ -1,13 +1,30 @@
 // OpenVision - TTSService.swift
-// Text-to-speech service using AVSpeechSynthesizer
+// Text-to-speech service using AVSpeechSynthesizer + VietMathSpeech (PLAN.md T3.3, T5.1, N4, N5).
 
 import AVFoundation
 import Foundation
 
-/// Speaks Gemini's SPOKEN channel through the glasses: each sentence in its own language's voice
-/// (Vietnamese or English), with leftover math symbols read as words.
+/// Abstraction over `AVSpeechSynthesizer` so `ReadingEngine` can be tested deterministically
+/// without hardware audio output (PLAN.md §4.4, T5.2).
 @MainActor
-final class TTSService: NSObject, ObservableObject {
+protocol SpeechSynthesizing: AnyObject {
+    var isSpeaking: Bool { get }
+    var isPaused: Bool { get }
+    var onUtteranceFinished: (() -> Void)? { get set }
+    var onWordRange: ((NSRange, String) -> Void)? { get set }
+    var onPauseChanged: ((Bool) -> Void)? { get set }
+
+    func speakPiece(_ utterance: ScheduledUtterance)
+    func pause()
+    func continueSpeaking()
+    func stop()
+}
+
+/// Speaks replies through the glasses or phone speaker: converts math via `VietMathSpeech`
+/// BEFORE safety-net cleaning (fixing N4), keeps one voice language across an entire reply
+/// (fixing N5), and guards against stalled AudioQueue initialization (`-66680`).
+@MainActor
+final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
     // MARK: - Singleton
 
     static let shared = TTSService()
@@ -15,38 +32,53 @@ final class TTSService: NSObject, ObservableObject {
     // MARK: - Published State
 
     @Published var isSpeaking: Bool = false
+    @Published var isPaused: Bool = false
 
     // MARK: - Callbacks
 
     /// Called when speech starts
     var onSpeechStarted: (() -> Void)?
 
-    /// Called when speech ends
+    /// Called when all queued speech finishes or is stopped
     var onSpeechEnded: (() -> Void)?
+
+    /// Called after each individual `ReadingEngine` utterance finishes (T5.1 / T5.2)
+    var onUtteranceFinished: (() -> Void)?
+
+    /// Called as each word is spoken (for live UI highlight, T5.1)
+    var onWordRange: ((NSRange, String) -> Void)?
+
+    /// Called when pause state transitions via `didPause` / `didContinue` (T5.1)
+    var onPauseChanged: ((Bool) -> Void)?
 
     // MARK: - Speech Synthesizer
 
     private let synthesizer = AVSpeechSynthesizer()
 
-    // MARK: - Streaming state
+    // MARK: - Queue state
 
     /// Utterances enqueued but not yet finished. `isSpeaking` only drops to false when this
-    /// hits 0 AND no more chunks are coming — so it doesn't flap between queued sentences.
+    /// hits 0 AND no more chunks are coming — so it doesn't flap between queued pieces.
     var pendingUtterances: Int { activeUtterances.count }
 
-    /// The utterances of the current reply. Tracked by identity, not a counter: `stop()` cancels
-    /// the old ones, but their didCancel callbacks arrive later — with a counter they ate into the
-    /// count of the NEXT reply and ended it early (barge-in unpaused while still speaking).
     private var activeUtterances = Set<ObjectIdentifier>()
+    /// Utterances driven by `ReadingEngine` (each reports completion via `onUtteranceFinished`).
+    private var pieceUtterances = Set<ObjectIdentifier>()
+    /// Watchdog tasks that recover if `didStart` never fires (e.g. AudioQueue `-66680` / speechd stall).
+    private var startWatchdogs: [ObjectIdentifier: Task<Void, Never>] = [:]
 
-    /// The language of the reply being spoken (nil until known). Sentences that carry no language
-    /// of their own ("x = 2.", "B.") are read in it, so a Vietnamese answer isn't interrupted by
-    /// a math line in the English voice.
+    /// The language of the reply being spoken (locked for the whole reply, fixing N5).
     private var replyIsVietnamese: Bool?
 
-    /// True while a streamed reply is still being fed sentence-by-sentence. Keeps `isSpeaking`
-    /// latched even if the audio queue momentarily drains faster than the LLM produces text.
     private var streamingActive = false
+
+    /// Lead-in silence before the first piece of a reply: Bluetooth speakers drop the first
+    /// few hundred milliseconds of audio after silence, which clipped the start of answers.
+    static let bluetoothLeadIn: TimeInterval = 0.3
+
+    /// Maximum wait for `AVSpeechSynthesizer` to fire `didStart` on an utterance before treating
+    /// the audio device as stalled (prevents permanent `isSpeaking = true` deadlock on AudioQueue error).
+    static let startWatchdogSeconds: TimeInterval = 12.0
 
     // MARK: - Voice Selection
 
@@ -56,9 +88,6 @@ final class TTSService: NSObject, ObservableObject {
         if text.range(of: vietnamesePattern, options: .regularExpression) != nil {
             return true
         }
-        // Vietnamese typed without diacritics. Single words are matched as WHOLE words — as
-        // substrings, "tru" made "true"/"structure" Vietnamese and an English answer was read
-        // in the Vietnamese voice.
         let lower = text.lowercased()
         let words = Set(lower.split(whereSeparator: { !$0.isLetter }).map(String.init))
         let viWords: Set<String> = ["nghiem", "bang", "chia", "nhan", "cong", "tru"]
@@ -66,24 +95,47 @@ final class TTSService: NSObject, ObservableObject {
         return !words.isDisjoint(with: viWords) || viPhrases.contains { lower.contains($0) }
     }
 
-    // MARK: - Spoken Audio Cleaning (Visor parity)
+    // MARK: - Spoken Audio Cleaning (Safety net AFTER VietMathSpeech — fixes N4)
 
-    /// Clean LaTeX formulas, markdown, and lingering tags before speech synthesis.
+    /// Safety-net sanitizer run AFTER `VietMathSpeech.render`: removes lingering markdown markers
+    /// (`**`, `#`, backticks) and stray forbidden markup (`$ { } \ ^ _`), while NEVER stripping
+    /// math semantics, leading minus signs, or multiplication asterisks (PLAN.md N4, T3.3).
     /// `@inline(never)`: Blueprint checklist test 6 verifies this symbol is present in the
     /// Release Mach-O; with a single caller the optimizer would otherwise inline it away.
     @inline(never)
     static func cleanSpokenAudio(_ text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        s = s.replacingOccurrences(of: #"(?i)^\s*[-*•]?\s*(?:\[?(?:SPOKEN|DISPLAY)\]?)\s*:?\s*"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"(?i)\b(?:SPOKEN|DISPLAY)\b\s*:"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"^[:\s\-*#]+"#, with: "", options: .regularExpression)
+        guard !s.isEmpty else { return "" }
         s = s.replacingOccurrences(of: #"\*{1,3}([^*]+)\*{1,3}"#, with: "$1", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"`{1,3}[^`]*`{1,3}"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"`{1,3}([^`]*)`{1,3}"#, with: "$1", options: .regularExpression)
         s = s.replacingOccurrences(of: #"#{1,6}\s*"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"\\[a-zA-Z]+"#, with: "", options: .regularExpression)
-        s = s.replacingOccurrences(of: #"[\$\{\}\[\]\\]"#, with: "", options: .regularExpression)
+        s = s.replacingOccurrences(of: #"[\$\{\}\\\^_]"#, with: " ", options: .regularExpression)
         s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Pure pipeline (T3.3): runs `VietMathSpeech.render` FIRST, passes every `.words` piece
+    /// through `cleanSpokenAudio`, and attaches `.pause(ms)` to the preceding piece's `delayAfter`
+    /// (never emitting empty utterances).
+    static func spokenPieces(
+        for text: String,
+        vietnamese: Bool,
+        style: MathReadingStyle = .default
+    ) -> [(text: String, delayAfter: TimeInterval)] {
+        let rendered = VietMathSpeech.render(text, vietnamese: vietnamese, style: style)
+        var result: [(text: String, delayAfter: TimeInterval)] = []
+        for piece in rendered {
+            switch piece {
+            case .words(let raw, _):
+                let cleaned = cleanSpokenAudio(raw)
+                guard !cleaned.isEmpty else { continue }
+                result.append((text: cleaned, delayAfter: 0))
+            case .pause(let ms):
+                guard ms > 0, !result.isEmpty else { continue }
+                result[result.count - 1].delayAfter += TimeInterval(ms) / 1000.0
+            }
+        }
+        return result
     }
 
     /// True when a sentence says nothing about its language: no Vietnamese and fewer than two
@@ -92,16 +144,6 @@ final class TTSService: NSObject, ObservableObject {
         guard !containsVietnamese(text) else { return false }
         let words = text.split(whereSeparator: { !$0.isLetter }).filter { $0.count >= 3 }
         return words.count < 2
-    }
-
-    /// The language a sentence is read in: its own when it has one, else the reply's.
-    private func sentenceIsVietnamese(_ text: String) -> Bool {
-        if Self.isLanguageNeutral(text) {
-            return replyIsVietnamese ?? SolverIntent.speaksVietnamese
-        }
-        let vietnamese = Self.containsVietnamese(text)
-        if replyIsVietnamese == nil { replyIsVietnamese = vietnamese }
-        return vietnamese
     }
 
     /// Voice for one language — the chosen voice, else the best installed one.
@@ -117,7 +159,7 @@ final class TTSService: NSObject, ObservableObject {
         return Self.bestVoice(for: "en-US")
     }
 
-    /// The voice for one sentence: the chosen (or best installed) voice of the sentence's language.
+    /// The voice for one text snippet: the chosen (or best installed) voice of its language.
     static func voice(forText text: String, vietnamese: AVSpeechSynthesisVoice? = nil,
                       english: AVSpeechSynthesisVoice? = nil) -> AVSpeechSynthesisVoice? {
         if containsVietnamese(text) {
@@ -128,11 +170,9 @@ final class TTSService: NSObject, ObservableObject {
         return bestVoice(for: "en-US")
     }
 
-    /// Highest-quality installed voice for a language (Premium > Enhanced > Default), so a
-    /// downloaded enhanced Vietnamese/English voice is used automatically.
+    /// Highest-quality installed voice for a language (Premium > Enhanced > Default).
     static func bestVoice(for language: String) -> AVSpeechSynthesisVoice? {
         if let cached = bestVoiceCache[language] { return cached }
-        // Only upgraded (enhanced/premium), non-novelty voices compete; otherwise the system default.
         let upgraded = AVSpeechSynthesisVoice.speechVoices().filter {
             $0.language == language && $0.quality != .default && !$0.voiceTraits.contains(.isNoveltyVoice)
         }
@@ -142,7 +182,6 @@ final class TTSService: NSObject, ObservableObject {
         return voice
     }
 
-    /// Per-language pick, so streaming sentence-by-sentence doesn't rescan the voice list.
     private static var bestVoiceCache: [String: AVSpeechSynthesisVoice] = [:]
 
     /// Get all available voices for a language
@@ -150,7 +189,6 @@ final class TTSService: NSObject, ObservableObject {
         return AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language.hasPrefix(languageCode) }
             .sorted { v1, v2 in
-                // Sort by quality (premium first), then by name
                 if v1.quality != v2.quality {
                     return v1.quality.rawValue > v2.quality.rawValue
                 }
@@ -161,10 +199,10 @@ final class TTSService: NSObject, ObservableObject {
     /// Get display name for a voice quality
     static func qualityDisplayName(_ quality: AVSpeechSynthesisVoiceQuality) -> String {
         switch quality {
-        case .default: return "Default"
-        case .enhanced: return "Enhanced"
-        case .premium: return "Premium"
-        @unknown default: return "Unknown"
+        case .default: return "Mặc định"
+        case .enhanced: return "Nâng cao (Enhanced)"
+        case .premium: return "Cao cấp (Premium)"
+        @unknown default: return "Không rõ"
         }
     }
 
@@ -175,14 +213,21 @@ final class TTSService: NSObject, ObservableObject {
         synthesizer.delegate = self
     }
 
-    // MARK: - Speak
+    // MARK: - Speak (single-shot for notices, errors, short replies)
 
-    /// Speak text (single-shot: replaces anything currently playing). Queued sentence by
-    /// sentence, so a reply mixing Vietnamese and English is read with the right voice for each.
-    func speak(_ text: String) {
+    /// Speak text (single-shot: replaces anything currently playing). Uses one voice language
+    /// for the entire reply (fixing N5) and converts formulas through `VietMathSpeech` first (fixing N4).
+    func speak(_ text: String, languageCode: String? = nil) {
         stop()
         let cleaned = Self.cleanSpokenAudio(text)
-        if !Self.isLanguageNeutral(cleaned) { replyIsVietnamese = Self.containsVietnamese(cleaned) }
+        guard !cleaned.isEmpty else { return }
+        if let languageCode {
+            replyIsVietnamese = languageCode.lowercased().hasPrefix("vi")
+        } else if !Self.isLanguageNeutral(cleaned) {
+            replyIsVietnamese = Self.containsVietnamese(cleaned)
+        } else {
+            replyIsVietnamese = SolverIntent.speaksVietnamese
+        }
         let sentences = TextChunking.sentences(text)
         for sentence in sentences.isEmpty ? [text] : sentences {
             enqueue(sentence)
@@ -191,24 +236,22 @@ final class TTSService: NSObject, ObservableObject {
 
     // MARK: - Streaming (sentence-by-sentence)
 
-    /// Begin a streamed reply. Clears the queue and latches `isSpeaking` true so the recognizer
-    /// stays paused across the gaps between sentences while the LLM is still generating.
-    func beginStreaming() {
+    func beginStreaming(languageCode: String? = nil) {
         stop()
+        if let languageCode {
+            replyIsVietnamese = languageCode.lowercased().hasPrefix("vi")
+        }
         streamingActive = true
         isSpeaking = true
         onSpeechStarted?()
     }
 
-    /// Enqueue one sentence without interrupting what's already queued. AVSpeechSynthesizer plays
-    /// queued utterances back-to-back, so this pipelines speech behind the LLM as it streams.
     func speakChunk(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         enqueue(trimmed)
     }
 
-    /// Signal that no more sentences are coming. Releases the latch once the queue drains.
     func endStreaming() {
         streamingActive = false
         if pendingUtterances == 0 {
@@ -217,51 +260,147 @@ final class TTSService: NSObject, ObservableObject {
         }
     }
 
-    /// Lead-in silence before the first sentence of a reply: Bluetooth speakers drop the first
-    /// few hundred milliseconds of audio after silence, which clipped the start of answers.
-    static let bluetoothLeadIn: TimeInterval = 0.3
+    // MARK: - ReadingEngine per-piece playback (T5.1)
 
-    /// Build an utterance with the right voice and hand it to the synthesizer's queue.
-    private func enqueue(_ text: String) {
-        let cleaned = Self.cleanSpokenAudio(text)
-        guard !cleaned.isEmpty else { return }
-        let vietnamese = sentenceIsVietnamese(cleaned)
-        let spoken = SpokenMath.normalize(cleaned, vietnamese: vietnamese)
-        guard !spoken.isEmpty else { return }
-        let utterance = AVSpeechUtterance(string: spoken)
+    func speakPiece(_ scheduled: ScheduledUtterance) {
+        let text = scheduled.text
+        let safeText = Self.cleanSpokenAudio(text)
+        guard !safeText.isEmpty else {
+            onUtteranceFinished?()
+            return
+        }
+        let vietnamese = scheduled.languageCode.lowercased().hasPrefix("vi")
+        replyIsVietnamese = vietnamese
+        let utterance = AVSpeechUtterance(string: safeText)
         utterance.voice = voice(vietnamese: vietnamese)
-        utterance.rate = min(max(SettingsManager.shared.settings.speechRate, AVSpeechUtteranceMinimumSpeechRate),
+        utterance.rate = min(max(scheduled.rate, AVSpeechUtteranceMinimumSpeechRate),
                              AVSpeechUtteranceMaximumSpeechRate)
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0
-        if activeUtterances.isEmpty {
-            utterance.preUtteranceDelay = Self.bluetoothLeadIn
-        }
-        activeUtterances.insert(ObjectIdentifier(utterance))
+        utterance.preUtteranceDelay = max(0, scheduled.preDelay)
+        utterance.postUtteranceDelay = max(0, scheduled.postDelay)
+
+        let id = ObjectIdentifier(utterance)
+        let wasIdle = !isSpeaking
+        activeUtterances.insert(id)
+        pieceUtterances.insert(id)
         isSpeaking = true
+        isPaused = false
+        if wasIdle { onSpeechStarted?() }
+        armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
         synthesizer.speak(utterance)
     }
+
+    // MARK: - Internal enqueue (VietMathSpeech -> cleanSpokenAudio -> AVSpeechUtterance)
+
+    private func enqueue(_ text: String) {
+        let vietnamese: Bool
+        if let locked = replyIsVietnamese {
+            vietnamese = locked
+        } else if !Self.isLanguageNeutral(text) {
+            let detected = Self.containsVietnamese(text)
+            replyIsVietnamese = detected
+            vietnamese = detected
+        } else {
+            vietnamese = SolverIntent.speaksVietnamese
+        }
+
+        let settings = SettingsManager.shared.settings
+        let pieces = Self.spokenPieces(for: text, vietnamese: vietnamese, style: settings.mathReadingStyle)
+        guard !pieces.isEmpty else { return }
+
+        let baseRate = min(max(settings.clampedSpeechRate, AVSpeechUtteranceMinimumSpeechRate),
+                           AVSpeechUtteranceMaximumSpeechRate)
+
+        for piece in pieces {
+            let utterance = AVSpeechUtterance(string: piece.text)
+            utterance.voice = voice(vietnamese: vietnamese)
+            utterance.rate = baseRate
+            utterance.pitchMultiplier = 1.0
+            utterance.volume = 1.0
+            if activeUtterances.isEmpty {
+                utterance.preUtteranceDelay = Self.bluetoothLeadIn
+            }
+            if piece.delayAfter > 0 {
+                utterance.postUtteranceDelay = piece.delayAfter
+            }
+            let id = ObjectIdentifier(utterance)
+            activeUtterances.insert(id)
+            isSpeaking = true
+            isPaused = false
+            armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
+            synthesizer.speak(utterance)
+        }
+    }
+
+    private func armStartWatchdog(for id: ObjectIdentifier, preDelay: TimeInterval) {
+        let waitSeconds = Self.startWatchdogSeconds + max(0, preDelay)
+        let task = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(waitSeconds * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            guard self.activeUtterances.contains(id) else { return }
+            AppLog.error(.tts, "AVSpeechSynthesizer didStart watchdog fired after \(Int(waitSeconds))s — recovering stuck audio queue")
+            self.recoverStalledUtterance(id)
+        }
+        startWatchdogs[id] = task
+    }
+
+    private func cancelWatchdog(for id: ObjectIdentifier) {
+        startWatchdogs.removeValue(forKey: id)?.cancel()
+    }
+
+    private func cancelAllWatchdogs() {
+        for (_, task) in startWatchdogs { task.cancel() }
+        startWatchdogs.removeAll()
+    }
+
+    private func recoverStalledUtterance(_ id: ObjectIdentifier) {
+        cancelWatchdog(for: id)
+        let wasPiece = pieceUtterances.remove(id) != nil
+        activeUtterances.remove(id)
+        if activeUtterances.isEmpty && !streamingActive {
+            synthesizer.stopSpeaking(at: .immediate)
+            isSpeaking = false
+            isPaused = false
+            onSpeechEnded?()
+        }
+        if wasPiece {
+            onUtteranceFinished?()
+        }
+    }
+
+    // MARK: - Playback control
 
     /// Stop speaking and clear the queue.
     func stop() {
         let wasSpeaking = isSpeaking || !activeUtterances.isEmpty
-        // Forget the old utterances first: their didCancel callbacks then find nothing to end.
+        cancelAllWatchdogs()
         activeUtterances.removeAll()
+        pieceUtterances.removeAll()
         replyIsVietnamese = nil
         streamingActive = false
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
+        isPaused = false
         if wasSpeaking { onSpeechEnded?() }
     }
 
     /// Pause speaking
     func pause() {
-        synthesizer.pauseSpeaking(at: .word)
+        guard isSpeaking, !isPaused else { return }
+        if synthesizer.pauseSpeaking(at: .word) {
+            isPaused = true
+            onPauseChanged?(true)
+        }
     }
 
     /// Continue speaking
     func continueSpeaking() {
-        synthesizer.continueSpeaking()
+        guard isPaused else { return }
+        if synthesizer.continueSpeaking() {
+            isPaused = false
+            onPauseChanged?(false)
+        }
     }
 }
 
@@ -269,12 +408,9 @@ final class TTSService: NSObject, ObservableObject {
 
 extension TTSService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            // The moment audio actually begins — the honest end of the wearer's wait. Marked here,
-            // not where the view model hands text over: hand-off-time marking excluded synthesis
-            // entirely, which made TTS TTFB structurally zero and perceived latency optimistic.
-            // First-wins per turn, and gated inside the collector on the turn having requested
-            // TTS, so later sentences and unrelated system utterances can't misattribute.
+            self.cancelWatchdog(for: id)
             MetricsCollector.shared.markFirstAudio()
             if !self.isSpeaking {
                 self.isSpeaking = true
@@ -283,14 +419,39 @@ extension TTSService: AVSpeechSynthesizerDelegate {
         }
     }
 
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        let spoken = utterance.speechString
+        Task { @MainActor in
+            self.onWordRange?(characterRange, spoken)
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.isPaused = true
+            self.onPauseChanged?(true)
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.isPaused = false
+            self.onPauseChanged?(false)
+        }
+    }
+
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            // An utterance of a reply that was already stopped: nothing of the current one ended.
+            self.cancelWatchdog(for: id)
             guard self.activeUtterances.remove(id) != nil else { return }
-            // Only truly "done" when the queue is empty AND no more sentences are coming.
+            let wasPiece = self.pieceUtterances.remove(id) != nil
+            if wasPiece {
+                self.onUtteranceFinished?()
+            }
             if self.activeUtterances.isEmpty && !self.streamingActive {
                 self.isSpeaking = false
+                self.isPaused = false
                 self.onSpeechEnded?()
             }
         }
@@ -299,72 +460,15 @@ extension TTSService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
-            // stop() already forgot the utterances it cancelled (and reported the end).
+            self.cancelWatchdog(for: id)
             guard self.activeUtterances.remove(id) != nil else { return }
+            self.pieceUtterances.remove(id)
             if self.activeUtterances.isEmpty {
                 self.streamingActive = false
                 self.isSpeaking = false
+                self.isPaused = false
                 self.onSpeechEnded?()
             }
         }
-    }
-}
-
-// MARK: - Spoken math (pure, unit-testable)
-
-/// Reads math symbols that slipped into the SPOKEN channel as words in the answer's language, so
-/// the voice says "x bình phương bằng 4" instead of "x caret 2 equals sign 4". The system prompt
-/// already asks Gemini to spell math out; this is the safety net. Deliberately conservative:
-/// "1-5" (a range), "Ray-Ban" and plain prose dashes are left alone.
-enum SpokenMath {
-    private struct Words {
-        let squared, cubed, power, root, over, times, divided, notEqual, lessEqual, greaterEqual,
-            approx, less, greater, equals, plus, minus, negative, percent: String
-    }
-
-    private static let vietnamese = Words(
-        squared: "bình phương", cubed: "lập phương", power: "mũ", root: "căn", over: "phần",
-        times: "nhân", divided: "chia", notEqual: "khác", lessEqual: "nhỏ hơn hoặc bằng",
-        greaterEqual: "lớn hơn hoặc bằng", approx: "xấp xỉ", less: "nhỏ hơn", greater: "lớn hơn",
-        equals: "bằng", plus: "cộng", minus: "trừ", negative: "âm", percent: "phần trăm")
-
-    private static let english = Words(
-        squared: "squared", cubed: "cubed", power: "to the power of", root: "the square root of",
-        over: "over", times: "times", divided: "divided by", notEqual: "is not equal to",
-        lessEqual: "is less than or equal to", greaterEqual: "is greater than or equal to",
-        approx: "is approximately", less: "is less than", greater: "is greater than",
-        equals: "equals", plus: "plus", minus: "minus", negative: "negative", percent: "percent")
-
-    static func normalize(_ text: String, vietnamese isVietnamese: Bool) -> String {
-        let w = isVietnamese ? vietnamese : english
-        var s = text
-        func replace(_ pattern: String, _ template: String) {
-            s = s.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
-        }
-        replace(#"\^\s*2(?![0-9])"#, " \(w.squared)")
-        replace(#"\^\s*3(?![0-9])"#, " \(w.cubed)")
-        replace(#"\^\s*\(([^()]*)\)"#, " \(w.power) $1")
-        replace(#"\^\s*(-?[0-9A-Za-z]+)"#, " \(w.power) $1")
-        replace(#"²"#, " \(w.squared)")
-        replace(#"³"#, " \(w.cubed)")
-        replace(#"√\s*"#, "\(w.root) ")
-        replace(#"([0-9])\s*/\s*([0-9])"#, "$1 \(w.over) $2")
-        replace(#"\s*[×·∗]\s*"#, " \(w.times) ")
-        replace(#"\s*÷\s*"#, " \(w.divided) ")
-        replace(#"\s*≠\s*"#, " \(w.notEqual) ")
-        replace(#"\s*≤\s*"#, " \(w.lessEqual) ")
-        replace(#"\s*≥\s*"#, " \(w.greaterEqual) ")
-        replace(#"\s*≈\s*"#, " \(w.approx) ")
-        replace(#"\s+<\s+"#, " \(w.less) ")
-        replace(#"\s+>\s+"#, " \(w.greater) ")
-        replace(#"\s*=\s*"#, " \(w.equals) ")
-        replace(#"\s+\+\s+|(?<=[0-9A-Za-z)])\+(?=[0-9A-Za-z(])"#, " \(w.plus) ")
-        replace(#"([0-9)])\s+[-−]\s+([0-9(])"#, "$1 \(w.minus) $2")
-        replace(#"(^|[\s(])[-−]([0-9])"#, "$1\(w.negative) $2")
-        replace(#"([0-9])\s*%"#, "$1 \(w.percent)")
-        replace(#"π"#, " pi ")
-        replace(#"[_^]"#, " ")
-        replace(#"\s+"#, " ")
-        return s.trimmingCharacters(in: .whitespaces)
     }
 }

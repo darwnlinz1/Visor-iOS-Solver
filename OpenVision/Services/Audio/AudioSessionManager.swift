@@ -1,7 +1,13 @@
 // OpenVision - AudioSessionManager.swift
-// Manages AVAudioSession configuration for different modes
+// Manages AVAudioSession configuration for Ray-Ban Meta glasses (Bluetooth HFP) and iPhone speaker.
+// Offloads synchronous setCategory/setActive XPC calls onto a dedicated serial queue to avoid
+// iOS main-thread Hang Risk warnings while preserving all Lesson 2 audio invariants.
 
 import AVFoundation
+import Foundation
+
+/// Dedicated serial queue for blocking AVAudioSession XPC calls (prevents main-thread hang warnings).
+private let audioSessionQueue = DispatchQueue(label: "com.openvision.audio-session", qos: .userInitiated)
 
 /// Manages audio session configuration
 @MainActor
@@ -12,7 +18,7 @@ final class AudioSessionManager {
 
     // MARK: - Properties
 
-    private let audioSession = AVAudioSession.sharedInstance()
+    private nonisolated var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
 
     /// Current audio mode
     private(set) var currentMode: AudioMode = .inactive
@@ -52,7 +58,6 @@ final class AudioSessionManager {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            // Delivered on the main queue (queue: .main), so the main actor is already ours.
             MainActor.assumeIsolated {
                 self?.handleAudioRouteChange(notification)
             }
@@ -64,18 +69,17 @@ final class AudioSessionManager {
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
             return
         }
-        print("[AudioSession] Route changed: reason=\(reason.rawValue), route: \(currentRouteDescription)")
+        AppLog.debug(.audio, "Route changed: reason=\(reason.rawValue), route: \(currentRouteDescription)")
 
         switch reason {
         case .newDeviceAvailable, .oldDeviceUnavailable:
             // IGNORE .categoryChange and .routeConfigurationChange to prevent infinite ping-pong loops!
             // DO NOT call audioSession.setPreferredInput(hfp) inside handleAudioRouteChange!
-            // Debounce onRouteChange?() by 0.5s and check if input actually changed to prevent hardware bursts.
             routeChangeWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
                 self.lastInputPortUID = self.audioSession.currentRoute.inputs.first?.uid
-                print("[AudioSession] Debounced route change fired (reason=\(reason.rawValue)), route: \(self.currentRouteDescription)")
+                AppLog.info(.audio, "Debounced route change fired (reason=\(reason.rawValue)), route: \(self.currentRouteDescription)")
                 self.onRouteChange?()
             }
             routeChangeWorkItem = workItem
@@ -106,7 +110,7 @@ final class AudioSessionManager {
         }
 
         currentMode = mode
-        print("[AudioSession] Configured for \(mode)")
+        AppLog.info(.audio, "Configured for \(mode)")
     }
 
     /// Deactivate audio session
@@ -117,7 +121,6 @@ final class AudioSessionManager {
 
     // MARK: - Mode Configurations
 
-    /// Configure for voice chat (iPhone mic, aggressive AEC)
     private func configureVoiceChat() throws {
         try audioSession.setCategory(
             .playAndRecord,
@@ -133,7 +136,6 @@ final class AudioSessionManager {
         try audioSession.setActive(true)
     }
 
-    /// Configure for video chat (glasses mic, mild AEC)
     private func configureVideoChat() throws {
         try audioSession.setCategory(
             .playAndRecord,
@@ -148,7 +150,6 @@ final class AudioSessionManager {
         try audioSession.setActive(true)
     }
 
-    /// Configure for measurement (wake word detection)
     private func configureMeasurement() throws {
         try audioSession.setCategory(
             .playAndRecord,
@@ -162,20 +163,54 @@ final class AudioSessionManager {
         try audioSession.setActive(true)
     }
 
+    // MARK: - Async Off-Main Routing (avoids iOS AVAudioSession Hang Risk on main thread)
+
+    /// Applies the preferred audio route off the main thread: glasses Bluetooth HFP when wanted
+    /// and connected, otherwise iPhone built-in mic + loud speaker. Returns true if glasses HFP won.
+    @discardableResult
+    func configurePreferredRouteAsync(preferGlasses: Bool) async -> Bool {
+        let usedGlasses: Bool = await withCheckedContinuation { continuation in
+            audioSessionQueue.async { [self] in
+                if preferGlasses, (try? self.configureForGlasses()) == true {
+                    continuation.resume(returning: true)
+                    return
+                }
+                try? self.configureForPhone()
+                continuation.resume(returning: false)
+            }
+        }
+        currentMode = .voiceChat
+        lastInputPortUID = audioSession.currentRoute.inputs.first?.uid
+        return usedGlasses
+    }
+
+    /// Ensures playback audio works loudly right now (used by direct chat, History replay, and voice previews).
+    /// Does not tear down a running glasses HFP session; configures glasses or phone speaker if inactive.
+    func ensurePlaybackRouteAsync(preferGlasses: Bool) async {
+        let alreadyActiveOnGlasses = preferGlasses && isBluetoothHFPInputActive
+        if currentMode != .inactive && (alreadyActiveOnGlasses || !preferGlasses) {
+            // Still make sure built-in earpiece is overridden to loud speaker when no glasses/headphones are active.
+            if !isBluetoothHFPActive && audioSession.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    audioSessionQueue.async { [self] in
+                        try? self.audioSession.overrideOutputAudioPort(.speaker)
+                        continuation.resume()
+                    }
+                }
+            }
+            return
+        }
+        _ = await configurePreferredRouteAsync(preferGlasses: preferGlasses)
+    }
+
     // MARK: - Bluetooth HFP Routing
 
     /// Configure the audio session for the glasses' Bluetooth HFP mic + speaker.
-    /// Returns `true` only if an HFP input was actually found and selected (i.e. the glasses are
-    /// connected as an audio device); `false` means no glasses audio is present and the caller
-    /// should fall back to the phone. NOTE: we must set the category with `.allowBluetoothHFP` and
-    /// activate the session *first* — only then does iOS expose the HFP input in `availableInputs`
-    /// (this is what previously made the glasses mic undetectable: the phone route disallows HFP).
+    /// Nonisolated so `configurePreferredRouteAsync` executes the XPC calls off the main thread.
+    /// Keeps Lesson 2 invariants: `.playAndRecord` + `mode: .default` +
+    /// `[.mixWithOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker]`.
     @discardableResult
-    func configureForGlasses() throws -> Bool {
-        // Match OpenGlasses: `.default` mode + `.mixWithOthers` so the recognizer's session COEXISTS
-        // with the glasses camera's Bluetooth stream instead of taking exclusive HFP control. With
-        // `.voiceChat` + `.duckOthers` the camera stream killed the HFP mic (and iOS wouldn't revive
-        // it); `.mixWithOthers` keeps the glasses mic alive through photo capture.
+    nonisolated func configureForGlasses() throws -> Bool {
         try audioSession.setCategory(
             .playAndRecord,
             mode: .default,
@@ -183,63 +218,63 @@ final class AudioSessionManager {
         )
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
 
-        // Now that HFP is allowed + the session is active, the glasses mic should be listed.
         guard let hfpInput = findBluetoothHFPInput() else {
-            print("[AudioSession] No Bluetooth HFP input — glasses not connected as an audio device. Inputs: \(availableInputsDescription)")
+            AppLog.info(.audio, "No Bluetooth HFP input — glasses not connected as an audio device. Inputs: \(availableInputsDescription)")
             return false
         }
         try audioSession.setPreferredInput(hfpInput)
-        lastInputPortUID = hfpInput.uid
-        currentMode = .voiceChat
-        print("[AudioSession] ✓ Configured for glasses (Bluetooth HFP): \(hfpInput.portName) — route: \(currentRouteDescription)")
+        let uid = hfpInput.uid
+        Task { @MainActor [weak self] in
+            self?.lastInputPortUID = uid
+            self?.currentMode = .voiceChat
+        }
+        AppLog.info(.audio, "Configured for glasses (Bluetooth HFP): \(hfpInput.portName) — route: \(currentRouteDescription)")
         return true
     }
 
     /// Names + types of every input iOS currently reports — for diagnosing mic routing.
-    var availableInputsDescription: String {
+    nonisolated var availableInputsDescription: String {
         (audioSession.availableInputs ?? []).map { "\($0.portName)[\($0.portType.rawValue)]" }.joined(separator: ", ")
     }
 
-    /// Configure audio for phone-only use (no glasses): record from the built-in mic and play
-    /// spoken responses out of the LOUD speaker. Without `.defaultToSpeaker`, `.playAndRecord`
-    /// routes output to the quiet earpiece — which is why phone-only audio was inaudible.
-    /// `.allowBluetoothA2DP` and `.allowBluetoothHFP` still let Bluetooth audio / mics work when present.
-    func configureForPhone() throws {
+    /// Configure audio for phone-only use (no glasses): record from built-in mic and play spoken
+    /// responses out of the LOUD speaker (audible even when the hardware mute switch is on).
+    nonisolated func configureForPhone() throws {
         try audioSession.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.defaultToSpeaker, .allowBluetoothA2DP, .allowBluetoothHFP]
+            options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP, .allowBluetoothHFP]
         )
         try audioSession.setActive(true)
         try? audioSession.setPreferredInput(nil)
-        lastInputPortUID = audioSession.currentRoute.inputs.first?.uid
-        // If still routed to the quiet earpiece (carried over from a glasses/voiceChat config),
-        // force the loud speaker — but leave AirPods / headphones alone if they're connected.
+        let uid = audioSession.currentRoute.inputs.first?.uid
+        // Force loud speaker if routed to quiet earpiece (keep AirPods / A2DP headphones alone).
         if audioSession.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
             try? audioSession.overrideOutputAudioPort(.speaker)
         }
-        currentMode = .voiceChat
-        print("[AudioSession] Configured for phone (built-in mic + loud speaker)")
+        Task { @MainActor [weak self] in
+            self?.lastInputPortUID = uid
+            self?.currentMode = .voiceChat
+        }
+        AppLog.info(.audio, "Configured for phone (built-in mic + loud speaker) — route: \(currentRouteDescription)")
     }
 
     /// Find Bluetooth HFP input port (prioritizing Ray-Ban Meta devices)
-    private func findBluetoothHFPInput() -> AVAudioSessionPortDescription? {
+    private nonisolated func findBluetoothHFPInput() -> AVAudioSessionPortDescription? {
         let available = audioSession.availableInputs ?? []
-        // Priority 1: device explicitly identified as Ray-Ban or Meta
         if let metaInput = available.first(where: { input in
             let name = input.portName.lowercased()
             return name.contains("ray-ban") || name.contains("meta") || name.contains("rb meta")
         }) {
             return metaInput
         }
-        // Priority 2: standard Bluetooth HFP or Bluetooth LE input port
         return available.first(where: { input in
             input.portType == .bluetoothHFP || input.portType == .bluetoothLE
         })
     }
 
     /// Check if Bluetooth HFP / glasses microphone is currently the active input route
-    var isBluetoothHFPInputActive: Bool {
+    nonisolated var isBluetoothHFPInputActive: Bool {
         let inputs = audioSession.currentRoute.inputs
         return inputs.contains { input in
             if input.portType == .bluetoothHFP || input.portType == .bluetoothLE { return true }
@@ -249,7 +284,7 @@ final class AudioSessionManager {
     }
 
     /// Check if Bluetooth HFP is currently active (input or output)
-    var isBluetoothHFPActive: Bool {
+    nonisolated var isBluetoothHFPActive: Bool {
         let inputs = audioSession.currentRoute.inputs
         let outputs = audioSession.currentRoute.outputs
 
@@ -267,34 +302,49 @@ final class AudioSessionManager {
         return hasHFPInput || hasHFPOutput
     }
 
+    /// True if another app (e.g. Music) is currently playing audio (for T7.7 post-capture diagnostics).
+    nonisolated var isOtherAudioPlaying: Bool {
+        audioSession.isOtherAudioPlaying
+    }
+
     /// Get current audio route description
-    var currentRouteDescription: String {
+    nonisolated var currentRouteDescription: String {
         let inputs = audioSession.currentRoute.inputs.map { $0.portName }.joined(separator: ", ")
         let outputs = audioSession.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
         return "Input: \(inputs.isEmpty ? "none" : inputs), Output: \(outputs.isEmpty ? "none" : outputs)"
     }
 
+    /// Short output label for UI status chips.
+    nonisolated var outputLabel: String {
+        if let first = audioSession.currentRoute.outputs.first {
+            switch first.portType {
+            case .bluetoothHFP, .bluetoothA2DP, .bluetoothLE:
+                return first.portName
+            case .builtInSpeaker:
+                return "Loa ngoài"
+            case .builtInReceiver:
+                return "Loa trong"
+            case .headphones:
+                return "Tai nghe"
+            default:
+                return first.portName
+            }
+        }
+        return "Mặc định"
+    }
+
     // MARK: - Utilities
 
-    /// Get current input sample rate
-    var inputSampleRate: Double {
-        audioSession.sampleRate
-    }
+    nonisolated var inputSampleRate: Double { audioSession.sampleRate }
+    nonisolated var outputSampleRate: Double { audioSession.sampleRate }
 
-    /// Get current output sample rate
-    var outputSampleRate: Double {
-        audioSession.sampleRate
-    }
-
-    /// Check if Bluetooth audio is available
-    var isBluetoothAvailable: Bool {
+    nonisolated var isBluetoothAvailable: Bool {
         audioSession.availableInputs?.contains { port in
             port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
         } ?? false
     }
 
-    /// Check if using built-in mic
-    var isUsingBuiltInMic: Bool {
+    nonisolated var isUsingBuiltInMic: Bool {
         audioSession.currentRoute.inputs.contains { port in
             port.portType == .builtInMic
         }

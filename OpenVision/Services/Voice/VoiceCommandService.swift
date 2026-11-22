@@ -1,5 +1,6 @@
 // OpenVision - VoiceCommandService.swift
-// Wake word detection and voice command capture using Apple Speech Recognition
+// Wake word detection, voice command capture, and voice playback control (PLAN.md §4.4, T5.3, T8.1-T8.3).
+// Preserves Lesson 1 (single shared mic tap) and Lesson 3 (Vietnamese phonetic wake word variants).
 
 import Foundation
 import Speech
@@ -46,14 +47,7 @@ final class VoiceCaptureTracker: @unchecked Sendable {
     }
 }
 
-/// Voice command service with wake word detection
-///
-/// Features:
-/// - Wake word detection ("Ok Vision")
-/// - Command capture after wake word
-/// - Silence detection to end command
-/// - Conversation mode (follow-ups without wake word)
-/// - Barge-in support
+/// Voice command service with wake word detection, on-device speech recognition, and reading controls.
 @MainActor
 final class VoiceCommandService: ObservableObject {
     // MARK: - Singleton
@@ -66,103 +60,84 @@ final class VoiceCommandService: ObservableObject {
     @Published var isListening: Bool = false
     @Published var currentTranscription: String = ""
     @Published var authorizationStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
+    /// True when the active locale uses on-device speech recognition (T8.1, shown on Mic status chip).
+    @Published private(set) var isOnDeviceRecognition: Bool = false
 
     // MARK: - Listening State
 
     enum ListeningState: Equatable {
         /// Waiting for wake word
         case idle
-
         /// Wake word detected, capturing command
         case listening
-
         /// In conversation mode, waiting for follow-up
         case conversationMode
-
-        /// Processing captured command
+        /// Processing captured command / assistant is reading
         case processing
     }
 
     // MARK: - Configuration
 
-    var wakeWord: String {
-        SettingsManager.shared.settings.wakeWord
-    }
-
-    var isWakeWordEnabled: Bool {
-        SettingsManager.shared.settings.wakeWordEnabled
-    }
-
-    var playActivationSound: Bool {
-        SettingsManager.shared.settings.playActivationSound
-    }
+    var wakeWord: String { SettingsManager.shared.settings.wakeWord }
+    var isWakeWordEnabled: Bool { SettingsManager.shared.settings.wakeWordEnabled }
+    var playActivationSound: Bool { SettingsManager.shared.settings.playActivationSound }
 
     // MARK: - Callbacks
 
-    /// Called when wake word is detected
     var onWakeWordDetected: (() -> Void)?
-
-    /// Called when the user says a stop phrase ("stop", "ok vision stop") during TTS/processing.
-    /// The app should halt everything and go quiet; the recognizer is reset to wake-word idle here.
     var onStopCommand: (() -> Void)?
-
-    /// Called when a command is captured
     var onCommandCaptured: ((String) -> Void)?
-
-    /// Called when user interrupts (barge-in)
+    var onReadingCommand: ((ReadingCommand) -> Void)?
     var onInterruption: (() -> Void)?
-
-    /// Called when conversation mode times out (no speech detected)
     var onConversationTimeout: (() -> Void)?
 
-    // MARK: - Barge-in Control
+    // MARK: - Barge-in & Playback Control Hooks
 
-    /// When true, barge-in detection is paused (e.g., during TTS playback)
+    /// When true, barge-in detection is paused (e.g. while TTS audio is playing).
     var isBargeInPaused: Bool = false
 
-    /// Returns true if TTS is currently playing (allows wake word to interrupt)
+    /// Returns true while assistant is speaking or thinking (allows wake-word interrupt / reading commands).
     var shouldAllowInterrupt: (() -> Bool)?
+
+    /// Returns true when ReadingEngine is paused or waiting for "tiếp" in dictation mode:
+    /// app is silent, so bare reading commands work WITHOUT wake word (PLAN.md §4.4, T5.3).
+    var isPausedOrWaitingForNext: (() -> Bool)?
+
+    /// Returns true while ReadingEngine is active so conversation timeout never cuts off playback (N7).
+    var shouldSuppressConversationTimeout: (() -> Bool)?
 
     // MARK: - Speech Recognition
 
-    /// Recognizer for the language chosen in Settings → Voice ("auto" = the iPhone's language).
-    /// Re-created when the choice changes; a new recognition task picks it up.
+    private var loggedOnDeviceLocales: Set<String> = []
+    private var cachedRecognizer: (identifier: String, recognizer: SFSpeechRecognizer?)?
+
     private var speechRecognizer: SFSpeechRecognizer? {
         let identifier = Self.recognitionLocaleIdentifier(SettingsManager.shared.settings.recognitionLanguage)
         if let cached = cachedRecognizer, cached.identifier == identifier { return cached.recognizer }
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: identifier)) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         cachedRecognizer = (identifier, recognizer)
-        print("[VoiceCommand] Speech recognizer locale: \(identifier)")
+        let supportsOnDevice = recognizer?.supportsOnDeviceRecognition ?? false
+        isOnDeviceRecognition = supportsOnDevice
+        if loggedOnDeviceLocales.insert(identifier).inserted {
+            AppLog.info(.voice, "Speech recognizer locale: \(identifier) (on-device: \(supportsOnDevice ? "yes" : "server"))")
+        }
         return recognizer
     }
-    private var cachedRecognizer: (identifier: String, recognizer: SFSpeechRecognizer?)?
 
-    /// "auto" → the device language (vi-VN on a Vietnamese iPhone), else the explicit choice.
     static func recognitionLocaleIdentifier(_ setting: String) -> String {
         switch setting {
         case "vi-VN", "en-US": return setting
         default: return Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
         }
     }
+
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-
-    /// Identity of the CURRENT recognition task. A canceled SFSpeechRecognitionTask still delivers
-    /// dying callbacks (stale partials, an empty final, a "canceled" error). Without this guard
-    /// those zombie callbacks are indistinguishable from the live recognizer ending — each
-    /// restart's own corpse then scheduled the next restart, tearing the recognizer down every
-    /// second and chopping user speech into unrecognizable fragments (commands never transcribed).
-    /// Every (re)start bumps the generation; callbacks from older generations are dropped.
     private var recognitionGeneration = 0
 
     // MARK: - Audio Engine
 
     private var audioEngine: AVAudioEngine?
-
-    /// Throttle for the wake-word auto-restart. On some audio routes (notably the glasses'
-    /// Bluetooth HFP mic) the recognizer finalizes immediately, and restarting with no delay
-    /// spins a tight infinite loop that freezes the app. We coalesce restarts to at most one
-    /// every `minRestartInterval`.
     private var lastRecognizerRestart = Date.distantPast
     private var wakeWordRestartScheduled = false
     private let minRestartInterval: TimeInterval = 0.6
@@ -176,15 +151,8 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Voice activity detection
 
-    /// Acoustic end-of-speech detection. When available it replaces the transcript-timing silence
-    /// timer, which could never tell "still talking" from "done" — see SpeechActivityDetector.
     private let speechDetector = SpeechActivityDetector()
-
-    /// True once VAD has told us speech stopped and we're waiting out `Constants.Voice
-    /// .vadCommitGrace` before committing the turn. Cleared if speech resumes.
     private var vadCommitPending = false
-
-    /// Tracks if user has started speaking in this turn
     private var hasSpokenThisTurn: Bool = false
 
     // MARK: - Audio Feedback
@@ -226,13 +194,12 @@ final class VoiceCommandService: ObservableObject {
         return false
     }
 
-    // MARK: - Wake Word Variations & Stripping
+    // MARK: - Wake Word Variations & Stripping (T8.3 / B12 cleaned; Lesson 3 preserved)
 
     static let wakeWordVariations: [String] = [
         // English
         "ok vision", "okay vision", "o.k. vision", "o k vision",
-        "hey vision", "hi vision",
-        "a vision", "heavy vision", "have vision", "obey vision", "oak vision",
+        "hey vision", "hi vision", "oak vision",
         // Vietnamese phonetic transcriptions
         "ô kê vi dơn", "ô kê vi giừn", "ô kê vision",
         "ok vi dơn", "ok vi giừn",
@@ -266,13 +233,9 @@ final class VoiceCommandService: ObservableObject {
         setupSpeechDetector()
     }
 
-    /// Wire VAD events and load the model. The model load is async and may fail (no assets, older
-    /// device); until/unless it succeeds `speechDetector.isAvailable` stays false and end-of-turn
-    /// silently keeps using the transcript-timing timer.
     private func setupSpeechDetector() {
         speechDetector.onSpeechStart = { [weak self] in
             guard let self else { return }
-            // Speech resumed — whatever pause we were counting out was mid-sentence, not the end.
             self.vadCommitPending = false
             self.silenceTimer?.invalidate()
             self.silenceTimer = nil
@@ -283,17 +246,12 @@ final class VoiceCommandService: ObservableObject {
         Task { await speechDetector.start() }
     }
 
-    /// VAD says the mic went quiet. This is the signal the old timer was only ever approximating,
-    /// so the wait after it can be short: Silero has already absorbed ~0.75s of hysteresis, and
-    /// speech resuming cancels this via `onSpeechStart`.
     private func handleSpeechEnded() {
         guard !isBargeInPaused else { return }
-        // Only the command-capture states commit a turn; idle/processing ignore end-of-speech.
         guard state == .listening || state == .conversationMode else { return }
         guard hasSpokenThisTurn, !currentTranscription.isEmpty else { return }
 
-        print("[VoiceCommand] VAD end-of-speech → committing in \(Constants.Voice.vadCommitGrace)s: '\(currentTranscription)'")
-        // Turn latency starts counting from the moment the user actually stopped talking.
+        AppLog.debug(.voice, "VAD end-of-speech -> committing in \(Constants.Voice.vadCommitGrace)s: '\(currentTranscription)'", sensitive: true)
         MetricsCollector.shared.markSpeechEnd()
         vadCommitPending = true
         silenceTimer?.invalidate()
@@ -310,7 +268,6 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Authorization
 
-    /// Request speech recognition authorization
     func requestAuthorization() async -> Bool {
         return await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { status in
@@ -324,7 +281,6 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Start/Stop
 
-    /// Start listening for wake word or commands
     func startListening() throws {
         guard authorizationStatus == .authorized else {
             throw VoiceCommandError.notAuthorized
@@ -332,71 +288,53 @@ final class VoiceCommandService: ObservableObject {
 
         guard !isListening else { return }
 
-        // Setup audio engine
         audioEngine = AVAudioEngine()
-
         guard let audioEngine = audioEngine else {
             throw VoiceCommandError.audioEngineUnavailable
         }
 
-        // Switch recorder to shared mic BEFORE accessing inputNode or installing tap
         if SessionRecorder.shared.isRecording {
             SessionRecorder.shared.switchToSharedMic()
         }
 
-        // Create recognition request
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        state = isWakeWordEnabled ? .idle : .listening
 
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
             throw VoiceCommandError.requestCreationFailed
         }
 
         configureRecognitionRequest(recognitionRequest)
 
-        // Get input node
         let inputNode = audioEngine.inputNode
-        inputNode.removeTap(onBus: 0) // defensive: never install over an existing tap
+        inputNode.removeTap(onBus: 0)
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        // Guard against an invalid input format. This happens when the mic is unavailable —
-        // most commonly while the user is on a phone/FaceTime call, where the input route
-        // reports 0 Hz / 0 channels. Installing a tap with that format throws (SIGABRT),
-        // so bail gracefully instead of crashing.
         guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
-            print("[VoiceCommand] Input unavailable (format \(recordingFormat.sampleRate)Hz/\(recordingFormat.channelCount)ch) — mic likely in use by a call. Skipping listen.")
+            AppLog.warning(.voice, "Input unavailable (format \(recordingFormat.sampleRate)Hz/\(recordingFormat.channelCount)ch) — skipping listen")
             self.recognitionRequest = nil
             self.audioEngine = nil
             throw VoiceCommandError.audioEngineUnavailable
         }
 
-        // Install tap — wrapped so an AVAudioEngine NSException (mic busy / bad route, e.g.
-        // during a phone call) fails gracefully instead of aborting the process.
-        //
-        // The block runs on the Core Audio render thread, so it must stay allocation-light and
-        // must not touch main-actor state. `feed` only converts + buffers, handing full chunks to
-        // the detector's own consumer (see SpeechActivityDetector's threading note).
         markRouteChange()
         let detector = speechDetector
         if let reason = OVCatchException({
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-                // Discard initial silence / zero buffers during the first 1,000ms after route changes
-                // to allow Bluetooth SCO link baseband stabilization without triggering false silence timeouts.
                 if let self, self.isInStabilizationWindow() && Self.isSilentOrZeroBuffer(buffer) {
                     return
                 }
-
                 recognitionRequest.append(buffer)
                 detector.feed(buffer)
                 SessionRecorder.shared.appendMicAudio(buffer)
             }
         }) {
-            print("[VoiceCommand] installTap failed: \(reason)")
+            AppLog.error(.voice, "installTap failed: \(reason)")
             self.recognitionRequest = nil
             self.audioEngine = nil
             throw VoiceCommandError.audioEngineUnavailable
         }
 
-        // Start audio engine first (before recognition task)
         audioEngine.prepare()
         do {
             try audioEngine.start()
@@ -404,20 +342,18 @@ final class VoiceCommandService: ObservableObject {
                 SessionRecorder.shared.switchToSharedMic()
             }
         } catch {
-            print("[VoiceCommand] Failed to start audio engine: \(error)")
-            // Clean up
+            AppLog.error(.voice, "Failed to start audio engine: \(error.localizedDescription)")
             audioEngine.inputNode.removeTap(onBus: 0)
             self.recognitionRequest = nil
             self.audioEngine = nil
             throw VoiceCommandError.audioEngineUnavailable
         }
 
-        // Start recognition task after audio engine is running
         recognitionGeneration += 1
         let generation = recognitionGeneration
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             Task { @MainActor in
-                guard let self, generation == self.recognitionGeneration else { return }  // zombie task
+                guard let self, generation == self.recognitionGeneration else { return }
                 self.handleRecognitionResult(result: result, error: error)
                 self.restartIfRecognizerEnded(result: result, error: error)
             }
@@ -425,17 +361,20 @@ final class VoiceCommandService: ObservableObject {
 
         isListening = true
         VoiceCaptureTracker.shared.set(true)
-        state = isWakeWordEnabled ? .idle : .listening
-        print("[VoiceCommand] Started listening - audio engine running")
+        AppLog.info(.voice, "Started listening - audio engine running")
     }
 
-    /// Prime the recognizer for the wake phrase and short-phrase detection. `contextualStrings`
-    /// biases recognition toward "Ok Vision", which is the single biggest factor in reliably
-    /// hearing the wake word over the low-quality glasses Bluetooth-HFP mic (8 kHz). `.search`
-    /// (short phrase) beats `.dictation` (long-form) for a quick wake word + command.
+    /// Configures partial results, on-device recognition (T8.1), dynamic taskHint (T8.2), and contextual phrases.
     private func configureRecognitionRequest(_ request: SFSpeechAudioBufferRecognitionRequest) {
         request.shouldReportPartialResults = true
-        request.taskHint = .search
+        let supportsOnDevice = speechRecognizer?.supportsOnDeviceRecognition ?? false
+        isOnDeviceRecognition = supportsOnDevice
+        if supportsOnDevice {
+            request.requiresOnDeviceRecognition = true
+        }
+        // T8.2: `.search` for short wake words / reading commands; `.dictation` for full questions.
+        request.taskHint = (state == .listening || state == .conversationMode) ? .dictation : .search
+
         var phrases = [
             "Ok Vision", "Okay Vision", "Hey Vision", "Vision",
             "ô kê vi dơn", "ô kê vi giừn", "ô kê vision",
@@ -443,54 +382,57 @@ final class VoiceCommandService: ObservableObject {
             "ốc vi dơn", "ốc vi giừn",
             "ê vi dơn", "vi dơn", "vi giừn",
             "oke vision", "oke vi dơn", "oke vi giừn",
-            "dừng lại", "thôi", "dừng",
-            "chụp ảnh", "giải bài này", "chụp hình", "tính cái này", "bài toán", "xem bài này", "đọc bài này"
+            "tạm dừng", "tiếp tục", "tiếp", "đọc lại", "dòng tiếp", "dòng trước",
+            "câu tiếp", "câu trước", "chậm lại", "nhanh lên", "dừng lại", "thôi", "dừng",
+            "chụp ảnh", "giải bài này", "giải tiếp", "tính cái này", "bài toán"
         ]
         if !wakeWord.isEmpty { phrases.insert(wakeWord, at: 0) }
         request.contextualStrings = phrases
     }
 
-    /// SFSpeechRecognizer stops after ~1 minute or when it emits a final result / errors. While
-    /// idling for the wake word that would silently kill listening ("responds once in a while"),
-    /// so restart a fresh recognizer whenever the task ends and we're still meant to be listening.
+    /// Clears accumulated echo buffer at the start of each new ReadingEngine segment so wake-word
+    /// reading controls stay near the start of the recognizer transcript (PLAN.md N6).
+    func resetBufferForNewSegment() {
+        guard isListening, state == .processing else { return }
+        guard Date().timeIntervalSince(lastRecognizerRestart) >= minRestartInterval else { return }
+        lastRecognizerRestart = Date()
+        restartRecognition()
+    }
+
+    private func needsAlwaysOnRecognizer() -> Bool {
+        if state == .idle && isWakeWordEnabled { return true }
+        if state == .conversationMode { return true }
+        // N6: keep recognizer alive across ~1 minute SFSpeechRecognizer timeout during long essay reading.
+        if state == .processing && ((shouldAllowInterrupt?() == true) || (isPausedOrWaitingForNext?() == true)) {
+            return true
+        }
+        return false
+    }
+
     private func restartIfRecognizerEnded(result: SFSpeechRecognitionResult?, error: Error?) {
         let ended = (error != nil) || (result?.isFinal ?? false)
-        // Idle (wake-word) AND conversation mode both rely on an always-running recognizer with no
-        // other flow to revive it. Restricting this to `.idle` caused a deaf-mic race: an empty
-        // final result arriving while still in conversationMode skipped the restart here, then the
-        // conversation timeout returned to idle with a dead recognizer — and every "Ok Vision"
-        // after that hit silence. (`.listening`/`.processing` are excluded on purpose: their
-        // restarts are owned by handleCommandComplete / the TTS flow.)
-        let needsAlwaysOnRecognizer = (state == .idle && isWakeWordEnabled) || state == .conversationMode
-        guard ended, isListening, needsAlwaysOnRecognizer else { return }
-        if let error { print("[VoiceCommand] Recognizer ended (\(error.localizedDescription)) — will relaunch listener") }
+        guard ended, isListening, needsAlwaysOnRecognizer() else { return }
+        if let error {
+            AppLog.debug(.voice, "Recognizer ended (\(error.localizedDescription)) — scheduling relaunch")
+        }
         scheduleWakeWordRestart()
     }
 
-    /// Relaunch the wake-word recognizer, but never more than once per `minRestartInterval`.
-    /// If the recognizer keeps ending immediately (e.g. a flaky Bluetooth HFP mic), this makes it
-    /// retry ~1×/second instead of spinning thousands of times a second and freezing the app.
     private func scheduleWakeWordRestart() {
-        guard !wakeWordRestartScheduled else { return }   // coalesce a burst of "ended" callbacks
+        guard !wakeWordRestartScheduled else { return }
         wakeWordRestartScheduled = true
         let delay = max(0, minRestartInterval - Date().timeIntervalSince(lastRecognizerRestart))
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.wakeWordRestartScheduled = false
-            // Same states as restartIfRecognizerEnded: idle wake-word listening or conversation
-            // mode. The state may legitimately have flipped between scheduling and firing (e.g.
-            // conversationMode → timeout → idle); both still need a live recognizer.
-            let stillNeedsRecognizer = (self.state == .idle && self.isWakeWordEnabled)
-                || self.state == .conversationMode
-            guard self.isListening, stillNeedsRecognizer else { return }
+            guard self.isListening, self.needsAlwaysOnRecognizer() else { return }
             self.lastRecognizerRestart = Date()
             self.restartRecognition()
         }
     }
 
-    /// Stop listening
     func stopListening() {
-        recognitionGeneration += 1   // orphan any in-flight callbacks from the dying task
+        recognitionGeneration += 1
         recognitionTask?.cancel()
         recognitionTask = nil
 
@@ -501,8 +443,6 @@ final class VoiceCommandService: ObservableObject {
         audioEngine?.stop()
         audioEngine = nil
 
-        // The tap is gone, so no more audio reaches VAD; drop buffered samples and any pending
-        // commit so a restart begins clean.
         speechDetector.reset()
         vadCommitPending = false
 
@@ -518,115 +458,102 @@ final class VoiceCommandService: ObservableObject {
         state = .idle
         currentTranscription = ""
         hasSpokenThisTurn = false
-        print("[VoiceCommand] Stopped listening")
+        AppLog.info(.voice, "Stopped listening")
     }
 
-    /// Enter conversation mode (no wake word needed for follow-ups)
+    /// Enter conversation mode (no wake word needed for follow-ups).
+    /// T8.2: updates `state` BEFORE calling `restartRecognition()` so `taskHint` switches to `.dictation`.
     func enterConversationMode() {
-        // Restart recognition to clear accumulated transcription
-        restartRecognition()
-
         state = .conversationMode
         hasSpokenThisTurn = false
         currentTranscription = ""
-
-        // Start conversation timeout (exits if no speech for 4 seconds)
+        restartRecognition()
         startConversationTimeout()
-
-        print("[VoiceCommand] Entered conversation mode")
+        AppLog.info(.voice, "Entered conversation mode")
     }
 
-    /// Restart speech recognition to clear buffer
+    /// Enters processing state (e.g. while reading from History / typed turn with active mic).
+    func enterProcessingState() {
+        guard isListening else { return }
+        state = .processing
+        conversationTimeoutTimer?.invalidate()
+        conversationTimeoutTimer = nil
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        currentTranscription = ""
+        hasSpokenThisTurn = false
+    }
+
     private func restartRecognition() {
         guard isListening else { return }
 
-        // Stop current recognition. Bump the generation FIRST so the canceled task's dying
-        // callbacks (delivered async) are orphaned immediately, not just once the new task exists.
         recognitionGeneration += 1
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest?.endAudio()
         recognitionRequest = nil
 
-        // Remove tap and stop engine briefly
         audioEngine?.inputNode.removeTap(onBus: 0)
 
-        // Create new recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else { return }
 
         configureRecognitionRequest(recognitionRequest)
 
-        // Reinstall tap
         guard let audioEngine = audioEngine else { return }
 
-        // The glasses camera's Bluetooth route change can silently STOP the running engine (the
-        // recognizer then looks alive but hears nothing). Revive the same engine instead of tearing
-        // it down — a rebuild would force a fresh HFP/SCO negotiation the glasses can't service
-        // right after streaming, leaving the mic deaf. This mirrors OpenGlasses' persistent engine.
         if !audioEngine.isRunning {
             audioEngine.prepare()
             do {
                 try audioEngine.start()
-                print("[VoiceCommand] Engine had stopped (route change) — restarted in place")
+                AppLog.info(.voice, "Engine had stopped (route change) — restarted in place")
             } catch {
-                print("[VoiceCommand] Engine restart failed: \(error)")
+                AppLog.error(.voice, "Engine restart failed: \(error.localizedDescription)")
             }
         }
 
         let inputNode = audioEngine.inputNode
-        inputNode.removeTap(onBus: 0) // defensive: never install over an existing tap
+        inputNode.removeTap(onBus: 0)
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        // Skip if the mic is unavailable (e.g. on a call) — installing a tap with a
-        // 0 Hz / 0 channel format throws.
         guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
-            print("[VoiceCommand] Input unavailable on reinstall — skipping tap")
+            AppLog.warning(.voice, "Input unavailable on reinstall — skipping tap")
             self.recognitionRequest = nil
             return
         }
 
-        // Reinstall may follow a route change (phone mic <-> glasses HFP), so the detector's
-        // cached converter is built for the OLD format and would emit garbage — drop it.
         markRouteChange()
         speechDetector.reset()
         let detector = speechDetector
         if let reason = OVCatchException({
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-                // Discard initial silence / zero buffers during the first 1,000ms after route changes
-                // to allow Bluetooth SCO link baseband stabilization without triggering false silence timeouts.
                 if let self, self.isInStabilizationWindow() && Self.isSilentOrZeroBuffer(buffer) {
                     return
                 }
-
                 recognitionRequest.append(buffer)
                 detector.feed(buffer)
                 SessionRecorder.shared.appendMicAudio(buffer)
             }
         }) {
-            print("[VoiceCommand] installTap (reinstall) failed: \(reason)")
+            AppLog.error(.voice, "installTap (reinstall) failed: \(reason)")
             self.recognitionRequest = nil
             return
         }
 
-        // Start new recognition task
         recognitionGeneration += 1
         let generation = recognitionGeneration
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             Task { @MainActor in
-                guard let self, generation == self.recognitionGeneration else { return }  // zombie task
+                guard let self, generation == self.recognitionGeneration else { return }
                 self.handleRecognitionResult(result: result, error: error)
                 self.restartIfRecognizerEnded(result: result, error: error)
             }
         }
 
-        print("[VoiceCommand] Restarted recognition (cleared buffer)")
-        // Restart churn is the proxy for recognizer health: a high rate here is what shreds
-        // transcripts into fragments like "53258 Okay Vision".
+        AppLog.debug(.voice, "Restarted recognition (cleared buffer)")
         MetricsCollector.shared.count("recognition_restart")
     }
 
-    /// Exit conversation mode
     func exitConversationMode() {
         state = isWakeWordEnabled ? .idle : .listening
         vadCommitPending = false
@@ -635,17 +562,13 @@ final class VoiceCommandService: ObservableObject {
         conversationTimeoutTimer?.invalidate()
         conversationTimeoutTimer = nil
         hasSpokenThisTurn = false
-        // Don't trust the recognizer to still be alive here: if it emitted its final result while
-        // we were still in conversationMode, no restart fired and idle would sit deaf to the wake
-        // word. Relaunch unconditionally — this also clears any stale transcript buffer.
         restartRecognition()
-        print("[VoiceCommand] Exited conversation mode")
+        AppLog.info(.voice, "Exited conversation mode")
     }
 
-    /// Start conversation timeout (auto-exit after silence)
     private func startConversationTimeout() {
         conversationTimeoutTimer?.invalidate()
-        // The Settings → Voice "auto-end" choice (it used to be ignored: the constant always won).
+        if shouldSuppressConversationTimeout?() == true { return }
         let configured = SettingsManager.shared.settings.conversationTimeout
         let timeout = configured > 0 ? configured : Constants.Voice.conversationTimeout
         conversationTimeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
@@ -655,16 +578,18 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    /// Handle conversation timeout - exit if user hasn't spoken
     private func handleConversationTimeout() {
         guard state == .conversationMode else { return }
+        // N7: never cut off an active reading/paused/dictation session.
+        if shouldSuppressConversationTimeout?() == true {
+            AppLog.debug(.voice, "Conversation timeout suppressed while reading is active")
+            return
+        }
 
         if hasSpokenThisTurn {
-            // User spoke, wait for them to finish (silence timer handles this)
-            print("[VoiceCommand] User is speaking, extending conversation")
+            AppLog.debug(.voice, "User is speaking, extending conversation")
         } else {
-            // No speech detected, exit conversation mode
-            print("[VoiceCommand] Conversation timeout - no speech detected")
+            AppLog.info(.voice, "Conversation timeout - no speech detected")
             exitConversationMode()
             onConversationTimeout?()
         }
@@ -672,132 +597,108 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Recognition Handling
 
-    /// Handle recognition result
     private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
-        // Guard: must be actively listening
-        guard isListening else {
-            print("[VoiceCommand] Ignoring result - not listening")
-            return
-        }
+        guard isListening else { return }
 
         guard let result = result else {
             if let error = error {
                 let errorMsg = error.localizedDescription
-                // Ignore common non-critical errors
                 if !errorMsg.contains("No speech detected") && !errorMsg.contains("canceled") {
-                    print("[VoiceCommand] Recognition error: \(error)")
+                    AppLog.warning(.voice, "Recognition error: \(errorMsg)")
                 }
             }
             return
         }
 
         let transcription = result.bestTranscription.formattedString
-        print("[VoiceCommand] 🎤 heard(\(state)): \"\(transcription)\"")
+        AppLog.debug(.voice, "heard(\(state)): \"\(transcription)\"", sensitive: true)
 
         switch state {
         case .idle:
             currentTranscription = transcription
-            // Check for wake word
             if detectWakeWord(in: transcription) {
                 handleWakeWordDetected()
             }
 
         case .listening, .conversationMode:
-            // When barge-in is paused (e.g. TTS is currently playing), ignore microphone recognition
-            // to prevent echo from speaker triggering a spurious command or interrupting playback
-            if isBargeInPaused {
-                return
-            }
+            if isBargeInPaused { return }
 
-            // Strip wake word from transcription (like xmeta does)
             let command = Self.stripWakeWord(from: transcription, defaultWakeWord: wakeWord)
             currentTranscription = command
 
-            // Mark that user has started speaking
             if command.count > 3 {
                 hasSpokenThisTurn = true
-                // Cancel conversation timeout since user is speaking
                 conversationTimeoutTimer?.invalidate()
             }
 
-            // Reset silence timer on new speech
             resetSilenceTimer()
 
-            // Check for command completion
             if result.isFinal && !command.isEmpty {
                 handleCommandComplete(command)
             }
 
         case .processing:
-            // Check for wake word to interrupt TTS (e.g., "ok vision stop")
-            let allowInterrupt = shouldAllowInterrupt?() ?? false
-
-            // "Ok Vision stop" / "stop" during TTS → FULL STOP. Handle this before the general
-            // barge-in: halt everything and go quiet. Critically, reset recognition to clear the
-            // buffer — the transcript still starts with "ok vision", so without a reset it would
-            // re-match this branch on every partial result and churn listening/processing forever.
-            if allowInterrupt && isStopPhrase(transcription) {
-                print("[VoiceCommand] Stop phrase during TTS — halting")
-                onStopCommand?()
-                currentTranscription = ""
-                hasSpokenThisTurn = false
-                silenceTimer?.invalidate(); silenceTimer = nil
-                state = isWakeWordEnabled ? .idle : .listening
-                restartRecognition()   // clear the stale "ok vision ... stop" buffer
-                return
+            // 1. Paused or dictation waitingForNext: app is silent, so bare reading commands work WITHOUT wake word (§4.4).
+            if isPausedOrWaitingForNext?() == true {
+                let candidate = Self.stripWakeWord(from: transcription, defaultWakeWord: wakeWord)
+                if let readingCmd = ReadingCommand.parse(candidate) {
+                    AppLog.info(.voice, "Bare reading command while silent: \(readingCmd)")
+                    currentTranscription = ""
+                    onReadingCommand?(readingCmd)
+                    restartRecognition()
+                    return
+                }
             }
 
-            // The at-start requirement is ECHO defense: while a reply plays, the mic transcribes
-            // the reply's own audio, and a wake word mid-buffer is suspect. But during THINKING
-            // no reply audio exists — everything in the buffer is the user — and requiring the
-            // wake word first discarded genuine interrupts whenever the user led with natural
-            // preamble ("hey, ...ok vision, new question"): the log showed eight detections, all
-            // dropped. isBargeInPaused is true exactly while either engine is audible, so it is
-            // the precise boundary between the two regimes.
+            let allowInterrupt = shouldAllowInterrupt?() ?? false
+
+            // 2. Wake word + reading command or new question during active reading / thinking.
             if allowInterrupt && detectWakeWord(in: transcription, bypassCooldown: true)
                 && (wakeWordAtStart(transcription) || !isBargeInPaused) {
-                // A BARE "Ok Vision" with nothing after it, mid-reply, is almost always the mic
-                // hallucinating the wake word from the reply audio the speaker is playing (echo) —
-                // NOT a deliberate interrupt. Real interrupts carry a follow-up ("Ok Vision, what
-                // about Mars?"). Require that command; otherwise ignore and let the reply finish.
-                // (To simply silence a reply, "Ok Vision stop" is handled by the stop-phrase branch
-                // above.)
                 let command = extractCommandAfterWakeWord(transcription)
                 guard !command.isEmpty else { return }
 
-                print("[VoiceCommand] Wake word + command during TTS - interrupting: '\(command)'")
+                // Check reading commands first ("Ok Vision tạm dừng", "Ok Vision đọc lại câu 3", "Ok Vision dừng lại")
+                if let readingCmd = ReadingCommand.parse(command) {
+                    AppLog.info(.voice, "Wake-word reading command: \(readingCmd)")
+                    currentTranscription = ""
+                    hasSpokenThisTurn = false
+                    silenceTimer?.invalidate(); silenceTimer = nil
+                    onReadingCommand?(readingCmd)
+                    restartRecognition()
+                    return
+                }
 
-                // Notify to stop TTS immediately
+                // Legacy stop phrase fallback (e.g. "Ok Vision cancel")
+                if isStopPhrase(transcription) {
+                    AppLog.info(.voice, "Stop phrase during TTS — halting")
+                    onStopCommand?()
+                    currentTranscription = ""
+                    hasSpokenThisTurn = false
+                    silenceTimer?.invalidate(); silenceTimer = nil
+                    state = isWakeWordEnabled ? .idle : .listening
+                    restartRecognition()
+                    return
+                }
+
+                // Genuine new question mid-reading (N9): stop TTS + cancel Gemini and capture verbatim.
+                AppLog.info(.voice, "Wake word + new question during TTS — interrupting")
+                AppLog.debug(.voice, "Interrupt question: '\(command)'", sensitive: true)
                 onWakeWordDetected?()
 
-                // Switch to listening mode - like xmeta's isCapturingCommand = true
                 state = .listening
                 currentTranscription = command
                 hasSpokenThisTurn = true
-
-                // Start silence timer to wait for user to finish speaking
                 resetSilenceTimer()
 
-                // If result is already final, process it
                 if result.isFinal {
-                    print("[VoiceCommand] Result is final, processing command immediately")
                     handleCommandComplete(command)
                 }
                 return
             }
-
-            // NOTE: no naive "any speech" barge-in here. detectSpeechStart is just `count > 3`, so
-            // during the processing→speaking window it fired on our OWN audio — the command echo
-            // (before TTS starts, when isBargeInPaused is still false) and the reply the mic hears
-            // back — flipping the UI to "Listening" mid-reply and tearing the session down. Deliberate
-            // interruption is handled above: "Ok Vision …" (wake word at start) or a stop phrase.
         }
     }
 
-    /// True when the user asked to stop during TTS: the transcript contains BOTH the wake word and
-    /// a stop word. Requiring the wake word means the TTS reply's own words (which the mic hears
-    /// through the glasses) can't false-trigger a stop. Excludes "stop video/stream" — that's a
-    /// live-video command handled elsewhere.
     private func isStopPhrase(_ text: String) -> Bool {
         guard detectWakeWord(in: text, bypassCooldown: true) else { return false }
         let lower = text.lowercased()
@@ -809,10 +710,6 @@ final class VoiceCommandService: ObservableObject {
         return stopWords.contains { lower.contains($0) }
     }
 
-    /// True when a wake-word variation sits at (or very near) the START of the transcript — i.e. a
-    /// deliberate "Ok Vision …" barge-in. During TTS the mic also hears the reply itself, whose
-    /// transcription can incidentally contain a "…vision…" buried mid-sentence; requiring the wake
-    /// word up front rejects those phantoms while still catching a real interrupt.
     private func wakeWordAtStart(_ text: String) -> Bool {
         let lower = text.lowercased()
         var variations = Self.wakeWordVariations
@@ -822,15 +719,12 @@ final class VoiceCommandService: ObservableObject {
         }
         for v in variations {
             if let r = lower.range(of: v) {
-                // Characters of speech before the wake word. A little leeway ("uh, ok vision")
-                // is fine; a whole sentence in front of it means it's echo, not a barge-in.
                 if lower.distance(from: lower.startIndex, to: r.lowerBound) <= 15 { return true }
             }
         }
         return false
     }
 
-    /// Detect wake word in transcription
     private func detectWakeWord(in text: String, bypassCooldown: Bool = false) -> Bool {
         guard bypassCooldown || !wakeWordCooldownActive else { return false }
 
@@ -843,99 +737,59 @@ final class VoiceCommandService: ObservableObject {
 
         let detected = variations.contains { lowercased.contains($0) }
         if detected {
-            print("[VoiceCommand] Detected wake word in: '\(text)'")
+            AppLog.debug(.voice, "Detected wake word in: '\(text)'", sensitive: true)
         }
         return detected
     }
 
-    /// Extract command text after wake word
     private func extractCommandAfterWakeWord(_ text: String) -> String {
-        return Self.stripWakeWord(from: text, defaultWakeWord: wakeWord)
+        Self.stripWakeWord(from: text, defaultWakeWord: wakeWord)
     }
 
-    /// Handle wake word detection
     private func handleWakeWordDetected() {
-        print("[VoiceCommand] Wake word detected!")
+        AppLog.info(.voice, "Wake word detected")
         MetricsCollector.shared.count("wake_word_detected")
 
-        // Activate cooldown
         wakeWordCooldownActive = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Constants.Voice.wakeWordCooldown) { [weak self] in
             self?.wakeWordCooldownActive = false
         }
 
-        // Play activation sound
         if playActivationSound {
             playActivation()
         }
 
-        // Transition to listening
         state = .listening
         currentTranscription = ""
-
-        // Start command timeout
         startCommandTimeout()
-
         onWakeWordDetected?()
     }
 
-    /// Handle command complete
     private func handleCommandComplete(_ text: String) {
         guard !isBargeInPaused else {
-            print("[VoiceCommand] Ignoring handleCommandComplete because barge-in is paused (TTS active)")
+            AppLog.debug(.voice, "Ignoring handleCommandComplete because barge-in is paused (TTS active)")
             return
         }
 
-        // Remove wake word from beginning
         let command = Self.stripWakeWord(from: text, defaultWakeWord: wakeWord)
-
         guard !command.isEmpty else { return }
 
-        print("[VoiceCommand] Command captured: \(command)")
+        AppLog.info(.voice, "Command captured (\(command.count) chars)")
+        AppLog.debug(.voice, "Command text: \(command)", sensitive: true)
         MetricsCollector.shared.count("command_captured")
 
         state = .processing
         silenceTimer?.invalidate()
         commandTimeoutTimer?.invalidate()
-        // Turn is committed; a late VAD speech-end must not fire a second commit.
         vadCommitPending = false
-
-        // Clear transcription to prevent re-sending the same command
         currentTranscription = ""
 
-        // Reset the recognizer's OWN buffer too. `currentTranscription = ""` only clears our copy;
-        // the live SFSpeechRecognitionResult keeps accumulating the whole utterance. Without this,
-        // the captured command ("…sun and the moon") lingers in the buffer during TTS, and a single
-        // misheard "Okay Vision" (from the reply audio / ambient) tacks onto it and false-fires the
-        // wake-word interrupt — cutting the reply off and flipping the UI back to "Listening".
         restartRecognition()
-
         onCommandCaptured?(command)
-    }
-
-    /// Handle barge-in (user interrupts AI)
-    private func handleBargeIn() {
-        print("[VoiceCommand] Barge-in detected")
-        state = .listening
-        onInterruption?()
-    }
-
-    /// Detect if user started speaking
-    private func detectSpeechStart(in text: String) -> Bool {
-        return text.count > 3 // Simple heuristic
     }
 
     // MARK: - Timers
 
-    /// Reset the transcript-timing silence timer — the FALLBACK end-of-turn path.
-    ///
-    /// When VAD is available the turn is committed from `onSpeechEnd` instead, and this does
-    /// nothing: re-arming here on every partial result would fight the VAD commit, and the long
-    /// timeout would silently win whenever a partial happened to land during the grace window.
-    ///
-    /// Without VAD we keep the historical behaviour. The timeout stays deliberately long because
-    /// this signal measures "no new transcript for N seconds", NOT silence — SFSpeechRecognizer
-    /// emits partials in bursts with ~1s gaps mid-sentence, so anything short cuts the user off.
     private func resetSilenceTimer() {
         guard !speechDetector.isAvailable else { return }
         silenceTimer?.invalidate()
@@ -946,12 +800,10 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    /// Handle silence timeout
     private func handleSilenceTimeout() {
         guard !isBargeInPaused else { return }
         guard state == .listening || state == .conversationMode else { return }
 
-        // Covers the no-VAD fallback path; idempotent, so it's a no-op when VAD already marked it.
         MetricsCollector.shared.markSpeechEnd()
 
         if !currentTranscription.isEmpty {
@@ -961,7 +813,6 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    /// Start command timeout
     private func startCommandTimeout() {
         commandTimeoutTimer?.invalidate()
         commandTimeoutTimer = Timer.scheduledTimer(withTimeInterval: Constants.Voice.commandTimeout, repeats: false) { [weak self] _ in
@@ -971,11 +822,9 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    /// Handle command timeout
     private func handleCommandTimeout() {
         guard state == .listening else { return }
-
-        print("[VoiceCommand] Command timeout")
+        AppLog.info(.voice, "Command timeout")
 
         if !currentTranscription.isEmpty {
             handleCommandComplete(currentTranscription)
@@ -987,7 +836,6 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Audio Feedback
 
-    /// Setup activation sound
     private func setupActivationSound() {
         if let soundURL = Bundle.main.url(forResource: "activation_chime", withExtension: "wav") {
             activationSound = try? AVAudioPlayer(contentsOf: soundURL)
@@ -995,7 +843,6 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    /// Play activation sound
     private func playActivation() {
         activationSound?.currentTime = 0
         activationSound?.play()
@@ -1011,9 +858,9 @@ enum VoiceCommandError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notAuthorized: return "Speech recognition not authorized"
-        case .audioEngineUnavailable: return "Audio engine unavailable"
-        case .requestCreationFailed: return "Failed to create speech recognition request"
+        case .notAuthorized: return "Chưa được cấp quyền nhận dạng giọng nói"
+        case .audioEngineUnavailable: return "Micro đang bận hoặc không khả dụng"
+        case .requestCreationFailed: return "Không tạo được yêu cầu nhận dạng giọng nói"
         }
     }
 }
