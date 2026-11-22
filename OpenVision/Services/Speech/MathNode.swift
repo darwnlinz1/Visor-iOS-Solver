@@ -302,6 +302,19 @@ extension MathNode {
         return false
     }
 
+    /// Round brackets around a compound expression OR a signed term: `(x + 1)`, `(-5)`, `(-x)`.
+    /// Used for power bases, factorials and implicit multiplication so `(-5)^2` reads
+    /// "âm 5, tất cả bình phương" instead of colliding with `-5^2` ("âm 5 bình phương").
+    var isGroupedBase: Bool {
+        if case .group(let x) = self {
+            if !x.isAtomicTerm { return true }
+            if case .unary(let op, _) = x, [.minus, .plus, .plusMinus, .minusPlus].contains(op) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// The value of a plain integer literal (up to 9 digits).
     var integerValue: Int? {
         if case .number(let s) = self, !s.contains("."), s.count <= 9 { return Int(s) }

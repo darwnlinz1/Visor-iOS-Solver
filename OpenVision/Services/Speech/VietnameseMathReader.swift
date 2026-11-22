@@ -243,7 +243,7 @@ struct VietnameseMathReader {
                     if case .number = previous, case .number = factor { return true }
                     return false
                 }()
-                if isCompoundGroup(factor) || isCompoundGroup(previous) || bothNumbers {
+                if factor.isGroupedBase || previous.isGroupedBase || bothNumbers {
                     out.append(w(op(.times)))
                 }
             }
@@ -309,7 +309,7 @@ struct VietnameseMathReader {
         default: exponentWords = [w("mũ")] + read(exponent)
         }
         var out: [MathReadingItem]
-        if isCompoundGroup(base) {
+        if base.isGroupedBase {
             out = read(base.unwrappingGroups) + [.punct(","), w("tất cả")] + exponentWords
         } else {
             out = read(base) + exponentWords

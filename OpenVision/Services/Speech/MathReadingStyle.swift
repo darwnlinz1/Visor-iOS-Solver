@@ -3,8 +3,8 @@
 
 import Foundation
 
-struct MathReadingStyle: Equatable {
-    enum Verbosity: String, CaseIterable {
+struct MathReadingStyle: Equatable, Sendable {
+    enum Verbosity: String, CaseIterable, Sendable {
         /// "x cộng 1, trên x trừ 1"
         case natural
         /// Adds "hết căn", "hết mũ", "hết phân số", "mở ngoặc … đóng ngoặc".
@@ -13,7 +13,7 @@ struct MathReadingStyle: Equatable {
 
     /// Word for a fraction with letters ("a trên b" / "a phần b"). Numeric fractions are always
     /// "một phần hai".
-    enum SymbolicFraction: String, CaseIterable {
+    enum SymbolicFraction: String, CaseIterable, Sendable {
         case tren
         case phan
 
@@ -21,14 +21,14 @@ struct MathReadingStyle: Equatable {
     }
 
     /// Word for a unary minus ("âm 3" / "trừ 3").
-    enum NegativeWord: String, CaseIterable {
+    enum NegativeWord: String, CaseIterable, Sendable {
         case am
         case tru
 
         var word: String { self == .am ? "âm" : "trừ" }
     }
 
-    enum LetterStyle: String, CaseIterable {
+    enum LetterStyle: String, CaseIterable, Sendable {
         /// Vietnamese letter names: x → "ích", b → "bê" (decision D3).
         case vietnameseNames
         /// Latin letters handed to the voice as written.

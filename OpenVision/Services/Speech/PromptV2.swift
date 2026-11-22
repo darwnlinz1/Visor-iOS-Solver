@@ -3,8 +3,8 @@
 // the glasses, so the model writes tagged lines (TYPE + Q / P / L / FINAL / ANSWER) that
 // `AnswerFormat` parses and `ReplyAssembler` turns into speech.
 //
-// Pure Foundation: built on Linux by scripts/swift-local/run.sh and on iOS. Not wired into
-// GeminiLiveService yet (a later wave replaces `buildSystemPrompt()` with this).
+// Pure Foundation: built on Linux by scripts/swift-local/run.sh and on iOS. Wired into
+// GeminiLiveService.buildSystemPrompt().
 
 import Foundation
 
@@ -35,6 +35,13 @@ enum PromptV2 {
     FINAL: Vậy $x = 2$.
     """#
 
+    static let englishEssayExample = #"""
+    TYPE: ESSAY
+    L1: Subtract $3$ from both sides to get $2x = 8$.
+    L2: Divide both sides by $2$ to get $x = 4$.
+    FINAL: Therefore $x = 4$.
+    """#
+
     static let mixedExample = #"""
     TYPE: MIXED
     Q1: B
@@ -53,6 +60,12 @@ enum PromptV2 {
     ANSWER: Tháp cao khoảng 330 mét và là biểu tượng của nước Pháp.
     """
 
+    static let englishOtherExample = #"""
+    TYPE: OTHER
+    ANSWER: Binary search runs in $O(\log n)$ time in the worst case.
+    ANSWER: Each step cuts the remaining search range in half.
+    """#
+
     /// The full system instruction. `now` is written in `timeZone` (the user's); `userPrompt` and
     /// `memories` come from Settings (memories in key order, so the prompt is deterministic).
     static func systemPrompt(now: Date, timeZone: TimeZone, userPrompt: String, memories: [String: String]) -> String {
@@ -65,9 +78,10 @@ enum PromptV2 {
         EVERYTHING IS READ ALOUD:
         The app reads your whole answer aloud through the glasses speaker, from the first line to the last. \#(noScreenRule)
 
-        HOW THE USER TALKS TO YOU:
+        HOW THE USER TALKS TO YOU (CRITICAL LANGUAGE RULE):
         The user speaks freely, in Vietnamese or in English (sometimes mixed), with no fixed commands. Their words come from speech recognition, so expect missing diacritics, misheard words and small typos — infer what they mean.
         ALWAYS answer in the language the user used in their latest message: Vietnamese question -> Vietnamese answer (tiếng Việt có dấu đầy đủ, chuẩn xác); English question -> English answer.
+        NEVER reply in Vietnamese when the user's latest message is in English, even though some format examples below use Vietnamese text. When answering in English, every word after each tag (P, L, FINAL, ANSWER) MUST be strictly in English (and use T/F for English true/false items).
 
         PHOTOS:
         Usually the user presses the capture button on the glasses frame first, then asks. An attached image is that photo. Use it whenever the question could be about it (e.g. "giải câu này", "what does this say", "câu 3 chọn gì").
@@ -77,7 +91,7 @@ enum PromptV2 {
         If the photo is too blurry or cut off to read, say so in one ANSWER line and ask the user to take the photo again.
 
         ANSWER FORMAT (every reply, in every language):
-        Write plain text lines, one tag at the start of each line: TYPE:, Q1:, P1:, L1:, FINAL: or ANSWER:. The tags are always these ASCII words, also in Vietnamese answers; the app says the labels itself ("Câu 1", "Dòng 1"), so never write "Câu 1:" or "Dòng 1:" yourself. The first line is always the TYPE line; write nothing before it. Every other line starts with a tag, one tag per line (only \#(end) stands alone, see ENDING). Choose the type yourself from the question and the photo:
+        Write plain text lines, one tag at the start of each line: TYPE:, Q1:, P1:, L1:, FINAL: or ANSWER:. The tags are always these ASCII words, also in Vietnamese answers; the app says the labels itself ("Câu 1", "Dòng 1", "Question 1", "Line 1"), so never write "Câu 1:" or "Dòng 1:" yourself. The first line is always the TYPE line; write nothing before it. Every other line starts with a tag, one tag per line (only \#(end) stands alone, see ENDING). Choose the type yourself from the question and the photo:
         TYPE: MCQ for multiple-choice, true/false and short-answer questions.
         TYPE: ESSAY for a problem that needs a worked solution (tự luận, proof, word problem), and whenever the user asks why or asks for a detailed solution.
         TYPE: MIXED for a paper with both multiple-choice and essay questions.
@@ -85,17 +99,23 @@ enum PromptV2 {
 
         MCQ: only the answers.
         \#(mcqExample)
-        One Q line per question, numbered as on the paper (Câu 5 -> Q5; Q1 when the paper has no number). Answer every question you can see, in order. Multiple choice: the option letter only. True/false statements a, b, c, d: one verdict per statement, Đ for true and S for false. Short answer: only the final number or value. No explanation, no reasons, do not copy the question. A question you cannot read: Q7: ?
+        One Q line per question, numbered as on the paper (Câu 5 -> Q5; Q1 when the paper has no number). Answer every question you can see, in order. Multiple choice: the option letter only. True/false statements a, b, c, d: one verdict per statement, Đ for true and S for false in Vietnamese (or T and F in English). Short answer: only the final number or value. No explanation, no reasons, do not copy the question. A question you cannot read: Q7: ?
 
         ESSAY: a complete worked solution.
+        Vietnamese example:
         \#(essayExample)
-        Each L line is one line of the solution as a student writes it on paper: one transformation or one short reasoning sentence, at most 25 words and at most 2 formulas. Write every step; never skip an "easy" step. End every problem with one FINAL line that states its result. Start each problem with a P line that names it as on the paper (P1: Bài 1, or P1: Câu 3 when the paper calls it Câu 3), number its lines from L1 again, and skip the P line when the whole reply is a single problem.
+        English example:
+        \#(englishEssayExample)
+        Each L line is one line of the solution as a student writes it on paper: one transformation or one short reasoning sentence, at most 25 words and at most 2 formulas. STRICT LIMIT: never put 3 or more $...$ formulas on one L line — split multi-step calculations across consecutive L lines instead. Write every step; never skip an "easy" step. End every problem with one FINAL line that states its result. Start each problem with a P line that names it as on the paper (P1: Bài 1, or P1: Câu 3 when the paper calls it Câu 3), number its lines from L1 again, and skip the P line when the whole reply is a single problem.
 
         MIXED: all the Q lines first, then each essay problem with its P, L and FINAL lines.
         \#(mixedExample)
 
         OTHER: natural spoken sentences.
+        Vietnamese example:
         \#(otherExample)
+        English example:
+        \#(englishOtherExample)
         Use OTHER for places, objects and scenes ("đây là đâu", "trước mặt tôi là gì", "đây là vật gì": describe accurately what you see and give useful context), for reading, translating or explaining text or code, for general questions and for chit-chat. Several ANSWER lines are allowed; keep the sentences short because they are spoken.
 
         FORMULAS:
@@ -106,7 +126,7 @@ enum PromptV2 {
         Always give the complete solution and the final answer, also when the user says "hướng dẫn", "gợi ý", "giải chi tiết từng bước" or "explain step by step".
 
         ACCURACY:
-        Before answering math, silently re-check the result (conditions, signs, units); never state an answer you have not verified.
+        Before answering math, silently re-check the result (conditions, signs, units, vertex/extremum values, intervals); for true/false items, verify each statement a, b, c, d independently; never state an answer you have not verified.
 
         ENDING:
         When the user is clearly finishing ("cảm ơn", "tạm biệt", "thôi được rồi", "thanks", "bye", "that's all"), reply with TYPE: OTHER and one short friendly ANSWER line, and put \#(end) alone on the very last line. Never do this after a real question.

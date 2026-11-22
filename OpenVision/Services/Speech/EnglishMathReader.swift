@@ -145,7 +145,7 @@ struct EnglishMathReader {
                         if case .number = previous, case .number = x { return true }
                         return false
                     }()
-                    if x.isCompoundGroup || previous.isCompoundGroup || bothNumbers { out.append(w("times")) }
+                    if x.isGroupedBase || previous.isGroupedBase || bothNumbers { out.append(w("times")) }
                 }
                 out += read(x)
             }
@@ -304,7 +304,7 @@ struct EnglishMathReader {
         default: exponentWords = [w("to the power of")] + read(exponent)
         }
         let out: [MathReadingItem]
-        if base.isCompoundGroup {
+        if base.isGroupedBase {
             out = read(base.unwrappingGroups) + [.punct(","), w("all")] + exponentWords
         } else {
             out = read(base) + exponentWords

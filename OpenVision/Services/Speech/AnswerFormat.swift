@@ -159,6 +159,57 @@ enum AnswerFormat {
             : "The solution is long, so I stopped at \(place). Say 'solve the rest' and I will finish it."
     }
 
+    /// Rebuilds a v2.1 tagged reply from a stored `ReadingRecord` for `GeminiLiveService.seedHistory`,
+    /// so continued conversations keep the model in the v2.1 format (PLAN.md T4.3).
+    static func text(for record: ReadingRecord) -> String {
+        var lines: [String] = ["TYPE: \(record.answerType.rawValue.uppercased())"]
+        for segment in record.segments {
+            switch segment.kind {
+            case .mcq(let n):
+                lines.append("Q\(n): \(stripSegmentLabel(segment.displayText, prefixes: ["Câu \(n)", "Question \(n)"]))")
+            case .problem(let n):
+                lines.append("P\(n): \(segment.displayText)")
+            case .line(let n):
+                lines.append("L\(n): \(stripSegmentLabel(segment.displayText, prefixes: ["Dòng \(n)", "Line \(n)"]))")
+            case .final:
+                lines.append("FINAL: \(stripSegmentLabel(segment.displayText, prefixes: ["Đáp số", "Answer"]))")
+            case .answer:
+                let body = segment.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !body.isEmpty { lines.append("ANSWER: \(body)") }
+            case .notice:
+                continue
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Fallback when seeding a legacy history entry that has no `ReadingRecord`.
+    static func text(forLegacyHistory text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "TYPE: OTHER\nANSWER: " }
+        if trimmed.uppercased().hasPrefix("TYPE:") { return trimmed }
+        var lines = ["TYPE: OTHER"]
+        for line in trimmed.split(whereSeparator: \.isNewline) {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            if !s.isEmpty { lines.append("ANSWER: \(s)") }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func stripSegmentLabel(_ text: String, prefixes: [String]) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in prefixes {
+            if trimmed.lowercased().hasPrefix(prefix.lowercased()) {
+                var rest = trimmed.dropFirst(prefix.count)
+                while let first = rest.first, first == ":" || first == "." || first.isWhitespace {
+                    rest = rest.dropFirst()
+                }
+                return String(rest)
+            }
+        }
+        return trimmed
+    }
+
     // MARK: - Question answers (MCQ, true/false, short answer)
 
     /// Normalizes what follows `Qn:`: "?" → unreadable, "a Đ, b S, c Đ, d S" (also D/S, T/F,
