@@ -11,6 +11,22 @@ One workflow, done well: Ray-Ban Meta photo + free-form question (Vietnamese or 
 Gemini → spoken answer on the glasses + rendered solution on the phone. See
 [PLAN.md](PLAN.md).
 
+### In progress: v2, every answer read aloud ([PLAN.md](PLAN.md) §11)
+Wave 1 (#3, #4) adds the building blocks. They are compiled into the app and tested, but nothing calls them
+yet. Wave 2 wires them in and removes the phone display.
+- **Spoken math for Vietnamese** (`VietMathSpeech`). LaTeX, Unicode and bare formulas become the words a
+  Vietnamese classroom uses: "x bình phương", "ba phần tư", "tích phân từ 0 đến 1 của…", "đen-ta phẩy". It
+  also handles letter names, units, numbers ("2 phẩy 5") and section numbers ("Bài 2 chấm 15"). An English
+  reader covers English answers. A 1000-string fuzz test checks that no markup is spoken and that every
+  piece stays at 200 characters or fewer.
+- **Answer format v2.1** (`AnswerFormat`). Replies use `TYPE:` + `Q` / `P` / `L` / `FINAL` / `ANSWER` tags,
+  with Vietnamese aliases, and are parsed safely while streaming. `ReplyAssembler` turns a reply into what is
+  shown and what is read ("Câu 3: a đúng, b sai.", "Dòng 1. …", the "giải tiếp" notice for cut-off
+  answers). `PromptV2` holds the v2.1 prompt text.
+- `scripts/pbxproj_files.py` registers Swift files in the Xcode project. `scripts/swift-local/run.sh` runs
+  the pure-Swift suites on Linux without Xcode.
+- E2E runs every test suite on pull requests (218 tests), and a skipped photo-library test fails CI.
+
 ### Security
 - **The six Gemini API keys embedded (base64) in the source were removed.** They remain in git
   history and forks: revoke them in Google AI Studio. Keys now come only from Settings
@@ -59,6 +75,15 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
   mid-answer; stopping speech could end the next reply early (barge-in reopened while the
   glasses were still talking).
 - A failed turn was silent on the glasses; it is now spoken in the wearer's language.
+- The app crashed at launch when the Meta SDK failed to configure. It now keeps running without the glasses,
+  and Settings → Kính shows "SDK kính chưa khởi tạo được: …" (#3).
+- The E2E suite never ran on CI: the script was not executable, and the test host then crashed at launch.
+  The simulator build is now ad-hoc signed, so Keychain and the Meta SDK configure work. Three photo-library
+  tests that always skipped now run (#2, #3).
+- A photo is kept for 120 s / 5 questions again. A photo Gemini already has in its history is not uploaded
+  again. Only Gemini decides when a new photo is needed (`[[CAPTURE]]`), with no keyword list (#2).
+- Info.plist declares `arm64` and no longer allows arbitrary network loads. The IPA build no longer prints
+  `Config.xcconfig` into the log (#2).
 
 ## [2.14.0] - 2026-10-02
 

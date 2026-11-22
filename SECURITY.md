@@ -31,10 +31,19 @@ Out of scope:
 - Social engineering
 - Third-party dependencies (report to them directly)
 
+## Secrets in this repository
+
+This repository is public. Gemini API keys live only in the iOS Keychain (entered in Settings → Gemini),
+are sent in the `x-goog-api-key` header, and are never stored in source or commits. The static guard
+(`scripts/blueprint/verify_blueprint.py`) fails CI if a key-like string appears in any tracked file.
+Debug logs still show the first 6 characters of a key; PLAN.md task T2.4 removes that. Keys that were
+committed in the past are still in git history: revoke them in Google AI Studio.
+
 ## Supported Versions
 
 | Version | Supported |
 |---------|-----------|
-| 1.x     | Yes       |
+| Latest `main` and `feature/voice-v2` | Yes |
+| Older builds | No |
 
 Thank you for helping keep OpenVision secure!
