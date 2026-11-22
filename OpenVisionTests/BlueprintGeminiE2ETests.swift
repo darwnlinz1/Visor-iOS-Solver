@@ -1,7 +1,7 @@
 // OpenVision - BlueprintGeminiE2ETests.swift
 // End-to-end through the REAL GeminiLiveService (request building, SSE streaming, retry policy,
 // conversation history) and the REAL TTSService, with only the network replaced by a scripted
-// URLProtocol. Mirrors the wearer's workflow from MASTER_HANDOVER_BLUEPRINT.md §2.1:
+// URLProtocol. Mirrors the wearer's workflow (see PLAN.md):
 // temple-shutter photo → "Ok Vision" + a free-form question (Vietnamese or English) → spoken
 // answer on the glasses + LaTeX on the phone → follow-up questions on the same photo.
 
@@ -461,6 +461,10 @@ final class GeminiStub: URLProtocol {
             client?.urlProtocol(self, didLoad: Data(chunk.utf8))
         }
         if reply.dropAtEnd {
+            // A real connection drops AFTER the bytes it already sent have been read. Failing in
+            // the same instant as the last chunk lets URLSession.bytes throw before the consumer
+            // has read a single line (seen on iOS 26: partial answer lost, a second request made).
+            if !reply.chunks.isEmpty { Thread.sleep(forTimeInterval: 0.3) }
             client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
         } else {
             client?.urlProtocolDidFinishLoading(self)

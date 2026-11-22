@@ -1,8 +1,8 @@
 // OpenVision - BlueprintSolverTests.swift
-// Pure-logic layer of the MASTER_HANDOVER_BLUEPRINT.md end-to-end suite: everything between
+// Pure-logic layer of the Blueprint end-to-end suite: everything between
 // "the wearer said something" and "the glasses speak / the phone shows LaTeX" that can be
-// checked without a network or audio device. Each test names the blueprint lesson (§3) or
-// checklist item (§7) it protects. See docs/testing/E2E_TEST_PLAN.md for the full matrix.
+// checked without a network or audio device. Each test names the lesson (1-7) or checklist
+// item it protects. Hardware checks (H1-H12) are in PLAN.md section 7.
 
 import XCTest
 import UIKit

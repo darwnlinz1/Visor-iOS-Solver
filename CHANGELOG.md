@@ -9,7 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 One workflow, done well: Ray-Ban Meta photo + free-form question (Vietnamese or English) →
 Gemini → spoken answer on the glasses + rendered solution on the phone. See
-[ADR-001](docs/architecture/ADR-001-solver-pipeline.md).
+[PLAN.md](PLAN.md).
+
+### In progress: v2, every answer read aloud ([PLAN.md](PLAN.md) §11)
+Wave 1 (#3, #4) adds the building blocks. They are compiled into the app and tested, but nothing calls them
+yet. Wave 2 wires them in and removes the phone display.
+- **Spoken math for Vietnamese** (`VietMathSpeech`). LaTeX, Unicode and bare formulas become the words a
+  Vietnamese classroom uses: "x bình phương", "ba phần tư", "tích phân từ 0 đến 1 của…", "đen-ta phẩy". It
+  also handles letter names, units, numbers ("2 phẩy 5") and section numbers ("Bài 2 chấm 15"). An English
+  reader covers English answers. A 1000-string fuzz test checks that no markup is spoken and that every
+  piece stays at 200 characters or fewer.
+- **Answer format v2.1** (`AnswerFormat`). Replies use `TYPE:` + `Q` / `P` / `L` / `FINAL` / `ANSWER` tags,
+  with Vietnamese aliases, and are parsed safely while streaming. `ReplyAssembler` turns a reply into what is
+  shown and what is read ("Câu 3: a đúng, b sai.", "Dòng 1. …", the "giải tiếp" notice for cut-off
+  answers). `PromptV2` holds the v2.1 prompt text.
+- `scripts/pbxproj_files.py` registers Swift files in the Xcode project. `scripts/swift-local/run.sh` runs
+  the pure-Swift suites on Linux without Xcode.
+- E2E runs every test suite on pull requests (218 tests), and a skipped photo-library test fails CI.
 
 ### Security
 - **The six Gemini API keys embedded (base64) in the source were removed.** They remain in git
@@ -29,7 +45,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
   photo; the app takes one and asks again. Saying "cảm ơn / tạm biệt / bye" ends the session.
 - Separate Vietnamese and English voices, speech rate, listening-language setting; math
   symbols read as words (`SpokenMath`); History "Continue" restores Gemini's context.
-- End-to-end suite for MASTER_HANDOVER_BLUEPRINT.md: static guard, simulator XCTest suites
+- End-to-end suite: static guard, simulator XCTest suites
   with a scripted Gemini endpoint, opt-in live smoke test, IPA symbol check.
 
 ### Changed
@@ -59,6 +75,15 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
   mid-answer; stopping speech could end the next reply early (barge-in reopened while the
   glasses were still talking).
 - A failed turn was silent on the glasses; it is now spoken in the wearer's language.
+- The app crashed at launch when the Meta SDK failed to configure. It now keeps running without the glasses,
+  and Settings → Kính shows "SDK kính chưa khởi tạo được: …" (#3).
+- The E2E suite never ran on CI: the script was not executable, and the test host then crashed at launch.
+  The simulator build is now ad-hoc signed, so Keychain and the Meta SDK configure work. Three photo-library
+  tests that always skipped now run (#2, #3).
+- A photo is kept for 120 s / 5 questions again. A photo Gemini already has in its history is not uploaded
+  again. Only Gemini decides when a new photo is needed (`[[CAPTURE]]`), with no keyword list (#2).
+- Info.plist declares `arm64` and no longer allows arbitrary network loads. The IPA build no longer prints
+  `Config.xcconfig` into the log (#2).
 
 ## [2.14.0] - 2026-10-02
 
@@ -85,7 +110,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
 
 ### Changed
 - **Meta DAT SDK 0.5.0 → 0.9.0** — newer glasses (Ray-Ban Meta Gen 2 "Blayzer Optics", Meta Glasses, Oakley Meta) were invisible because the pinned SDK predated the hardware. Migrated to the 0.9.0 camera lifecycle (`DeviceSession` → `addCamera` → `camera.stream`, session must reach `.started` first). Field-verified on Ray-Ban Meta Gen 1/2 and Blayzer Gen 2 (#55)
-- **Required one-time setup for source builders**: in the Wearables Developer Center fill your Apple Team ID and toggle Camera access ON, then Unregister → Register in the app, then tap the new **Install/Update Glasses App** button. Requires glasses firmware V126+, Meta AI V282+, iOS 17.2+. See SETUP.md
+- **Required one-time setup for source builders**: in the Wearables Developer Center fill your Apple Team ID and toggle Camera access ON, then Unregister → Register in the app, then tap the new **Install/Update Glasses App** button. Requires glasses firmware V126+, Meta AI V282+, iOS 17.2+.
 
 ### Added
 - **Install/Update Glasses App** button in glasses settings, which stages the on-glasses developer component via Meta AI. Without it, sessions die with "Device unavailable" (#55)
@@ -137,7 +162,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
 
 ### Changed
 - `mlx-swift` now resolves to the [PrismML fork](https://github.com/PrismML-Eng/mlx-swift) (pinned to `v0.31.6_prism`), which supplies the 1-bit Metal kernels that upstream mlx-swift does not have yet. All existing local models and the vendored Kokoro TTS run unchanged against it
-- **Building now requires the Metal Toolchain** (`xcodebuild -downloadComponent MetalToolchain`) and `-skipPackagePluginValidation` — see [SETUP.md](SETUP.md)
+- **Building now requires the Metal Toolchain** (`xcodebuild -downloadComponent MetalToolchain`) and `-skipPackagePluginValidation`
 
 ### Fixed
 - Apple Intelligence web search no longer overflows the model's 4096-token context — the Tavily payload is capped and the session retries on failure (#53)
@@ -165,7 +190,7 @@ Gemini → spoken answer on the glasses + rendered solution on the phone. See
 - README badges and modern GitHub issue forms (#43)
 
 ### Changed
-- Architecture refactor to MVVM behind an `AIBackend` protocol — views render, view models orchestrate, and adding a backend is now a conformance plus two lines. Extension guides in [docs/architecture.md](docs/architecture.md) (#49)
+- Architecture refactor to MVVM behind an `AIBackend` protocol — views render, view models orchestrate, and adding a backend is now a conformance plus two lines. (#49)
 - Relative time requests ("in 15 minutes") are resolved in code rather than trusted to the model, which routinely got absolute times wrong (#48)
 
 ## [2.7.0] - 2026-07-15

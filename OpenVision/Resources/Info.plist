@@ -70,7 +70,7 @@
     <!-- Required Device Capabilities -->
     <key>UIRequiredDeviceCapabilities</key>
     <array>
-        <string>armv7</string>
+        <string>arm64</string>
         <string>microphone</string>
     </array>
 
@@ -129,11 +129,9 @@
 
     <!-- Productivity tools -->
 
-    <!-- App Transport Security (allow WebSocket connections) -->
+    <!-- App Transport Security: every endpoint is HTTPS; local networking stays allowed for the glasses link -->
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsArbitraryLoads</key>
-        <true/>
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>

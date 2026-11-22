@@ -1,6 +1,6 @@
 # OpenVision Makefile
 
-.PHONY: setup generate clean open help blueprint-check e2e e2e-all e2e-live verify-ipa
+.PHONY: setup generate clean open help blueprint-check e2e e2e-all e2e-blueprint e2e-live verify-ipa
 
 # Default target
 help:
@@ -11,10 +11,11 @@ help:
 	@echo "  make open      - Open project in Xcode"
 	@echo "  make clean     - Remove generated files"
 	@echo ""
-	@echo "Testing (MASTER_HANDOVER_BLUEPRINT.md, see docs/testing/E2E_TEST_PLAN.md):"
+	@echo "Testing (see PLAN.md):"
 	@echo "  make blueprint-check   - Static blueprint guard (seconds, any OS)"
-	@echo "  make e2e               - Blueprint E2E suites on an iOS 18+ simulator"
-	@echo "  make e2e-all           - Every test suite on the simulator"
+	@echo "  make e2e               - Every test suite on an iOS 18+ simulator"
+	@echo "  make e2e-all           - Alias of make e2e"
+	@echo "  make e2e-blueprint     - Only the Blueprint E2E suites on the simulator"
 	@echo "  make e2e-live          - E2E + live Gemini smoke test (uses API quota)"
 	@echo "  make verify-ipa IPA=…  - Checklist test 6 on a built IPA"
 	@echo ""
@@ -74,7 +75,7 @@ lint:
 	@which swiftlint > /dev/null || (echo "Installing swiftlint..." && brew install swiftlint)
 	@swiftlint OpenVision
 
-# --- Testing (MASTER_HANDOVER_BLUEPRINT.md) ---
+# --- Testing (see PLAN.md) ---
 
 blueprint-check:
 	@python3 scripts/blueprint/verify_blueprint.py
@@ -82,8 +83,11 @@ blueprint-check:
 e2e: blueprint-check
 	@scripts/e2e/run-simulator-tests.sh
 
-e2e-all: blueprint-check
-	@SUITE=all scripts/e2e/run-simulator-tests.sh
+# Alias of e2e: the script runs every suite by default.
+e2e-all: e2e
+
+e2e-blueprint: blueprint-check
+	@SUITE=blueprint scripts/e2e/run-simulator-tests.sh
 
 e2e-live: blueprint-check
 	@TEST_RUNNER_OPENVISION_LIVE_GEMINI=1 scripts/e2e/run-simulator-tests.sh

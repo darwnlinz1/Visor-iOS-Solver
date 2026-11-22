@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# MASTER_HANDOVER_BLUEPRINT.md checklist test 6: the shipped IPA must contain the code paths the
+# IPA symbol check: the shipped IPA must contain the code paths the
 # workflow depends on. Looks in the Mach-O symbol table, Swift reflection metadata and string
 # literals, so it works on an unstripped Release build.
 #

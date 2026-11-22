@@ -15,10 +15,11 @@ import Speech
 
 /// Pre-captured photo context for Visor "Capture First, Ask Later" workflow
 struct CapturedPhotoContext {
-    /// How long a captured photo stays attached to follow-up questions (Extended to 5 min for Meta View sync resilience).
-    static let ttl: TimeInterval = 300.0
+    /// How long a captured photo stays attached to follow-up questions (matches
+    /// `SolverIntent.recentPhotoWindow`; the tests pin 120 s).
+    static let ttl: TimeInterval = 120.0
     /// How many questions may reuse one photo before a fresh capture is required.
-    static let maxUses = 10
+    static let maxUses = 5
 
     let id: UUID = UUID()
     let data: Data
@@ -43,7 +44,7 @@ struct CapturedPhotoContext {
 
 /// Pure command classification for the solver flow. Kept free of state so the Blueprint
 /// end-to-end suite can pin the routing rules that protect against the "fatal pitfalls"
-/// (MASTER_HANDOVER_BLUEPRINT.md §3 and checklist §7).
+/// (see PLAN.md).
 enum SolverIntent {
     /// Window in which a photo synced to Camera Roll by the temple shutter counts as "the
     /// photo the user is asking about" (Visor `hasRecentShutterPhoto`, Blueprint lesson 6).
@@ -132,32 +133,6 @@ enum SolverIntent {
         TTSService.containsVietnamese(prompt)
             ? "Không tìm thấy ảnh chụp bài tập từ kính Ray-Ban. Bạn hãy bấm nút chụp trên gọng kính rồi hỏi lại nhé."
             : "No photo found from Ray-Ban glasses. Please press the temple capture button and ask again."
-    }
-
-    /// Whether the user's prompt is a visual / solving command that requires a glasses photo attachment.
-    /// General conversational questions run text-only without requiring a photo.
-    static func requiresAttachedPhoto(_ text: String) -> Bool {
-        let lower = text.lowercased()
-
-        // Status queries ("có ảnh chưa", "có ảnh không") are conversational checks, not visual solving commands
-        let statusPhrases = ["có ảnh chưa", "có ảnh không", "nhận được ảnh chưa", "thấy ảnh chưa", "đã có ảnh"]
-        if statusPhrases.contains(where: { lower.contains($0) }) {
-            return false
-        }
-
-        let visualPhrases = [
-            // Visor parity: Comprehensive visual & STEM solving keywords (accented & unaccented)
-            "đây là cái gì", "đây là gì", "cái này là gì", "cái gì đây", "gì đây", "đây là ai",
-            "kia là cái gì", "đó là cái gì", "câu này", "bài này", "đáp án", "đề bài",
-            "giải giúp", "giải hộ", "giải bài", "giải câu", "tính câu này", "làm câu này", "chọn đáp án",
-            "trong ảnh", "trong hình", "ảnh này", "hình này", "bức ảnh", "bức hình",
-            "xem giúp", "nhìn giúp", "đọc giúp", "trước mặt", "chụp",
-            "day la cai gi", "day la gi", "cai nay la gi", "cai gi day", "giai bai", "giai cau",
-            "dap an", "de bai", "cau nay", "bai nay", "anh nay", "trong anh", "chup",
-            "photo", "image", "picture", "solve this", "solve problem", "what is this", "what is that",
-            "in this photo", "in this picture", "what do you see", "describe what you see"
-        ]
-        return visualPhrases.contains { lower.contains($0) }
     }
 }
 
@@ -487,9 +462,10 @@ private final class DataBox: @unchecked Sendable {
 // MARK: - Photo payload (pure, unit-testable)
 
 enum PhotoPayload {
-    /// Long edge of the uploaded photo (4032 px keeps full 12 MP Ray-Ban Meta resolution).
-    static let uploadMaxDimension = 4032
-    static let uploadQuality: CGFloat = 0.92
+    /// Long edge of the uploaded photo. Gemini 3 spends a fixed token budget per image, so pixels
+    /// beyond ~3072 px only add upload time (detail comes from MEDIA_RESOLUTION_ULTRA_HIGH).
+    static let uploadMaxDimension = 3072
+    static let uploadQuality: CGFloat = 0.85
 
     /// Long edge of the copy kept in conversation history: follow-up questions re-send the
     /// whole history, so they carry this lighter copy.
@@ -1203,48 +1179,18 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         }
 
-        // 2. Active capture & adaptive wait for high-res glasses photo ("tự bấm nút chụp" / acquireGlassesPhoto)
-        let isVisual = SolverIntent.requiresAttachedPhoto(command)
-        let hasExistingFreshPhoto = (activePhotoContext != nil && activePhotoContext?.isFresh == true) || currentTranscriptPhotoData != nil
-
-        if isVisual && !hasExistingFreshPhoto {
-            print("[VoiceAgent] Visual command detected ('\(command)'). Triggering glasses photo capture...")
-            agentState = .thinking
-            statusMessage = "Đang chụp và lấy ảnh từ kính Ray-Ban..."
-
-            // Actively trigger glasses camera ("tự bấm nút chụp") or wait for recent sync!
-            if let photoData = await acquireGlassesPhoto() {
-                print("[VoiceAgent] [OK] High-resolution glasses photo acquired (\(photoData.count) bytes)")
-                activePhotoContext = CapturedPhotoContext(data: photoData)
-                currentTranscriptPhotoData = photoData
-                statusMessage = nil
-            } else {
-                print("[VoiceAgent] Timed out acquiring photo after 30s — blocking API server call")
-                statusMessage = nil
-                let message = SolverIntent.missingPhotoMessage(for: command)
-                errorMessage = message
-                speakResponse(message)
-                agentState = isSessionActive ? .listening : .idle
-                return
-            }
-        } else if !hasExistingFreshPhoto {
-            // Non-visual question: check if a photo happens to be already available within 1s without blocking
-            if let quickPhoto = await RecentPhotoScanner.shared.waitForRecentGlassesPhoto(timeout: 1.0) {
-                activePhotoContext = CapturedPhotoContext(data: quickPhoto)
-                currentTranscriptPhotoData = quickPhoto
-            }
-        }
-
+        // 2. The photo: only a FRESH one from the glasses (capture button, snap, or a Meta photo
+        // that reached Camera Roll) is attached. There is no phrase list deciding whether the
+        // question needs it: Gemini sees the words verbatim, ignores an irrelevant photo, and
+        // answers [[CAPTURE]] when it must see and has none (GeminiLiveService → captureForAgent).
         var photo: Data?
         if let context = activePhotoContext, context.isFresh {
             activePhotoContext?.useCount += 1
             photo = context.data
             print("[VoiceAgent] ✓ Fusing photo context (\(context.data.count) bytes, use #\(context.useCount + 1)) with: \(command)")
-        } else if let pending = currentTranscriptPhotoData {
-            photo = pending
         }
 
-        // Attach photo to current live transcript bubble and persistent message history
+        // The transcript bubble and History show exactly what is sent (nothing once it expired).
         currentTranscriptPhotoData = photo
         ConversationManager.shared.addUserMessage(command, photoData: photo)
 
@@ -1441,6 +1387,7 @@ final class VoiceAgentViewModel: ObservableObject {
         let data = await acquireGlassesPhoto()
         if let data {
             activePhotoContext = CapturedPhotoContext(data: data)
+            currentTranscriptPhotoData = data   // the bubble shows the photo that is being sent
             HapticFeedback.success()
             NSLog("[OV] Agent capture: got photo (%ld bytes)", data.count)
         } else {

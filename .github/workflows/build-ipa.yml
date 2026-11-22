@@ -26,8 +26,7 @@ jobs:
           if [ ! -f OpenVision/Config/Config.swift ]; then
             cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
           fi
-          echo "Configuration files verified:"
-          cat Config.xcconfig
+          echo "Configuration files verified"
 
       - name: Blueprint guard
         run: python3 scripts/blueprint/verify_blueprint.py

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Static guard for MASTER_HANDOVER_BLUEPRINT.md.
+"""Static guard for the glasses solver workflow (see PLAN.md).
 
-Fails fast (seconds, any OS, no Xcode) when a change re-introduces one of the blueprint's
-"fatal pitfalls" (section 3) or breaks the wearer's workflow (section 2). Runtime behaviour is
+Fails fast (seconds, any OS, no Xcode) when a change re-introduces one of the seven "lessons"
+(audio deadlock, volume flapping, deaf glasses mic, TTS echo cut-off, truncated speech, missing
+Photos access, lost follow-up context) or breaks the wearer's workflow. Runtime behaviour is
 covered by the XCTest suites (OpenVisionTests/Blueprint*); this script guards the invariants
 that are cheapest to check in source.
 
@@ -84,11 +85,31 @@ def main() -> int:
 
     # --- Project integrity: the .xcodeproj is committed and CI does not run xcodegen, so a
     # source file missing from project.pbxproj is silently never compiled (or never tested).
+    # Files are registered only with scripts/pbxproj_files.py (PLAN.md §0 rule 5).
     for folder in ("OpenVision", "OpenVisionTests"):
         for path in sorted((repo / folder).rglob("*.swift")):
             if f"path = {path.name};" not in pbxproj and f"/* {path.name} */" not in pbxproj:
-                fail("project", f"{path.relative_to(repo)} is not in project.pbxproj (run `xcodegen generate` and commit it)")
-    ok("project", "every Swift source/test file is registered in project.pbxproj") if not any(
+                rel = path.relative_to(repo).as_posix()
+                fail("project", f"{rel} is not in project.pbxproj "
+                                f"(run `python3 scripts/pbxproj_files.py add {rel}` and commit project.pbxproj)")
+    # Reverse direction: every Swift file the project lists must exist, at the path its group
+    # resolves to (a stale entry fails the build with "Build input file cannot be found").
+    # A gitignored Config.swift counts when its committed .example is there (CI copies it).
+    try:
+        sys.dont_write_bytecode = True  # no scripts/__pycache__ left in the checkout
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from pbxproj_files import Project
+
+        listed = Project(pbxproj).swift_paths()
+    except Exception as exc:  # unreadable project file: report it, do not crash the guard
+        fail("project", f"scripts/pbxproj_files.py cannot read project.pbxproj: {exc}")
+        listed = []
+    for rel in listed:
+        if not (repo / rel).is_file() and not (repo / f"{rel}.example").is_file():
+            fail("project", f"project.pbxproj lists {rel}, which does not exist "
+                            f"(run `python3 scripts/pbxproj_files.py remove {rel}`)")
+    ok("project", f"every Swift source/test file is registered in project.pbxproj, and all {len(listed)} "
+                  "Swift files it lists exist") if not any(
         r[0] == "FAIL" and r[1] == "project" for r in RESULTS
     ) else None
 
@@ -170,8 +191,10 @@ def main() -> int:
 
     # --- Workflow (section 2): free-form, bilingual, resilient.
     send = strip_comments(function_body(vm, r"func\s+sendCommand\s*\(") or "")
-    check("workflow", "sendRESTMessage(command" in send and "visualKeywords" not in vm,
-          "Gemini receives the wearer's words verbatim (no fixed phrase list)")
+    phrase_lists = [name for name in ("visualKeywords", "visualPhrases", "requiresAttachedPhoto") if name in vm]
+    check("workflow", "sendRESTMessage(command" in send and not phrase_lists,
+          "Gemini receives the wearer's words verbatim (no fixed phrase list"
+          + (f"; found {', '.join(phrase_lists)}" if phrase_lists else "") + ")")
     check("workflow", not re.search(r"MLX|Kokoro|GemmaLocal|OpenClaw|AppleFoundation", read("project.yml")),
           "lean app: no on-device LLM / extra backends in the project")
     check("workflow", "language the user used" in gemini, "answers in the language the wearer asked in")
