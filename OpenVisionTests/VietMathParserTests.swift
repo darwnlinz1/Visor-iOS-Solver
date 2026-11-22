@@ -252,6 +252,29 @@ final class VietMathParserTests: XCTestCase {
         ])
     }
 
+    func testColonsAfterANameOrAQuantifier() {
+        let line = bin(.equals, bin(.minus, bin(.plus, x, juxt(num("2"), id("y"))), num("3")), num("0"))
+        let real = MathNode.symbol("ℝ")
+        assertParses([
+            ("d: x + 2y - 3 = 0", .list([id("d"), line], separator: ":")),
+            ("(P): x + 2y - 3 = 0", .list([.group(id("P")), line], separator: ":")),
+            ("\\Delta_2: x + 2y - 3 = 0", .list([.subscript(id("Delta"), num("2")), line], separator: ":")),
+            ("(\\alpha): x + 2y - 3 = 0", .list([.group(id("alpha")), line], separator: ":")),
+            ("\\exists x \\in \\mathbb{R}: x^2 < 0",
+             bin(.suchThat, bin(.elementOf, juxt(.symbol("exists"), x), real), bin(.less, .power(x, num("2")), num("0")))),
+            ("\\forall x \\in \\mathbb{R}: x^2 \\ge 0",
+             .list([bin(.elementOf, juxt(.symbol("forall"), x), real), bin(.greaterEqual, .power(x, num("2")), num("0"))],
+                   separator: ",")),
+            // Division: no relation after the name, a name that is not d / Δ / (…), a colon inside braces.
+            ("d : x + 1", bin(.plus, bin(.divide, id("d"), x), num("1"))),
+            ("x : 3 = 4", bin(.equals, bin(.divide, x, num("3")), num("4"))),
+            ("(x+1) : 2 = 3", bin(.equals, bin(.divide, .group(bin(.plus, x, num("1"))), num("2")), num("3"))),
+            ("\\{x \\in \\mathbb{R} : x > 0\\}", .setBuilder(bin(.elementOf, x, real), bin(.greater, x, num("0")))),
+        ])
+        XCTAssertEqual(MathParser.parseWithDiagnostics("\\exists x: \\foo{x} = 1").warnings, ["foo"],
+                       "warnings of both sides of a quantifier colon are kept")
+    }
+
     func testDegreesPercentAndDecimals() {
         assertParses([
             ("30^\\circ", .unary(.degree, num("30"))),

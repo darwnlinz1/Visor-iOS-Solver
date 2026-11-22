@@ -234,6 +234,36 @@ final class VietMathSpeechTests: XCTestCase {
         ])
     }
 
+    func testColonsThatAreNotDivision() {
+        // Review B2: the name of a line, plane or circle, and a quantifier condition.
+        check([
+            row("$d: x + 2y - 3 = 0$", "d: x cộng 2 y trừ 3 bằng 0"),
+            row("$(P): 2x - y + z = 0$", "P: 2 x trừ y cộng z bằng 0"),
+            row("$\\Delta: x - y + 1 = 0$", "đen-ta: x trừ y cộng 1 bằng 0"),
+            row("$d_1: x = 1$", "d một: x bằng 1", explicit: "d chỉ số 1: x bằng 1"),
+            row("$d': x = 1$", "d phẩy: x bằng 1"),
+            row("$(C): (x-1)^2 + (y+2)^2 = 9$",
+                "C: x trừ 1, tất cả bình phương cộng y cộng 2, tất cả bình phương bằng 9"),
+            row("$\\exists x \\in \\mathbb{R}: x^2 < 0$", "tồn tại x thuộc tập số thực sao cho x bình phương nhỏ hơn 0"),
+            row("$\\forall x \\in \\mathbb{R}: x^2 \\ge 0$",
+                "với mọi x thuộc tập số thực, x bình phương lớn hơn hoặc bằng 0"),
+            row("∃x ∈ ℝ: x² < 0", "tồn tại x thuộc tập số thực sao cho x bình phương nhỏ hơn 0"),
+            // Every other colon is still division.
+            row("$a : b$", "a chia b"),
+            row("$6 : 2 = 3$", "6 chia 2 bằng 3"),
+            row("$a : b = 2 : 3$", "a chia b bằng 2 chia 3"),
+            row("$x : 3 = 4$", "x chia 3 bằng 4"),
+            row("$d : x + 1$", "d chia x cộng 1"),
+        ])
+        let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
+        XCTAssertEqual(en("$d: x + 2y - 3 = 0$"), "d: x plus 2 y minus 3 equals 0")
+        XCTAssertEqual(en("$\\exists x \\in \\mathbb{R}: x^2 < 0$"),
+                       "there exists x is in the real numbers such that x squared is less than 0")
+        XCTAssertEqual(en("$\\forall x \\in \\mathbb{R}: x^2 \\ge 0$"),
+                       "for all x is in the real numbers, x squared is greater than or equal to 0")
+        XCTAssertEqual(en("$6 : 2 = 3$"), "6 divided by 2 equals 3")
+    }
+
     func testGreekLettersWithPrimes() {
         // Δ' is the reduced discriminant (review B1): a variable with a prime, not a function name.
         check([

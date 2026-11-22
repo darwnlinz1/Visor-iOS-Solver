@@ -55,7 +55,8 @@ indirect enum MathNode: Equatable {
     case interval(lowerClosed: Bool, MathNode, MathNode, upperClosed: Bool)
     /// Coordinates or a solution pair: `(x; y) = (1; 2)`, the arguments of `A(1; 3)`.
     case tuple([MathNode])
-    /// Top-level items separated by "," or ";": `x_1 = 2, x_2 = 3`.
+    /// Top-level items separated by "," or ";": `x_1 = 2, x_2 = 3`. Also a name and its equation,
+    /// separated by ":" (`d: x + 2y - 3 = 0`), and a `\forall` clause and its statement, by ",".
     case list([MathNode], separator: Character)
     /// `\begin{cases}` (or `\left\{ \begin{array} … \right.`): one entry per row, one node per column.
     case cases([[MathNode]])

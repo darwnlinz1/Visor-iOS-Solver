@@ -61,6 +61,8 @@ struct MathParser {
     private var depth = 0
     private var closers: [Closer] = []
     private var stopAtDifferential = 0
+    /// How many quantifier colons split the formula before this parser (bounds the recursion).
+    private var colonSplits = 0
     private(set) var warnings: [String] = []
 
     private init(tokens: [MathToken]) {
@@ -134,6 +136,13 @@ struct MathParser {
     // MARK: - Entry
 
     private mutating func parseTop() -> MathNode {
+        if let node = parseNamingColon() { return node }
+        if let node = parseQuantifierColon() { return node }
+        return parseItems()
+    }
+
+    /// Everything from `pos` to the end, as one node.
+    private mutating func parseItems() -> MathNode {
         var items: [MathNode] = []
         while !atEnd {
             let start = pos
@@ -147,6 +156,101 @@ struct MathParser {
         case 1: return items[0]
         default: return .juxtaposition(items)
         }
+    }
+
+    // MARK: - Colons that are not division
+
+    /// Relations that make `name: …` the equation of a line, plane or circle.
+    private func isNamingRelation(_ kind: MathToken.Kind) -> Bool {
+        switch kind {
+        case .symbol("="), .symbol("<"), .symbol(">"), .command("le"), .command("ge"), .command("neq"): return true
+        default: return false
+        }
+    }
+
+    /// `d: x + 2y - 3 = 0`, `\Delta: …`, `(P): 2x - y + z = 0`: a name, a colon read as a pause, then an
+    /// equation. The name is `d` or `\Delta` (with an optional subscript or prime: `d_1`, `d'`), or one
+    /// letter or Greek letter in round brackets (`(P)`, `(C)`, `(\alpha)`, `(d_1)`). Only at the start of
+    /// the formula, and only when a relation follows; `x : 3 = 4` stays a division.
+    private mutating func parseNamingColon() -> MathNode? {
+        let inBrackets: Bool
+        switch (kind(), kind(1)) {
+        case (.letter("d")?, _), (.greek("Delta")?, _): inBrackets = false
+        case (.symbol("(")?, .letter?), (.symbol("(")?, .greek?): inBrackets = true
+        default: return nil
+        }
+        let saved = (pos, warnings)
+        let name = parsePostfix()
+        let isName: Bool
+        if inBrackets {
+            if case .group(let inner) = name { isName = isNamePart(inner, anyLetter: true) } else { isName = false }
+        } else {
+            isName = isNamePart(name, anyLetter: false)
+        }
+        guard isName, isSymbol(":"), tokens[(pos + 1)...].contains(where: { isNamingRelation($0.kind) }) else {
+            (pos, warnings) = saved
+            return nil
+        }
+        advance()  // ":"
+        return .list([name, parseItems()], separator: ":")
+    }
+
+    /// `d`, `d_1`, `d'`, `\Delta_2` (or, with `anyLetter`, any letter or Greek letter written that way).
+    private func isNamePart(_ node: MathNode, anyLetter: Bool) -> Bool {
+        let isLetter = { (name: String) -> Bool in
+            anyLetter ? name.count == 1 || MathLexer.greekLetterNames.contains(name) : name == "d" || name == "Delta"
+        }
+        switch node {
+        case .identifier(let name):
+            return isLetter(name)
+        case .subscript(.identifier(let name), let sub):
+            return isLetter(name) && sub.isAtomicTerm
+        case .function(let f, nil):
+            return f.primes > 0 && f.power == nil && f.base == nil && isLetter(f.name)
+        default:
+            return false
+        }
+    }
+
+    /// `\exists x \in \mathbb{R}: x^2 < 0` ("tồn tại … sao cho …") and `\forall x \in \mathbb{R}: x^2 \ge 0`
+    /// ("với mọi …, …"): the first colon outside brackets, after a quantifier, ends the quantifier clause.
+    private mutating func parseQuantifierColon() -> MathNode? {
+        guard colonSplits < 8 else { return nil }
+        var nesting = 0
+        var quantifier: String?
+        for (j, token) in tokens.enumerated() {
+            switch token.kind {
+            case .symbol("{"), .symbol("("), .symbol("["), .command("lbrace"), .command("leftdot"):
+                nesting += 1
+            case .symbol("}"), .symbol(")"), .symbol("]"), .command("rbrace"), .command("rightdot"):
+                nesting = max(0, nesting - 1)
+            case .command(let name) where name.hasPrefix("begin:"):
+                nesting += 1
+            case .command(let name) where name.hasPrefix("end:"):
+                nesting = max(0, nesting - 1)
+            case .command(let name) where nesting == 0 && ["forall", "exists", "nexists"].contains(name):
+                quantifier = name
+            case .symbol(":") where nesting == 0:
+                guard let quantifier else { return nil }
+                let clause = parseSlice(tokens[..<j])
+                let rest = parseSlice(tokens[(j + 1)...])
+                pos = tokens.count
+                if quantifier == "forall" { return .list([clause, rest], separator: ",") }
+                return .binary(.suchThat, clause, rest)
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
+    /// Part of the tokens, parsed on its own (its warnings join this parser's).
+    private mutating func parseSlice(_ slice: ArraySlice<MathToken>) -> MathNode {
+        var parser = MathParser(tokens: Array(slice))
+        parser.colonSplits = colonSplits + 1
+        let node = parser.parseTop()
+        warnings += parser.warnings
+        return node
     }
 
     // MARK: - Precedence levels
