@@ -19,6 +19,7 @@
 		81A4286CAED0C7F9CAF73FEF /* MathSpanSplitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F52FB20C9998F3BBD76069BE /* MathSpanSplitter.swift */; };
 		8454BBF538DBBE896C451BC5 /* SolutionRenderer in Resources */ = {isa = PBXBuildFile; fileRef = BC87519DBE5AB56551F9FD7C /* SolutionRenderer */; };
 		8A21B16FD2692448989EABCD /* MathNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63B7CD7A175A592650ED3EE /* MathNode.swift */; };
+		8D0B265C6A29995F22F6E9C4 /* ReplyAssemblerSpeechTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A108780BBC0B8F9794FECE6 /* ReplyAssemblerSpeechTests.swift */; };
 		A580A5C8203945C08F937508 /* MathLexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCEAE9114955A6CACB60C78B /* MathLexer.swift */; };
 		BACC061789CD33B2B52B9497 /* SolutionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6329C61801054C63D4B9646C /* SolutionView.swift */; };
 		C174141594F6F463C9C06B2B /* VietnameseMathReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B99D6D000F5A4FF7C195ABF /* VietnameseMathReader.swift */; };
@@ -98,6 +99,7 @@
 /* Begin PBXFileReference section */
 		13719BB379A9751CF1C8C566 /* VietMathSpeechTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietMathSpeechTests.swift; sourceTree = "<group>"; };
 		1D8B7DF46B3C41B82AC9F0E8 /* PromptV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptV2Tests.swift; sourceTree = "<group>"; };
+		5A108780BBC0B8F9794FECE6 /* ReplyAssemblerSpeechTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyAssemblerSpeechTests.swift; sourceTree = "<group>"; };
 		6B24A68D46E12FD075C54B24 /* VietMathSpeech.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietMathSpeech.swift; sourceTree = "<group>"; };
 		86CFD7B30DB11F5D672C7DAC /* PronunciationDictionary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PronunciationDictionary.swift; sourceTree = "<group>"; };
 		8B99D6D000F5A4FF7C195ABF /* VietnameseMathReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietnameseMathReader.swift; sourceTree = "<group>"; };
@@ -469,6 +471,7 @@
 				FE24101A60E8448DFB9A1A45 /* BlueprintPhotoLibraryE2ETests.swift */,
 				19633968CAA41539464CF0AC /* GeminiLiveSmokeTests.swift */,
 				1D8B7DF46B3C41B82AC9F0E8 /* PromptV2Tests.swift */,
+				5A108780BBC0B8F9794FECE6 /* ReplyAssemblerSpeechTests.swift */,
 				F40848A39312970B4242629D /* ReplyAssemblerTests.swift */,
 				A2D0406DCB5F627611BBD2B4 /* SettingsSecretsTests.swift */,
 				C05A9A6876CC108B7CEDFDFC /* TextChunkingTests.swift */,
@@ -630,6 +633,7 @@
 				F5908580D9F4B16DB68B7155 /* BlueprintPhotoLibraryE2ETests.swift in Sources */,
 				B8F54CEF6FDC8F15D3CB16DA /* GeminiLiveSmokeTests.swift in Sources */,
 				EE934F49699329BF96B1EBF8 /* PromptV2Tests.swift in Sources */,
+				8D0B265C6A29995F22F6E9C4 /* ReplyAssemblerSpeechTests.swift in Sources */,
 				DFAA24EAAC4F8BF3CD9FA71C /* ReplyAssemblerTests.swift in Sources */,
 				F999D96ED7C879D8C3826786 /* SettingsSecretsTests.swift in Sources */,
 				361AD2F1AB7C557D47CD125D /* TextChunkingTests.swift in Sources */,
