@@ -19,6 +19,7 @@ final class SettingsManager: ObservableObject {
     @Published var settings: AppSettings {
         didSet {
             if settings != oldValue {
+                AppLog.setVerboseLogging(settings.verboseLogging)
                 scheduleSave()
             }
         }
@@ -70,14 +71,15 @@ final class SettingsManager: ObservableObject {
         }
         let merged = SettingsSecrets.merge(file: fileSettings, keychain: keychain)
         settings = merged.settings
+        AppLog.setVerboseLogging(settings.verboseLogging)
         unreadableSecrets = merged.unreadable
         for (account, stored) in keychain { if case .value(let value) = stored { storedSecrets[account] = value } }
 
-        print("[SettingsManager] Initialized with settings from: \(settingsURL.path)")
+        AppLog.info(.settings, "Initialized with settings from: \(settingsURL.lastPathComponent)")
 
         // A settings.json from an older build still has keys in plain text: move them now.
         if SettingsSecrets.fields.contains(where: { !fileSettings[keyPath: $0.keyPath].isEmpty }) {
-            print("[SettingsManager] Moving API keys from settings.json to the Keychain")
+            AppLog.info(.settings, "Moving API keys from settings.json to the Keychain")
             saveNow()
         }
 
@@ -113,7 +115,7 @@ final class SettingsManager: ObservableObject {
             unreadableSecrets.remove(account)
             secretsToClear.remove(account)
         }
-        print("[SettingsManager] Reloaded Keychain secrets; \(unreadableSecrets.count) still unreadable")
+        AppLog.info(.settings, "Reloaded Keychain secrets; \(unreadableSecrets.count) still unreadable")
         if resetWhileLocked { scheduleSave() }
     }
 
@@ -178,9 +180,9 @@ final class SettingsManager: ObservableObject {
             }
             let data = try encoder.encode(SettingsSecrets.forFile(settings, keepInFile: secretsKeptInFile.union(pending)))
             try data.write(to: settingsURL, options: .atomic)
-            print("[SettingsManager] Settings saved")
+            AppLog.debug(.settings, "Settings saved")
         } catch {
-            print("[SettingsManager] Error saving settings: \(error)")
+            AppLog.error(.settings, "Error saving settings: \(error.localizedDescription)")
         }
     }
 
@@ -211,13 +213,13 @@ final class SettingsManager: ObservableObject {
     private static func loadSettings(from url: URL) -> AppSettings {
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url) else {
-            print("[SettingsManager] No settings file, using defaults")
+            AppLog.info(.settings, "No settings file, using defaults")
             return createDefaultSettings()
         }
 
         // Strict decode first — succeeds when every field is present.
         if let settings = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            print("[SettingsManager] Loaded settings from file")
+            AppLog.info(.settings, "Loaded settings from file")
             return settings
         }
 
@@ -233,12 +235,12 @@ final class SettingsManager: ObservableObject {
             for (key, value) in onDisk { merged[key] = value }   // on-disk value wins where present
             if let mergedData = try? JSONSerialization.data(withJSONObject: merged),
                let settings = try? JSONDecoder().decode(AppSettings.self, from: mergedData) {
-                print("[SettingsManager] Loaded settings via lenient merge (older file, missing fields filled)")
+                AppLog.info(.settings, "Loaded settings via lenient merge (older file, missing fields filled)")
                 return settings
             }
         }
 
-        print("[SettingsManager] Could not decode settings even leniently — using defaults")
+        AppLog.warning(.settings, "Could not decode settings even leniently — using defaults")
         return defaults
     }
 

@@ -24,26 +24,24 @@ struct OpenVisionApp: App {
         // app running without glasses instead of trapping at launch (PLAN.md N2).
         if WearablesBootstrap.simulatesConfigureFailure {
             WearablesBootstrap.configureFailed("mô phỏng lỗi (OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1)")
-            NSLog("[OpenVisionApp] Debug: Wearables.configure() skipped (OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1)")
+            AppLog.warning(.app, "Debug: Wearables.configure() skipped (OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1)")
         } else {
             do {
                 try Wearables.configure()
                 WearablesBootstrap.configureSucceeded()
-                print("[OpenVisionApp] Wearables SDK configured")
+                AppLog.info(.app, "Wearables SDK configured")
             } catch {
                 WearablesBootstrap.configureFailed(error.localizedDescription)
-                // NSLog, not print: print is buffered, NSLog reaches the console at once. Only
-                // whether each MWDAT key is set is logged, never its value (ClientToken is a secret).
+                // Only whether each MWDAT key is set is logged, never its value (ClientToken is a secret).
                 let mwdat = Bundle.main.object(forInfoDictionaryKey: "MWDAT") as? [String: Any] ?? [:]
                 let keys = mwdat.keys.sorted().map { (key: String) -> String in
                     let value = String(describing: mwdat[key] ?? "")
                     return key + "=" + (value.isEmpty ? "empty" : "set")
                 }.joined(separator: ", ")
-                NSLog("[OpenVisionApp] Failed to configure Wearables SDK: %@ | MWDAT keys: %@",
-                      String(describing: error), keys)
+                AppLog.error(.app, "Failed to configure Wearables SDK: \(String(describing: error)) | MWDAT keys: \(keys)")
             }
         }
-        print("[OpenVisionApp] Initialized")
+        AppLog.info(.app, "Initialized")
     }
 
     // MARK: - Body
@@ -53,13 +51,13 @@ struct OpenVisionApp: App {
             Group {
                 if hasCompletedOnboarding {
                     MainTabView()
-                        .environmentObject(settingsManager)
-                        .environmentObject(glassesManager)
-                        .environmentObject(conversationManager)
                 } else {
                     OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
                 }
             }
+            .environmentObject(settingsManager)
+            .environmentObject(glassesManager)
+            .environmentObject(conversationManager)
             .preferredColorScheme(.dark)
             .onOpenURL { url in
                 handleURL(url)
@@ -71,18 +69,20 @@ struct OpenVisionApp: App {
 
     /// Handle URL callback from Meta AI app for glasses registration
     private func handleURL(_ url: URL) {
-        print("[OpenVisionApp] Received URL: \(url)")
+        let scheme = url.scheme ?? "none"
+        let host = url.host ?? "none"
+        AppLog.info(.app, "Received callback URL (scheme=\(scheme), host=\(host))")
         guard WearablesBootstrap.isConfigured else {
-            print("[OpenVisionApp] Ignoring the URL: \(GlassesManager.sdkUnavailableMessage)")
+            AppLog.warning(.app, "Ignoring the URL: \(GlassesManager.sdkUnavailableMessage)")
             return
         }
 
         Task {
             do {
                 _ = try await Wearables.shared.handleUrl(url)
-                print("[OpenVisionApp] URL handled successfully")
+                AppLog.info(.app, "URL handled successfully")
             } catch {
-                print("[OpenVisionApp] Error handling URL: \(error)")
+                AppLog.error(.app, "Error handling URL: \(error.localizedDescription)")
             }
         }
     }

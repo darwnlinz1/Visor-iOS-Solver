@@ -11,9 +11,11 @@ struct Conversation: Identifiable, Codable, Equatable {
     let createdAt: Date
     var lastActivityAt: Date
 
+    static let defaultTitle = "Hội thoại mới"
+
     init(
         id: UUID = UUID(),
-        title: String = "New Conversation",
+        title: String = Conversation.defaultTitle,
         messages: [Message] = [],
         createdAt: Date = Date(),
         lastActivityAt: Date = Date()
@@ -48,7 +50,7 @@ struct Conversation: Identifiable, Codable, Equatable {
         lastActivityAt = Date()
 
         // Auto-generate title from first user message
-        if title == "New Conversation" && message.role == .user {
+        if (title == Self.defaultTitle || title == "New Conversation") && message.role == .user {
             generateTitle()
         }
     }
@@ -63,6 +65,8 @@ struct Message: Identifiable, Codable, Equatable {
     var photoData: Data?
     var toolName: String?
     var toolResult: String?
+    /// Structured v2.1 reading record for offline replay and segment rendering (Optional for backward compatibility).
+    var reading: ReadingRecord?
 
     enum Role: String, Codable {
         case user
@@ -78,7 +82,8 @@ struct Message: Identifiable, Codable, Equatable {
         timestamp: Date = Date(),
         photoData: Data? = nil,
         toolName: String? = nil,
-        toolResult: String? = nil
+        toolResult: String? = nil,
+        reading: ReadingRecord? = nil
     ) {
         self.id = id
         self.role = role
@@ -87,6 +92,7 @@ struct Message: Identifiable, Codable, Equatable {
         self.photoData = photoData
         self.toolName = toolName
         self.toolResult = toolResult
+        self.reading = reading
     }
 
     /// Whether this message includes a photo
@@ -105,8 +111,8 @@ struct Message: Identifiable, Codable, Equatable {
         Message(role: .user, content: content, photoData: photoData)
     }
 
-    static func assistant(_ content: String) -> Message {
-        Message(role: .assistant, content: content)
+    static func assistant(_ content: String, reading: ReadingRecord? = nil) -> Message {
+        Message(role: .assistant, content: content, reading: reading)
     }
 
     static func system(_ content: String) -> Message {
