@@ -202,6 +202,29 @@ final class VietMathSpeechTests: XCTestCase {
         ])
     }
 
+    func testTextbookTriangleAndSimilarityNotation() {
+        // Review B6: Vietnamese textbooks write "ΔABC ∽ ΔDEF".
+        let similar = "tam giác A B C đồng dạng với tam giác D E F"
+        check([
+            row("ΔABC ∽ ΔDEF", similar),
+            row("∆ABC ∽ ∆DEF", similar),
+            row("△ABC ∽ △DEF", similar),
+            row("$\\triangle ABC \\backsim \\triangle DEF$", similar),
+            row("$\\Delta ABC \\sim \\Delta DEF$", similar),
+            row("$\\Delta ABC = \\Delta DEF$", "tam giác A B C bằng tam giác D E F"),
+            // Unchanged: Δ as a letter.
+            row("$\\Delta = b^2 - 4ac$", "đen-ta bằng b bình phương trừ 4 a c"),
+            row("$\\Delta x$", "đen-ta x"),
+            row("$\\Delta AB$", "đen-ta A B"),
+        ])
+        XCTAssertEqual(VietMathSpeech.render("Xét ΔABC ∽ ΔDEF nên", vietnamese: true, style: .default), [
+            .words("Xét", isMath: false),
+            .words("tam giác a bê xê đồng dạng với tam giác đê e ép", isMath: true),
+            .words("nên", isMath: false),
+        ], "one formula: the relation is kept")
+        XCTAssertEqual(reading("ΔABC ∽ ΔDEF", .default, vietnamese: false), "triangle A B C is similar to triangle D E F")
+    }
+
     func testSets() {
         check([
             row("$x \\in A$", "x thuộc A"),

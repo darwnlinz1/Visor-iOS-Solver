@@ -206,6 +206,24 @@ final class VietMathParserTests: XCTestCase {
         ])
     }
 
+    func testTextbookTriangleAndSimilarityNotation() {
+        // Review B6: "∽" (U+223D), \backsim, and Δ / ∆ + three point letters.
+        let similar = bin(.similar, .triangle(juxt(id("A"), id("B"), id("C"))), .triangle(juxt(id("D"), id("E"), id("F"))))
+        assertParses([
+            ("ΔABC ∽ ΔDEF", similar),
+            ("∆ABC ∽ ∆DEF", similar),
+            ("△ABC ∽ △DEF", similar),
+            ("\\triangle ABC \\backsim \\triangle DEF", similar),
+            ("\\Delta ABC \\sim \\Delta DEF", similar),
+            // Not three capital letters: the Greek letter stays.
+            ("\\Delta x", juxt(id("Delta"), x)),
+            ("\\Delta AB", juxt(id("Delta"), id("A"), id("B"))),
+            ("\\Delta ABCD", juxt(id("Delta"), id("A"), id("B"), id("C"), id("D"))),
+            ("\\Delta = 0", bin(.equals, id("Delta"), num("0"))),
+        ])
+        XCTAssertEqual(PronunciationDictionary.normalizedKey("∽"), "sim")
+    }
+
     func testSetsAndNumberSets() {
         assertParses([
             ("x \\in A", bin(.elementOf, x, id("A"))),

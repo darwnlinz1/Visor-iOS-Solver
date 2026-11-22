@@ -687,6 +687,7 @@ struct MathParser {
             return parseLetters()
         case .greek(let g):
             advance()
+            if g == "Delta", let points = trianglePointsAfterDelta() { return .triangle(points) }
             return .identifier(g)
         case .word(let w):
             advance()
@@ -1061,6 +1062,21 @@ struct MathParser {
         case 1: return names[0]
         default: return .juxtaposition(names)
         }
+    }
+
+    /// `ΔABC`, `\Delta ABC`: Δ followed by exactly three adjacent capital point letters is a triangle, the
+    /// way Vietnamese textbooks write it. `\Delta = …`, `\Delta x`, `Δ'`, `\Delta AB` keep the letter.
+    private mutating func trianglePointsAfterDelta() -> MathNode? {
+        var points: [MathNode] = []
+        for n in 0..<3 {
+            guard case .letter(let c)? = kind(n), c.isUppercase, n == 0 || token(n)?.spaceBefore == false else {
+                return nil
+            }
+            points.append(.identifier(String(c)))
+        }
+        if case .letter? = kind(3), token(3)?.spaceBefore == false { return nil }  // ΔABCD: not three points
+        pos += 3
+        return .juxtaposition(points)
     }
 
     /// The operand of \sum, \prod, \lim: one term (stops at + - and relations).
