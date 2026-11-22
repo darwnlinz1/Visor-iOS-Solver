@@ -75,6 +75,9 @@ enum MathLexer {
         "Χ": "Chi",
     ]
 
+    /// Every Greek letter name an identifier can hold ("alpha", "Delta", "Alpha").
+    static let greekLetterNames: Set<String> = Set(greekNames.values).union(greekCharacters.values)
+
     /// Command aliases → canonical name.
     static let aliases: [String: String] = [
         "leq": "le", "leqslant": "le", "leqq": "le", "geq": "ge", "geqslant": "ge", "geqq": "ge",

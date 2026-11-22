@@ -350,7 +350,8 @@ struct VietnameseMathReader {
             guard let arg else { return [] }
             return [w("đạo hàm của")] + read(arg.unwrappingGroups) + (isAtomic(arg) ? [] : [.pause])
         }
-        if f.name.count == 1 {
+        if f.name.count == 1 || MathLexer.greekLetterNames.contains(f.name) {
+            // A variable: f'(x), y'', and Greek letters with primes (Δ' "đen-ta phẩy", α' "an-pha phẩy").
             var out: [MathReadingItem] = [w(readIdentifier(f.name))]
             switch f.primes {
             case 0: break

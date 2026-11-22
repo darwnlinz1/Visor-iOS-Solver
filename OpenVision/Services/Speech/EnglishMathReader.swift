@@ -313,8 +313,9 @@ struct EnglishMathReader {
             return [w("the derivative of")] + read(arg.unwrappingGroups) + pauseUnlessAtomic(arg)
         }
         var out: [MathReadingItem]
-        if f.name.count == 1 {
-            out = [w(f.name)]
+        if f.name.count == 1 || MathLexer.greekLetterNames.contains(f.name) {
+            // A variable: f'(x), y'', Δ' ("delta prime").
+            out = [w(f.name.count == 1 ? f.name : f.name.lowercased())]
             switch f.primes {
             case 0: break
             case 1: out.append(w("prime"))

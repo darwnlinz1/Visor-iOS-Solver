@@ -234,6 +234,22 @@ final class VietMathSpeechTests: XCTestCase {
         ])
     }
 
+    func testGreekLettersWithPrimes() {
+        // Δ' is the reduced discriminant (review B1): a variable with a prime, not a function name.
+        check([
+            row("$\\Delta'$", "đen-ta phẩy"),
+            row("$\\Delta' = b'^2 - ac$", "đen-ta phẩy bằng b phẩy bình phương trừ a c"),
+            row("Δ' > 0", "đen-ta phẩy lớn hơn 0"),
+            row("$\\Delta^{\\prime}$", "đen-ta phẩy"),
+            row("$\\Delta''$", "đen-ta hai phẩy"),
+            row("$\\alpha' = 30^\\circ$", "an-pha phẩy bằng 30 độ"),
+        ])
+        XCTAssertEqual(reading("$\\Delta'$", MathReadingStyle(pronunciationOverrides: ["\\Delta": "đen ta"])),
+                       "đen ta phẩy", "the dictionary entry of the letter still applies")
+        XCTAssertEqual(reading("$\\Delta' = 0$", .default, vietnamese: false), "delta prime equals 0")
+        XCTAssertEqual(reading("$\\alpha' = 30^\\circ$", .default, vietnamese: false), "alpha prime equals 30 degrees")
+    }
+
     func testDegreesPercentAndDecimals() {
         check([
             row("$30^\\circ$", "30 độ"),
