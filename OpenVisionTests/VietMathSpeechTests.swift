@@ -685,6 +685,26 @@ final class VietMathSpeechTests: XCTestCase {
         XCTAssertEqual(reading("Làm câu 1-5 trước."), "Làm câu 1-5 trước.", "a range keeps its dash")
     }
 
+    func testSectionNumbersAfterHeadingWords() {
+        // Review B5: "Bài 2.15" (Kết nối tri thức numbering) is a section number, not a decimal.
+        check([
+            row("Bài 2.15.", "Bài 2 chấm 15."),
+            row("Bài 1.2: Tính.", "Bài 1 chấm 2: Tính."),
+            row("Mục 4.3 của sách.", "Mục 4 chấm 3 của sách."),
+            row("Ví dụ 1.3.", "Ví dụ 1 chấm 3."),
+            row("Theo Định lí 2.1 và định lý 3.4 thì", "Theo Định lí 2 chấm 1 và định lý 3 chấm 4 thì"),
+            row("Xem Hình 3.2, Bảng 4.1, Trang 12.3, Chương 3.1, Phần 2.2 và Câu 2.15.",
+                "Xem Hình 3 chấm 2, Bảng 4 chấm 1, Trang 12 chấm 3, Chương 3 chấm 1, Phần 2 chấm 2 và Câu 2 chấm 15."),
+            row("Làm bài 2.15 trước.", "Làm bài 2 chấm 15 trước."),
+            row("Mục 1.2.3 trước.", "Mục 1 chấm 2 chấm 3 trước."),
+            // Decimals and thousands elsewhere are unchanged.
+            row("Lấy 3.14 làm pi.", "Lấy 3 phẩy 14 làm pi."),
+            row("2.500.000 đồng", "2.500.000 đồng"),
+            row("Câu 3 được 2.5 điểm.", "Câu 3 được 2 phẩy 5 điểm."),
+            row("Bài 2,5 điểm.", "Bài 2 phẩy 5 điểm."),
+        ])
+    }
+
     func testProseUnitsPercentAndDegrees() {
         XCTAssertEqual(reading("Dài 5cm."), "Dài 5 xen-ti-mét.")
         XCTAssertEqual(reading("Diện tích 5 cm2."), "Diện tích 5 xen-ti-mét vuông.")

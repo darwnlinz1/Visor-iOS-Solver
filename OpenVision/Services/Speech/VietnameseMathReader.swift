@@ -675,7 +675,8 @@ private struct ProseNormalizer {
                 out.append(c)
                 i += 1
             case .number(let raw):
-                out += spokenNumber(raw)
+                out += isSectionNumber(raw, tokens, at: i) ? raw.split(separator: ".").joined(separator: " chấm ")
+                    : spokenNumber(raw)
                 i += 1
                 if let (spoken, used) = unitAfterNumber(tokens, from: i) {
                     out += " " + spoken
@@ -687,6 +688,20 @@ private struct ProseNormalizer {
             }
         }
         return out
+    }
+
+    /// Words before a section number ("Bài 2.15", "Định lí 1.2"), with a small first letter.
+    private static let headingWords: Set<String> = ["bài", "câu", "hình", "mục", "bảng", "trang", "chương", "phần"]
+    private static let twoWordHeadings: Set<String> = ["ví dụ", "định lí", "định lý"]
+
+    /// "2.15" right after a heading word: a section number, read "2 chấm 15" rather than as a decimal.
+    private func isSectionNumber(_ raw: String, _ tokens: [Token], at i: Int) -> Bool {
+        guard raw.contains("."), !raw.contains(",") else { return false }
+        guard case .space? = tokens[safe: i - 1], case .word(let last)? = tokens[safe: i - 2] else { return false }
+        let smallFirst = { (word: String) in word.prefix(1).lowercased() + word.dropFirst() }
+        if Self.headingWords.contains(smallFirst(last)) { return true }
+        guard case .space? = tokens[safe: i - 3], case .word(let first)? = tokens[safe: i - 4] else { return false }
+        return Self.twoWordHeadings.contains(smallFirst(first) + " " + last)
     }
 
     /// "2,5" → "2 phẩy 5"; "2.5" → "2 phẩy 5"; "1.000.000" and "2.500" (thousands) unchanged.
