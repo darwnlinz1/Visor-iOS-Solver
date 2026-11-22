@@ -256,6 +256,34 @@ extension MathNode {
         }
     }
 
+    /// The relation at the top of a cell (x + y = 3 → =), if any.
+    var topRelation: BinaryOperator? {
+        switch self {
+        case .binary(let o, let l, _):
+            if o.isRelation { return o }
+            return [.implies, .iff, .and, .or].contains(o) ? nil : l.topRelation
+        case .juxtaposition(let xs):
+            return xs.lazy.compactMap { $0.topRelation }.first
+        default:
+            return nil
+        }
+    }
+
+    /// Reading starts with words or with nothing: `\text{nếu } x \ge 0`, or the `= 3` of an aligned
+    /// `x + y &= 3`. Such a cases cell needs no "nếu" / "if" in front.
+    var startsWithWordsOrNothing: Bool {
+        switch self {
+        case .text, .empty:
+            return true
+        case .binary(_, let l, _):
+            return l.startsWithWordsOrNothing
+        case .juxtaposition(let xs), .list(let xs, _):
+            return xs.first?.startsWithWordsOrNothing ?? true
+        default:
+            return false
+        }
+    }
+
     /// x², xⁿ: an atom to an atomic power.
     var isSimplePower: Bool {
         if case .power(let b, let e) = self { return b.isAtomicTerm && e.isAtomicTerm }

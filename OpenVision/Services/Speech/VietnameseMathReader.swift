@@ -452,23 +452,17 @@ struct VietnameseMathReader {
         cells.flatMap { read($0) }
     }
 
-    /// The relation at the top of a cell (x + y = 3 → =), if any.
-    private func topRelation(_ node: MathNode) -> BinaryOperator? {
-        switch node {
-        case .binary(let o, let l, _):
-            if o.isRelation { return o }
-            return [.implies, .iff, .and, .or].contains(o) ? nil : topRelation(l)
-        case .juxtaposition(let xs):
-            return xs.lazy.compactMap { topRelation($0) }.first
-        default:
-            return nil
-        }
+    /// A row of a piecewise definition: the value, "nếu", the condition (`x & x \ge 0` → "x nếu x lớn hơn
+    /// hoặc bằng 0"). A condition written with words (`\text{nếu } x \ge 0`, `\text{khi } …`) is read as is.
+    private func readPiece(_ cells: [MathNode]) -> [MathReadingItem] {
+        guard cells.count >= 2, !cells[1].startsWithWordsOrNothing else { return readRow(cells) }
+        return read(cells[0]) + [w("nếu")] + readRow(Array(cells.dropFirst()))
     }
 
     private func readCases(_ rows: [[MathNode]]) -> [MathReadingItem] {
         guard !rows.isEmpty else { return [] }
-        let piecewise = rows.allSatisfy { $0.count >= 2 && topRelation($0[0]) == nil }
-        let relations = rows.map { $0.lazy.compactMap { self.topRelation($0) }.first }
+        let piecewise = rows.allSatisfy { $0.count >= 2 && $0[0].topRelation == nil }
+        let relations = rows.map { $0.lazy.compactMap { $0.topRelation }.first }
         let kind: String
         if piecewise {
             kind = "trường hợp"
@@ -479,7 +473,7 @@ struct VietnameseMathReader {
         } else {
             kind = "dòng"
         }
-        let readings = rows.map { readRow($0) }
+        let readings = rows.map { piecewise ? readPiece($0) : readRow($0) }
         if explicit {
             var out: [MathReadingItem] = [w(piecewise ? "gồm" : "hệ gồm"), w("\(rows.count)"), w(kind), .punct(":")]
             for (n, reading) in readings.enumerated() {

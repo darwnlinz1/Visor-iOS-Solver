@@ -345,6 +345,30 @@ final class VietMathSpeechTests: XCTestCase {
         ])
     }
 
+    func testPiecewiseConditionsReadNeu() {
+        // Review B7: "nếu" before a condition cell, unless the cell starts with its own words.
+        check([
+            row("$f(x) = \\begin{cases} x & x \\ge 0 \\\\ -x & x < 0 \\end{cases}$",
+                "f x bằng x nếu x lớn hơn hoặc bằng 0; âm x nếu x nhỏ hơn 0",
+                explicit: "f của x bằng gồm 2 trường hợp: thứ nhất, x nếu x lớn hơn hoặc bằng 0; "
+                    + "thứ hai, âm x nếu x nhỏ hơn 0"),
+            row("$\\begin{cases} x^2 & \\text{nếu } x \\ge 0 \\\\ -x & \\text{khi } x < 0 \\end{cases}$",
+                "x bình phương nếu x lớn hơn hoặc bằng 0; âm x khi x nhỏ hơn 0",
+                explicit: "gồm 2 trường hợp: thứ nhất, x bình phương nếu x lớn hơn hoặc bằng 0; "
+                    + "thứ hai, âm x khi x nhỏ hơn 0"),
+            row("$\\begin{cases} 1 & x = 0 \\\\ 0 & \\text{còn lại} \\end{cases}$", "1 nếu x bằng 0; 0 còn lại",
+                explicit: "gồm 2 trường hợp: thứ nhất, 1 nếu x bằng 0; thứ hai, 0 còn lại"),
+        ])
+        // An aligned system ("&=") is not a condition.
+        XCTAssertFalse(reading("$\\begin{cases} x + y &= 3 \\\\ x - y &= 1 \\end{cases}$").contains("nếu"))
+        let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
+        XCTAssertEqual(en("$f(x) = \\begin{cases} x & x \\ge 0 \\\\ -x & x < 0 \\end{cases}$"),
+                       "f of x equals x if x is greater than or equal to 0; negative x if x is less than 0")
+        XCTAssertEqual(en("$\\begin{cases} x^2 & \\text{if } x \\ge 0 \\\\ 0 & \\text{otherwise} \\end{cases}$"),
+                       "x squared if x is greater than or equal to 0; 0 otherwise")
+        XCTAssertEqual(en("$\\begin{cases} x + y &= 3 \\\\ x - y &= 1 \\end{cases}$"), "x plus y equals 3; x minus y equals 1")
+    }
+
     func testUnitsTextAndUnknownCommands() {
         check([
             row("5 cm", "5 xen-ti-mét"),

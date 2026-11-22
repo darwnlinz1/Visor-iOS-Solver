@@ -229,7 +229,12 @@ struct EnglishMathReader {
         case .list(let xs, let separator):
             return joined(xs.map { read($0) }, by: .punct(String(separator)))
         case .cases(let rows):
-            let readings = rows.map { $0.flatMap { read($0) } }
+            // A piecewise row reads "value if condition", unless the condition has its own words.
+            let conditional = rows.allSatisfy { $0.count >= 2 && $0[0].topRelation == nil }
+            let readings = rows.map { row -> [MathReadingItem] in
+                guard conditional, !row[1].startsWithWordsOrNothing else { return row.flatMap { read($0) } }
+                return read(row[0]) + [w("if")] + row.dropFirst().flatMap { read($0) }
+            }
             let piecewise = rows.allSatisfy { $0.count >= 2 }
             return (piecewise ? [] : [w("the system"), .punct(":")]) + joined(readings, by: .punct(";"))
         case .alternatives(let rows):
