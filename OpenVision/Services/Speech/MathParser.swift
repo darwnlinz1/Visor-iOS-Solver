@@ -1153,11 +1153,14 @@ struct MathParser {
         switch first.kind {
         case .text(let content, _):
             let trimmed = content.trimmingCharacters(in: .whitespaces)
-            if Self.unitSymbols.contains(trimmed) || compoundUnitIsValid(trimmed) {
-                advance()
-                return .unit(trimmed)
+            guard Self.unitSymbols.contains(trimmed) || compoundUnitIsValid(trimmed) else { return nil }
+            advance()
+            // `\text{ cm}^2`, `\mathrm{m/s}^2`: the exponent belongs to the unit.
+            if let (e, used) = unitExponent(at: pos), compoundUnitIsValid(trimmed + "^" + e) {
+                for _ in 0..<used { advance() }
+                return .unit(trimmed + "^" + e)
             }
-            return nil
+            return .unit(trimmed)
         case .greek("Omega") where first.spaceBefore:
             advance()
             return .unit("Ω")

@@ -337,6 +337,21 @@ final class VietMathSpeechTests: XCTestCase {
         XCTAssertEqual(rendering.warnings, ["foo"], "unknown commands are reported for the debug screen")
     }
 
+    func testTextAndRomanUnitsTakeTheirExponent() {
+        // Review B4: the way Gemini writes units.
+        check([
+            row("$S = 12\\text{ cm}^2$", "S bằng 12 xen-ti-mét vuông"),
+            row("$8 \\text{ cm}^3$", "8 xen-ti-mét khối"),
+            row("$12\\ \\mathrm{cm}^2$", "12 xen-ti-mét vuông"),
+            row("$12\\text{cm}^{2}$", "12 xen-ti-mét vuông"),
+            row("$9{,}8\\,\\text{m/s}^2$", "9 phẩy 8 mét trên giây bình phương"),
+            row("$V = 8\\,\\mathrm{dm}^3$", "V bằng 8 đề-xi-mét khối"),
+        ])
+        let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
+        XCTAssertEqual(en("$12\\text{ cm}^2$"), "12 square centimeters")
+        XCTAssertEqual(en("$9{,}8\\,\\text{m/s}^2$"), "9.8 meters per second squared")
+    }
+
     // MARK: - H13 samples (PLAN.md §7), both letter styles
 
     private let h13: [(input: String, asWritten: String, names: String)] = [

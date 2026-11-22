@@ -336,6 +336,10 @@ final class VietMathParserTests: XCTestCase {
             ("AB = 5 m", bin(.equals, juxt(id("A"), id("B")), juxt(num("5"), .unit("m")))),
             // A letter glued to a number is a variable, not a unit.
             ("2m", juxt(num("2"), id("m"))),
+            // Review B4: a text or roman unit takes its exponent.
+            ("12\\text{ cm}^2", juxt(num("12"), .unit("cm^2"))),
+            ("12\\ \\mathrm{cm}^{2}", juxt(num("12"), .unit("cm^2"))),
+            ("9{,}8\\,\\text{m/s}^2", juxt(num("9.8"), .unit("m/s^2"))),
         ])
     }
 
