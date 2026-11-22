@@ -26,9 +26,12 @@ final class PromptV2Tests: XCTestCase {
                          "all the Q lines first", "gets TYPE: ESSAY for that item only"] {
             XCTAssertTrue(prompt.contains(required), "prompt lacks \"\(required)\"")
         }
-        for example in [PromptV2.mcqExample, PromptV2.essayExample, PromptV2.mixedExample, PromptV2.otherExample] {
+        for example in [PromptV2.mcqExample, PromptV2.essayExample, PromptV2.englishEssayExample,
+                        PromptV2.mixedExample, PromptV2.otherExample, PromptV2.englishOtherExample] {
             XCTAssertTrue(prompt.contains(example), "every example is shown verbatim")
         }
+        XCTAssertTrue(prompt.contains("NEVER reply in Vietnamese when the user's latest message is in English"))
+        XCTAssertTrue(prompt.contains("never put 3 or more $...$ formulas on one L line"))
     }
 
     func testPromptExamplesParseAsTheirType() {

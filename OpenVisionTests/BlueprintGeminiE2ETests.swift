@@ -1,9 +1,6 @@
 // OpenVision - BlueprintGeminiE2ETests.swift
-// End-to-end through the REAL GeminiLiveService (request building, SSE streaming, retry policy,
-// conversation history) and the REAL TTSService, with only the network replaced by a scripted
-// URLProtocol. Mirrors the wearer's workflow (see PLAN.md):
-// temple-shutter photo → "Ok Vision" + a free-form question (Vietnamese or English) → spoken
-// answer on the glasses + LaTeX on the phone → follow-up questions on the same photo.
+// End-to-end through the REAL GeminiLiveService (v2.1 streaming, finishReason, retry policy,
+// conversation history) and the REAL TTSService + VietMathSpeech, with network stubbed by GeminiStub.
 
 import XCTest
 @testable import OpenVision
@@ -13,19 +10,25 @@ final class BlueprintGeminiE2ETests: XCTestCase {
 
     private var service: GeminiLiveService { GeminiLiveService.shared }
 
-    // The host app wires these to the view model; park them so only this test listens.
     private var savedText: ((String) -> Void)?
-    private var savedPartial: ((String) -> Void)?
+    private var savedPartial: ((ParsedAnswer) -> Void)?
+    private var savedComplete: ((String, String?) -> Void)?
     private var savedAgent: ((String) -> Void)?
     private var savedOutput: ((String) -> Void)?
     private var savedProcessing: ((Bool) -> Void)?
     private var savedCapture: ((String) async -> Data?)?
 
-    private let answer = "SPOKEN:\nPhương trình 2x cộng 3 bằng 7, chuyển vế được 2x bằng 4 nên x bằng 2. Lời giải chi tiết ở trên điện thoại.\n\nDISPLAY:\nTa có $2x + 3 = 7$\n$$2x = 4 \\Rightarrow x = 2$$\nĐáp án: $x = 2$"
+    private let answer = #"""
+    TYPE: ESSAY
+    L1: Ta có $2x + 3 = 7$, chuyển vế được $2x = 4$.
+    L2: Chia hai vế cho $2$, suy ra $x = 2$.
+    FINAL: Vậy nghiệm của phương trình là $x = 2$.
+    """#
 
     override func setUp() async throws {
         savedText = service.onTextReceived
-        savedPartial = service.onPartialSpoken
+        savedPartial = service.onPartialAnswer
+        savedComplete = service.onAnswerComplete
         savedAgent = service.agentMessageCallback
         savedOutput = service.onOutputTranscription
         savedProcessing = service.processingChangedCallback
@@ -33,7 +36,8 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         service.onCaptureRequested = nil
         service.apiKeysOverride = ["AQ.test-key-A", "AQ.test-key-B", "AQ.test-key-C"]
         service.onTextReceived = nil
-        service.onPartialSpoken = nil
+        service.onPartialAnswer = nil
+        service.onAnswerComplete = nil
         service.agentMessageCallback = nil
         service.onOutputTranscription = nil
         service.processingChangedCallback = nil
@@ -50,23 +54,24 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         service.clearConversationHistory()
         service.resetNetworkState()
         service.onTextReceived = savedText
-        service.onPartialSpoken = savedPartial
+        service.onPartialAnswer = savedPartial
+        service.onAnswerComplete = savedComplete
         service.agentMessageCallback = savedAgent
         service.onOutputTranscription = savedOutput
         service.processingChangedCallback = savedProcessing
         GeminiStub.reset()
     }
 
-    // MARK: - Checklist test 1: shutter photo + question → full-resolution photo reaches Gemini
+    // MARK: - Checklist test 1: shutter photo + question -> v2.1 streamed answer
 
-    func testShutterPhotoQuestionSendsAnUprightPhotoAtUltraHighDetailAndStreamsTheSpokenAnswer() async throws {
+    func testShutterPhotoQuestionSendsAnUprightPhotoAtUltraHighDetailAndStreamsV21Sections() async throws {
         let photo = try XCTUnwrap(BlueprintSolverTests.jpeg(width: 4032, height: 3024))
-        GeminiStub.enqueue(.stream(answer))
+        GeminiStub.enqueue(.stream(answer, finishReason: "STOP"))
 
-        var partials: [String] = []
-        var finalText: String?
-        service.onPartialSpoken = { partials.append($0) }
-        service.onTextReceived = { finalText = $0 }
+        var partials: [ParsedAnswer] = []
+        var completed: (raw: String, reason: String?)?
+        service.onPartialAnswer = { partials.append($0) }
+        service.onAnswerComplete = { raw, reason in completed = (raw, reason) }
 
         try await service.sendRESTMessage("giải câu này", imageData: photo)
 
@@ -80,46 +85,66 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         let turn = try XCTUnwrap(request.contents.last)
         let sent = try XCTUnwrap(turn.imageData)
         let info = try XCTUnwrap(PhotoPayload.imageInfo(sent))
-        XCTAssertEqual(max(info.width, info.height), PhotoPayload.uploadMaxDimension, "12 MP is sent at 3072 px")
+        XCTAssertEqual(max(info.width, info.height), PhotoPayload.uploadMaxDimension)
         XCTAssertEqual(info.orientation, 1)
         XCTAssertEqual(turn.imageMIMEType, "image/jpeg")
-        XCTAssertEqual(turn.mediaResolution, "MEDIA_RESOLUTION_ULTRA_HIGH", "detail requested on the image itself")
-        XCTAssertEqual(turn.text, "giải câu này", "the wearer's words go through verbatim")
+        XCTAssertEqual(turn.mediaResolution, "MEDIA_RESOLUTION_ULTRA_HIGH")
+        XCTAssertEqual(turn.text, "giải câu này")
         XCTAssertNil(request.generationConfig["mediaResolution"])
         XCTAssertEqual((request.generationConfig["thinkingConfig"] as? [String: Any])?["thinkingLevel"] as? String, "LOW")
         XCTAssertEqual(request.generationConfig["maxOutputTokens"] as? Int, 8192)
-        XCTAssertTrue(request.systemPrompt.contains("DISPLAY:"))
+        XCTAssertTrue(request.systemPrompt.contains("TYPE:"))
+        XCTAssertFalse(request.systemPrompt.contains("DISPLAY:"))
 
-        XCTAssertEqual(finalText, answer)
-        let finalSpoken = GeminiLiveService.parseDualChannel(answer).spoken
-        XCTAssertFalse(partials.isEmpty, "the glasses must start speaking before the reply is complete")
+        XCTAssertEqual(completed?.raw, answer)
+        XCTAssertEqual(completed?.reason, "STOP")
+        let finalParsed = AnswerFormat.parse(answer, finishReason: "STOP")
+        XCTAssertFalse(partials.isEmpty)
         for partial in partials {
-            XCTAssertTrue(finalSpoken.hasPrefix(partial), "streamed \"\(partial)\" is not a prefix of the final spoken text")
+            XCTAssertTrue(finalParsed.sections.starts(with: partial.sections), "streamed sections must be a prefix of final sections")
         }
-        XCTAssertEqual(partials.last, finalSpoken)
         XCTAssertEqual(service.conversationHistoryCount, 2)
         XCTAssertTrue(service.historyContainsImage)
     }
 
-    // MARK: - Checklist test 4 / lesson 7: follow-up on the same photo
+    func testMaxTokensFinishReasonReachesCallbackAndAddsTruncationNotice() async throws {
+        let cutReply = "TYPE: ESSAY\nL1: Ta có $2x = 4$.\nL2: Suy ra"
+        GeminiStub.enqueue(.stream(cutReply, finishReason: "MAX_TOKENS"))
+
+        var receivedReason: String?
+        var receivedRaw: String?
+        service.onAnswerComplete = { raw, reason in
+            receivedRaw = raw
+            receivedReason = reason
+        }
+
+        try await service.sendRESTMessage("giải bài dài", imageData: nil)
+        XCTAssertEqual(receivedReason, "MAX_TOKENS")
+        let parsed = AnswerFormat.parse(try XCTUnwrap(receivedRaw), finishReason: receivedReason)
+        XCTAssertTrue(parsed.isTruncated)
+        let plan = ReplyAssembler(languageCode: "vi").plan(turnID: UUID(), parsed: parsed)
+        XCTAssertEqual(plan.segments.last?.kind, .notice)
+    }
+
+    // MARK: - Follow-up context without re-uploading
 
     func testFollowUpOnTheSamePhotoKeepsContextWithoutReuploading() async throws {
         let photo = try XCTUnwrap(BlueprintSolverTests.jpeg(width: 4032, height: 3024))
         GeminiStub.enqueue(.stream(answer, signature: "c2lnLTE="))
-        GeminiStub.enqueue(.stream("SPOKEN: Vì ta chuyển 3 sang vế phải rồi chia hai vế cho 2.\nDISPLAY: $2x = 4$"))
+        GeminiStub.enqueue(.stream("TYPE: OTHER\nANSWER: Vì ta chuyển 3 sang vế phải rồi chia hai vế cho 2."))
 
         try await service.sendRESTMessage("giải câu này", imageData: photo)
         try await service.sendRESTMessage("Tại sao lại ra x bằng 2?", imageData: photo)
 
         let followUp = try XCTUnwrap(GeminiStub.captured.last)
-        XCTAssertEqual(followUp.contents.count, 3, "history (question + answer) + the follow-up")
-        XCTAssertNil(followUp.contents[2].imageData, "the photo is already in history — don't upload 12 MP again")
+        XCTAssertEqual(followUp.contents.count, 3)
+        XCTAssertNil(followUp.contents[2].imageData)
         XCTAssertEqual(followUp.contents[2].text, "Tại sao lại ra x bằng 2?")
-        let historyPhoto = try XCTUnwrap(followUp.contents[0].imageData, "the model still sees the photo")
+        let historyPhoto = try XCTUnwrap(followUp.contents[0].imageData)
         let info = try XCTUnwrap(PhotoPayload.imageInfo(historyPhoto))
         XCTAssertEqual(max(info.width, info.height), Int(PhotoPayload.historyMaxDimension))
         XCTAssertEqual(followUp.contents[1].role, "model")
-        XCTAssertEqual(followUp.contents[1].thoughtSignature, "c2lnLTE=", "Gemini 3 thought signatures go back with the history")
+        XCTAssertEqual(followUp.contents[1].thoughtSignature, "c2lnLTE=")
     }
 
     func testANewPhotoIsUploadedAgain() async throws {
@@ -130,32 +155,30 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         try await service.sendRESTMessage("giải câu này", imageData: first)
         try await service.sendRESTMessage("còn câu này?", imageData: second)
         let sent = try XCTUnwrap(GeminiStub.captured.last?.contents.last?.imageData)
-        XCTAssertEqual(PhotoPayload.imageInfo(sent)?.height, PhotoPayload.uploadMaxDimension, "the second (portrait) photo was uploaded")
+        XCTAssertEqual(PhotoPayload.imageInfo(sent)?.height, PhotoPayload.uploadMaxDimension)
     }
-
-    // MARK: - Free-form, bilingual, unrelated questions answered normally
 
     func testUnrelatedQuestionsGoVerbatimInEitherLanguage() async throws {
         for question in ["Thủ đô của Pháp là gì?", "What's the weather like for a picnic?"] {
-            GeminiStub.enqueue(.stream("SPOKEN: ok\nDISPLAY: ok"))
+            GeminiStub.enqueue(.stream("TYPE: OTHER\nANSWER: ok"))
             try await service.sendRESTMessage(question, imageData: nil)
             let turn = try XCTUnwrap(GeminiStub.captured.last?.contents.last)
-            XCTAssertEqual(turn.text, question, "no rewriting into a solve-the-image prompt")
+            XCTAssertEqual(turn.text, question)
             XCTAssertNil(turn.imageData)
         }
     }
 
     func testHistoryKeepsTheLastThreeExchanges() async throws {
         for i in 1...4 {
-            GeminiStub.enqueue(.stream("SPOKEN: trả lời \(i)\nDISPLAY: \(i)"))
+            GeminiStub.enqueue(.stream("TYPE: OTHER\nANSWER: trả lời \(i)"))
             try await service.sendRESTMessage("câu hỏi \(i)", imageData: nil)
         }
         XCTAssertEqual(service.conversationHistoryCount, GeminiLiveService.maxHistoryEntries)
-        XCTAssertEqual(GeminiStub.captured.last?.contents.count, 7, "6 history entries + the new question")
+        XCTAssertEqual(GeminiStub.captured.last?.contents.count, 7)
         XCTAssertEqual(GeminiStub.captured.last?.contents.first?.text, "câu hỏi 1")
     }
 
-    // MARK: - No timeouts, no dead ends: the retry policy
+    // MARK: - Retry policy
 
     func testQuotaExhaustedKeyRotatesImmediately() async throws {
         GeminiStub.enqueue(.status(429, body: #"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}"#))
@@ -165,8 +188,6 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         XCTAssertNotEqual(GeminiStub.captured[0].apiKey, GeminiStub.captured[1].apiKey)
     }
 
-    /// Quota is per project AND per model: when the primary model is exhausted on every key, the
-    /// fallback model still has its own quota.
     func testWhenEveryKeyIsExhaustedTheFallbackModelAnswers() async throws {
         for _ in 0..<3 {
             GeminiStub.enqueue(.status(429, body: #"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}"#))
@@ -174,7 +195,7 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         GeminiStub.enqueue(.stream(answer))
         try await service.sendRESTMessage("giải câu này", imageData: nil)
         XCTAssertEqual(GeminiStub.captured.count, 4)
-        XCTAssertTrue(GeminiStub.captured[3].url.path.contains("/\(GeminiLiveService.modelChain[1]):"), GeminiStub.captured[3].url.path)
+        XCTAssertTrue(GeminiStub.captured[3].url.path.contains("/\(GeminiLiveService.modelChain[1]):"))
     }
 
     func testRetiredModelFallsBackInsteadOfFailing() async throws {
@@ -190,10 +211,9 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         GeminiStub.enqueue(.stream(answer))
         try await service.sendRESTMessage("giải câu này", imageData: nil)
         XCTAssertEqual(GeminiStub.captured.count, 3)
-        XCTAssertEqual(Set(GeminiStub.captured.map { $0.apiKey }).count, 3, "each retry uses a different key")
+        XCTAssertEqual(Set(GeminiStub.captured.map { $0.apiKey }).count, 3)
     }
 
-    /// ULTRA_HIGH on the image → HIGH in generationConfig → nothing: each rejection steps down.
     func testUnsupportedMediaResolutionStepsDownAndRetries() async throws {
         let photo = try XCTUnwrap(BlueprintSolverTests.jpeg(width: 2048, height: 1536))
         let rejected = #"{"error":{"message":"Invalid JSON payload received. Unknown name \"mediaResolution\""}}"#
@@ -217,7 +237,7 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         XCTAssertNil(GeminiStub.captured[1].generationConfig["thinkingConfig"])
     }
 
-    // MARK: - Agent loop: the model asks to see, the app takes the photo
+    // MARK: - Agent capture loop
 
     func testModelAsksToSeeAndTheAppCapturesThenAsksAgain() async throws {
         let photo = try XCTUnwrap(BlueprintSolverTests.jpeg(width: 2048, height: 1536))
@@ -228,9 +248,9 @@ final class BlueprintGeminiE2ETests: XCTestCase {
             captures += 1
             return photo
         }
-        var partials: [String] = []
+        var partials: [ParsedAnswer] = []
         var finalText: String?
-        service.onPartialSpoken = { partials.append($0) }
+        service.onPartialAnswer = { partials.append($0) }
         service.onTextReceived = { finalText = $0 }
 
         try await service.sendRESTMessage("câu 3 chọn gì", imageData: nil)
@@ -238,11 +258,11 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         XCTAssertEqual(captures, 1)
         XCTAssertEqual(GeminiStub.captured.count, 2)
         XCTAssertNil(GeminiStub.captured[0].contents.last?.imageData)
-        XCTAssertNotNil(GeminiStub.captured[1].contents.last?.imageData, "the question is asked again with the photo")
+        XCTAssertNotNil(GeminiStub.captured[1].contents.last?.imageData)
         XCTAssertEqual(GeminiStub.captured[1].contents.last?.text, "câu 3 chọn gì")
         XCTAssertEqual(finalText, answer)
-        XCTAssertFalse(partials.contains { $0.contains("CAPTURE") }, "the protocol token is never spoken")
-        XCTAssertEqual(service.conversationHistoryCount, 2, "only the real exchange is remembered")
+        XCTAssertFalse(partials.flatMap(\.sections).contains { $0.text.contains("CAPTURE") })
+        XCTAssertEqual(service.conversationHistoryCount, 2)
     }
 
     func testWhenNoPhotoCanBeTakenTheGlassesSaySo() async throws {
@@ -251,8 +271,8 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         var finalText: String?
         service.onTextReceived = { finalText = $0 }
         try await service.sendRESTMessage("giải câu này", imageData: nil)
-        let spoken = GeminiLiveService.parseDualChannel(try XCTUnwrap(finalText)).spoken
-        XCTAssertEqual(spoken, SolverIntent.missingPhotoMessage(for: "giải câu này"))
+        let parsed = AnswerFormat.parse(try XCTUnwrap(finalText))
+        XCTAssertEqual(parsed.sections.map(\.text).joined(separator: " "), SolverIntent.missingPhotoMessage(for: "giải câu này"))
         XCTAssertEqual(GeminiStub.captured.count, 1)
     }
 
@@ -263,7 +283,7 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         try await service.sendRESTMessage("giải câu này", imageData: nil)
         try await service.sendRESTMessage("tại sao?", imageData: nil)
         XCTAssertEqual(GeminiStub.captured.count, 3)
-        XCTAssertEqual(GeminiStub.captured[2].contents.count, 1, "retried with a fresh conversation")
+        XCTAssertEqual(GeminiStub.captured[2].contents.count, 1)
     }
 
     func testServerOverloadBacksOffAndRetries() async throws {
@@ -286,13 +306,15 @@ final class BlueprintGeminiE2ETests: XCTestCase {
     }
 
     func testDroppedStreamKeepsTheAnswerSoFar() async throws {
-        let partialReply = "SPOKEN:\nĐáp án là B vì đạo hàm luôn dương.\nDISPLAY:\n$f'(x) = 3x^2"
+        let partialReply = "TYPE: ESSAY\nL1: Đáp án là B vì đạo hàm luôn dương.\nL2: $f'(x) = 3x^2"
         GeminiStub.enqueue(.stream(partialReply, dropAtEnd: true))
         var finalText: String?
         service.onTextReceived = { finalText = $0 }
         try await service.sendRESTMessage("câu 3 chọn gì", imageData: nil)
-        XCTAssertEqual(GeminiStub.captured.count, 1, "no full retry when the spoken answer already arrived")
-        XCTAssertEqual(GeminiLiveService.parseDualChannel(finalText ?? "").spoken, "Đáp án là B vì đạo hàm luôn dương.")
+        XCTAssertEqual(GeminiStub.captured.count, 1)
+        let parsed = AnswerFormat.parse(finalText ?? "")
+        XCTAssertFalse(parsed.sections.isEmpty)
+        XCTAssertEqual(parsed.sections.first?.text, "Đáp án là B vì đạo hàm luôn dương.")
     }
 
     func testDeadNetworkIsRetriedThenReportedNotHung() async throws {
@@ -305,21 +327,28 @@ final class BlueprintGeminiE2ETests: XCTestCase {
             XCTFail("expected a failure")
         } catch {
             XCTAssertEqual(GeminiStub.captured.count, GeminiLiveService.maxNetworkRetries + 1)
-            XCTAssertLessThan(Date().timeIntervalSince(started), 15, "fails in seconds, not minutes")
+            XCTAssertLessThan(Date().timeIntervalSince(started), 15)
         }
     }
 
-    // MARK: - Checklist test 2 / lessons 4-5: the spoken answer plays to the end
+    // MARK: - Checklist test 2 / lessons 4-5: v2.1 spoken answer plays cleanly through TTSService
 
     func testSpokenAnswerPlaysCompletelyAndBargeInStaysClosedUntilTheEnd() async throws {
         GeminiStub.enqueue(.stream(answer))
         var finalText: String?
         service.onTextReceived = { finalText = $0 }
         try await service.sendRESTMessage("giải câu này", imageData: nil)
-        let spoken = GeminiLiveService.parseDualChannel(try XCTUnwrap(finalText)).spoken
-        let voiced = TTSService.cleanSpokenAudio(spoken)
-        XCTAssertFalse(voiced.contains("$") || voiced.contains("\\"))
-        XCTAssertGreaterThanOrEqual(voiced.split(separator: ".").count, 2, "2-4 sentences, not 'X bằng 2.'")
+        let parsed = AnswerFormat.parse(try XCTUnwrap(finalText))
+        let plan = ReplyAssembler(languageCode: "vi").plan(turnID: UUID(), parsed: parsed)
+        XCTAssertEqual(plan.answerType, .essay)
+        XCTAssertEqual(plan.segments.count, 3)
+
+        let combinedSpeech = plan.segments.map(\.speechText).joined(separator: " ")
+        let pieces = TTSService.spokenPieces(for: combinedSpeech, vietnamese: true, style: .default)
+        XCTAssertGreaterThanOrEqual(pieces.count, 2)
+        for piece in pieces {
+            XCTAssertFalse(piece.text.contains("$") || piece.text.contains("\\"))
+        }
 
         let tts = TTSService.shared
         let savedEnded = tts.onSpeechEnded
@@ -328,21 +357,18 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         ended.assertForOverFulfill = false
         tts.onSpeechEnded = { ended.fulfill() }
 
-        tts.speak(spoken)
-        // Lesson 4: "speaking" is set synchronously, BEFORE the OS starts audio, so the mic
-        // can't hear the first syllables of the temple speaker as a new command.
+        tts.speak(combinedSpeech, languageCode: "vi")
         XCTAssertTrue(tts.isSpeaking)
-        XCTAssertGreaterThanOrEqual(tts.pendingUtterances, 2, "queued sentence by sentence (one voice per language)")
+        XCTAssertGreaterThanOrEqual(tts.pendingUtterances, 2)
         await fulfillment(of: [ended], timeout: 60)
         XCTAssertFalse(tts.isSpeaking)
-        XCTAssertEqual(tts.pendingUtterances, 0, "every utterance finished — nothing was cut off")
-        XCTAssertEqual(SolverIntent.ttsEchoSettleNanoseconds, 350_000_000, "lesson 4 echo guard")
+        XCTAssertEqual(tts.pendingUtterances, 0)
+        XCTAssertEqual(SolverIntent.ttsEchoSettleNanoseconds, 350_000_000)
     }
 }
 
 // MARK: - Scripted Gemini endpoint
 
-/// Replaces generativelanguage.googleapis.com for the session GeminiLiveService uses.
 final class GeminiStub: URLProtocol {
     struct Reply {
         var status: Int
@@ -350,11 +376,14 @@ final class GeminiStub: URLProtocol {
         var chunks: [String]
         var dropAtEnd: Bool
 
-        static func stream(_ text: String, dropAtEnd: Bool = false, signature: String? = nil) -> Reply {
+        static func stream(_ text: String, dropAtEnd: Bool = false, signature: String? = nil, finishReason: String? = nil) -> Reply {
             var chunks = GeminiStub.sseChunks(text)
-            if let signature {
-                // Like Gemini 3: a final chunk with an empty-text part carrying only the signature.
-                let event: [String: Any] = ["candidates": [["content": ["role": "model", "parts": [["text": "", "thoughtSignature": signature]]], "finishReason": "STOP"]]]
+            if signature != nil || finishReason != nil {
+                var part: [String: Any] = ["text": ""]
+                if let signature { part["thoughtSignature"] = signature }
+                var candidate: [String: Any] = ["content": ["role": "model", "parts": [part]]]
+                if let finishReason { candidate["finishReason"] = finishReason }
+                let event: [String: Any] = ["candidates": [candidate]]
                 let json = (try? JSONSerialization.data(withJSONObject: event)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 chunks.append("data: \(json)\r\n\r\n")
             }
@@ -423,7 +452,6 @@ final class GeminiStub: URLProtocol {
         lock.withLock { replies.append(reply) }
     }
 
-    /// Splits a reply into several SSE events, the way Gemini streams it.
     static func sseChunks(_ text: String, pieces: Int = 5) -> [String] {
         guard !text.isEmpty else { return [] }
         let characters = Array(text)
@@ -461,9 +489,6 @@ final class GeminiStub: URLProtocol {
             client?.urlProtocol(self, didLoad: Data(chunk.utf8))
         }
         if reply.dropAtEnd {
-            // A real connection drops AFTER the bytes it already sent have been read. Failing in
-            // the same instant as the last chunk lets URLSession.bytes throw before the consumer
-            // has read a single line (seen on iOS 26: partial answer lost, a second request made).
             if !reply.chunks.isEmpty { Thread.sleep(forTimeInterval: 0.3) }
             client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
         } else {
@@ -473,7 +498,6 @@ final class GeminiStub: URLProtocol {
 
     override func stopLoading() {}
 
-    /// URLSession moves the body into a stream before a URLProtocol sees it.
     private static func readBody(_ request: URLRequest) -> Data {
         if let body = request.httpBody { return body }
         guard let stream = request.httpBodyStream else { return Data() }

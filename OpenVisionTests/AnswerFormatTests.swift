@@ -605,6 +605,22 @@ final class AnswerFormatTests: XCTestCase {
         let upper = text.uppercased()
         return upper.contains("[[END]]") || upper.contains("[[CAPTURE]]")
     }
+
+    func testTextForReadingRecordRoundTrips() {
+        let assembler = ReplyAssembler(languageCode: "vi")
+        for sample in [mcqReply, essayReply, mixedReply, otherReply] {
+            let original = AnswerFormat.parse(sample)
+            let record = assembler.record(for: original)
+            let rebuilt = AnswerFormat.text(for: record)
+            let reparsed = AnswerFormat.parse(rebuilt)
+            XCTAssertEqual(reparsed.type, original.type, rebuilt)
+            XCTAssertEqual(reparsed.sections.count, original.sections.count, rebuilt)
+        }
+        let legacy = AnswerFormat.text(forLegacyHistory: "Paris là thủ đô của Pháp.")
+        let parsedLegacy = AnswerFormat.parse(legacy)
+        XCTAssertEqual(parsedLegacy.type, .other)
+        XCTAssertEqual(parsedLegacy.sections.first?.text, "Paris là thủ đô của Pháp.")
+    }
 }
 
 /// SplitMix64: a fixed seed gives the same "random" replies on every run and platform.

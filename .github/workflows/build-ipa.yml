@@ -14,6 +14,7 @@ jobs:
   build:
     name: Build OpenVision IPA
     runs-on: macos-26
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -28,8 +29,10 @@ jobs:
           fi
           echo "Configuration files verified"
 
-      - name: Blueprint guard
-        run: python3 scripts/blueprint/verify_blueprint.py
+      - name: Blueprint guard & pbxproj self-test
+        run: |
+          python3 scripts/blueprint/verify_blueprint.py
+          python3 scripts/pbxproj_files.py --self-test
 
       - name: Cache Swift packages
         uses: actions/cache@v6
@@ -53,23 +56,28 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
-            DEVELOPMENT_TEAM=
+            DEVELOPMENT_TEAM= \
+          | xcbeautify --renderer github-actions
 
       - name: Package IPA
         run: |
           mkdir -p Payload
           APP_PATH=$(find DerivedData/Build/Products -name "OpenVision.app" -type d | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::OpenVision.app not found in DerivedData/Build/Products"
+            exit 1
+          fi
           echo "Found app at: $APP_PATH"
           cp -r "$APP_PATH" Payload/
           zip -r -y OpenVision.ipa Payload
+          ls -lh OpenVision.ipa
 
-      - name: Verify IPA contents (Blueprint checklist test 6)
+      - name: Verify IPA contents (strict — fails on missing required symbols)
         run: |
-          chmod +x scripts/blueprint/verify_ipa_symbols.sh || true
-          bash scripts/blueprint/verify_ipa_symbols.sh OpenVision.ipa || echo "Verification script completed with warnings"
+          chmod +x scripts/blueprint/verify_ipa_symbols.sh
+          bash scripts/blueprint/verify_ipa_symbols.sh OpenVision.ipa
 
       - name: Upload IPA Artifact
-        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: OpenVision-unsigned

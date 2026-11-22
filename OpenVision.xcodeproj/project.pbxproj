@@ -7,26 +7,40 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0412970766BE8F25F236E41E /* PlaybackBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5855B2A017E94ACC4E02F4DB /* PlaybackBar.swift */; };
 		0464025C474567335F7072D9 /* VietMathSpeechTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13719BB379A9751CF1C8C566 /* VietMathSpeechTests.swift */; };
 		187BDB9C9579D6DFA99EE108 /* PromptV2.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE67506363A695B60CFD5E6 /* PromptV2.swift */; };
+		20B9D77FCEBBB3D5955312FF /* MathSpeechSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5BFB6BAA70B221CA6D287E /* MathSpeechSettingsView.swift */; };
 		2784894BD708606371B4EE08 /* EnglishMathReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9E728E28B19E253EA2FA66E /* EnglishMathReader.swift */; };
 		2CFA17B093845C6F1B98F4E9 /* PronunciationDictionary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86CFD7B30DB11F5D672C7DAC /* PronunciationDictionary.swift */; };
 		2CFB4CDB9C6570528D4B90C5 /* MathParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5FEFA929096039F7739C0EF /* MathParser.swift */; };
 		340B27EF885BA532E70F610C /* AnswerFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E911BE6A196DB86E833BE9 /* AnswerFormat.swift */; };
 		3B42A908E7B5156AE9926601 /* MathReadingStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E13FBA1D1AA550DE818DA97 /* MathReadingStyle.swift */; };
+		57BC26509BD268CE37306AAD /* ReadingCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1D7CE4D474B6971526268D /* ReadingCommand.swift */; };
+		5CD38A436473FBD6298E7FC8 /* StatusChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ABA39C930DC209A26E80636 /* StatusChip.swift */; };
+		5F91DE63EF6CE7C2E4141E16 /* ReadingCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8483275A4F63A2D06CD4CFAA /* ReadingCommandTests.swift */; };
+		5FFFB9B8C486EBCBD767C3AF /* ReadingEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9589E5A9440ECDDBDB87F4BA /* ReadingEngineTests.swift */; };
 		62F8814F2ECFE6561C860E19 /* VietMathFuzzTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACEEB1F4B1963997DF99C970 /* VietMathFuzzTests.swift */; };
 		631794BAF25EC8C5FCC8BE48 /* ReadingModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91969AF95B50996EE212FC03 /* ReadingModel.swift */; };
+		71EF6B07861382723760624E /* DebugSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1872BF22D1733EC70CA4DD6 /* DebugSettingsView.swift */; };
+		80971E1563B3BB5407A9A39D /* ReadingMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B8FD38E0F007667280E06A /* ReadingMachine.swift */; };
 		81A4286CAED0C7F9CAF73FEF /* MathSpanSplitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F52FB20C9998F3BBD76069BE /* MathSpanSplitter.swift */; };
 		8454BBF538DBBE896C451BC5 /* SolutionRenderer in Resources */ = {isa = PBXBuildFile; fileRef = BC87519DBE5AB56551F9FD7C /* SolutionRenderer */; };
+		890B7823D40A3A21CFC88A1C /* MathPrettyTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2F38CDA01199056EB9ABE51 /* MathPrettyTextTests.swift */; };
 		8A21B16FD2692448989EABCD /* MathNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = A63B7CD7A175A592650ED3EE /* MathNode.swift */; };
 		8D0B265C6A29995F22F6E9C4 /* ReplyAssemblerSpeechTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A108780BBC0B8F9794FECE6 /* ReplyAssemblerSpeechTests.swift */; };
 		A580A5C8203945C08F937508 /* MathLexer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCEAE9114955A6CACB60C78B /* MathLexer.swift */; };
+		B60BA6ADBCF1DD137660F332 /* ReadingEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6983D8B40623FF2BE3D1ECF2 /* ReadingEngine.swift */; };
+		B60F0696219F0839EEE51410 /* ReadingSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94D3445F401E79048BDAC1CA /* ReadingSettingsView.swift */; };
 		BACC061789CD33B2B52B9497 /* SolutionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6329C61801054C63D4B9646C /* SolutionView.swift */; };
+		BADCF45B804B6FA3E6CF064A /* AppLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 284E6023502E5174730859D6 /* AppLog.swift */; };
 		C174141594F6F463C9C06B2B /* VietnameseMathReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B99D6D000F5A4FF7C195ABF /* VietnameseMathReader.swift */; };
 		CAE01E40753444C60C15A8D0 /* ReplyAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97268E908EB0186536548E3 /* ReplyAssembler.swift */; };
 		CF9E65849AE483C0B44B9AAE /* VietMathSpeech.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B24A68D46E12FD075C54B24 /* VietMathSpeech.swift */; };
+		D278926EF715AD9A2A52A9BA /* MathPrettyText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CDBBE08AE4777CDD8E52B6A /* MathPrettyText.swift */; };
 		DEC74531AA6217DCE72BEDAD /* VietMathParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B55D269A3EA0B7368F2FD605 /* VietMathParserTests.swift */; };
 		DFAA24EAAC4F8BF3CD9FA71C /* ReplyAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F40848A39312970B4242629D /* ReplyAssemblerTests.swift */; };
+		E342A6086A726F93CD35C6C7 /* SegmentCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8F6143D265CE1F16F25B137 /* SegmentCardView.swift */; };
 		EE934F49699329BF96B1EBF8 /* PromptV2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B7DF46B3C41B82AC9F0E8 /* PromptV2Tests.swift */; };
 		F20A6B074D161999DB9F12AD /* AnswerFormatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF83F7B17314CAB8E156234F /* AnswerFormatTests.swift */; };
 		F7171F39C05F14F095CA441A /* BlueprintSolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27298ECDFB6BF4F7743FB3AC /* BlueprintSolverTests.swift */; };
@@ -98,12 +112,22 @@
 
 /* Begin PBXFileReference section */
 		13719BB379A9751CF1C8C566 /* VietMathSpeechTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietMathSpeechTests.swift; sourceTree = "<group>"; };
+		17B8FD38E0F007667280E06A /* ReadingMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingMachine.swift; sourceTree = "<group>"; };
 		1D8B7DF46B3C41B82AC9F0E8 /* PromptV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptV2Tests.swift; sourceTree = "<group>"; };
+		284E6023502E5174730859D6 /* AppLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLog.swift; sourceTree = "<group>"; };
+		2CDBBE08AE4777CDD8E52B6A /* MathPrettyText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathPrettyText.swift; sourceTree = "<group>"; };
+		4ABA39C930DC209A26E80636 /* StatusChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusChip.swift; sourceTree = "<group>"; };
+		5855B2A017E94ACC4E02F4DB /* PlaybackBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackBar.swift; sourceTree = "<group>"; };
 		5A108780BBC0B8F9794FECE6 /* ReplyAssemblerSpeechTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyAssemblerSpeechTests.swift; sourceTree = "<group>"; };
+		6983D8B40623FF2BE3D1ECF2 /* ReadingEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingEngine.swift; sourceTree = "<group>"; };
 		6B24A68D46E12FD075C54B24 /* VietMathSpeech.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietMathSpeech.swift; sourceTree = "<group>"; };
+		8483275A4F63A2D06CD4CFAA /* ReadingCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingCommandTests.swift; sourceTree = "<group>"; };
 		86CFD7B30DB11F5D672C7DAC /* PronunciationDictionary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PronunciationDictionary.swift; sourceTree = "<group>"; };
+		8A5BFB6BAA70B221CA6D287E /* MathSpeechSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathSpeechSettingsView.swift; sourceTree = "<group>"; };
 		8B99D6D000F5A4FF7C195ABF /* VietnameseMathReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietnameseMathReader.swift; sourceTree = "<group>"; };
 		91969AF95B50996EE212FC03 /* ReadingModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingModel.swift; sourceTree = "<group>"; };
+		94D3445F401E79048BDAC1CA /* ReadingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingSettingsView.swift; sourceTree = "<group>"; };
+		9589E5A9440ECDDBDB87F4BA /* ReadingEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingEngineTests.swift; sourceTree = "<group>"; };
 		9E13FBA1D1AA550DE818DA97 /* MathReadingStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathReadingStyle.swift; sourceTree = "<group>"; };
 		A63B7CD7A175A592650ED3EE /* MathNode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathNode.swift; sourceTree = "<group>"; };
 		ACEEB1F4B1963997DF99C970 /* VietMathFuzzTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VietMathFuzzTests.swift; sourceTree = "<group>"; };
@@ -114,9 +138,13 @@
 		6329C61801054C63D4B9646C /* SolutionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SolutionView.swift; sourceTree = "<group>"; };
 		27298ECDFB6BF4F7743FB3AC /* BlueprintSolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueprintSolverTests.swift; sourceTree = "<group>"; };
 		CDE67506363A695B60CFD5E6 /* PromptV2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptV2.swift; sourceTree = "<group>"; };
+		D1872BF22D1733EC70CA4DD6 /* DebugSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugSettingsView.swift; sourceTree = "<group>"; };
 		D3E911BE6A196DB86E833BE9 /* AnswerFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnswerFormat.swift; sourceTree = "<group>"; };
+		D8F6143D265CE1F16F25B137 /* SegmentCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentCardView.swift; sourceTree = "<group>"; };
 		DCEAE9114955A6CACB60C78B /* MathLexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathLexer.swift; sourceTree = "<group>"; };
 		E9E728E28B19E253EA2FA66E /* EnglishMathReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishMathReader.swift; sourceTree = "<group>"; };
+		EE1D7CE4D474B6971526268D /* ReadingCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingCommand.swift; sourceTree = "<group>"; };
+		F2F38CDA01199056EB9ABE51 /* MathPrettyTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathPrettyTextTests.swift; sourceTree = "<group>"; };
 		F40848A39312970B4242629D /* ReplyAssemblerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyAssemblerTests.swift; sourceTree = "<group>"; };
 		F52FB20C9998F3BBD76069BE /* MathSpanSplitter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MathSpanSplitter.swift; sourceTree = "<group>"; };
 		FA8C2E880C1F79EB7B2A3794 /* BlueprintGeminiE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueprintGeminiE2ETests.swift; sourceTree = "<group>"; };
@@ -198,9 +226,12 @@
 			isa = PBXGroup;
 			children = (
 				516A0726470BFA8BD9B55F3F /* AdditionalInstructionsView.swift */,
+				D1872BF22D1733EC70CA4DD6 /* DebugSettingsView.swift */,
 				773753CA73EBA9F8C78BD8E4 /* GeminiSettingsView.swift */,
 				ED25EC5E800C216965A50F8A /* GlassesSettingsView.swift */,
+				8A5BFB6BAA70B221CA6D287E /* MathSpeechSettingsView.swift */,
 				484468B5604EFF4051074762 /* MemoriesView.swift */,
+				94D3445F401E79048BDAC1CA /* ReadingSettingsView.swift */,
 				3DE51DA812A9394A5064F60E /* SettingsView.swift */,
 				F1FEE8399255B598700D2F1F /* VoiceSelectionView.swift */,
 				C42C04946FFC3B3A9DE78573 /* VoiceSettingsView.swift */,
@@ -327,6 +358,7 @@
 		6FD79E4F6FC7AFD859C7CF97 /* Helpers */ = {
 			isa = PBXGroup;
 			children = (
+				284E6023502E5174730859D6 /* AppLog.swift */,
 				CAD745CF110FC8C25A5B34D8 /* HapticFeedback.swift */,
 				C1BF0DC63344C51A046E37E0 /* OVExceptionCatcher.h */,
 				09CF2D46A856380011EEC513 /* OVExceptionCatcher.m */,
@@ -402,10 +434,13 @@
 				DCEAE9114955A6CACB60C78B /* MathLexer.swift */,
 				A63B7CD7A175A592650ED3EE /* MathNode.swift */,
 				B5FEFA929096039F7739C0EF /* MathParser.swift */,
+				2CDBBE08AE4777CDD8E52B6A /* MathPrettyText.swift */,
 				9E13FBA1D1AA550DE818DA97 /* MathReadingStyle.swift */,
 				F52FB20C9998F3BBD76069BE /* MathSpanSplitter.swift */,
 				CDE67506363A695B60CFD5E6 /* PromptV2.swift */,
 				86CFD7B30DB11F5D672C7DAC /* PronunciationDictionary.swift */,
+				EE1D7CE4D474B6971526268D /* ReadingCommand.swift */,
+				17B8FD38E0F007667280E06A /* ReadingMachine.swift */,
 				91969AF95B50996EE212FC03 /* ReadingModel.swift */,
 				B97268E908EB0186536548E3 /* ReplyAssembler.swift */,
 				6B24A68D46E12FD075C54B24 /* VietMathSpeech.swift */,
@@ -417,6 +452,7 @@
 		C6EBF5734AD805262779ECA5 /* TTS */ = {
 			isa = PBXGroup;
 			children = (
+				6983D8B40623FF2BE3D1ECF2 /* ReadingEngine.swift */,
 				D416290774C17FDC0DDFBC68 /* TTSService.swift */,
 			);
 			path = TTS;
@@ -470,7 +506,10 @@
 				FA8C2E880C1F79EB7B2A3794 /* BlueprintGeminiE2ETests.swift */,
 				FE24101A60E8448DFB9A1A45 /* BlueprintPhotoLibraryE2ETests.swift */,
 				19633968CAA41539464CF0AC /* GeminiLiveSmokeTests.swift */,
+				F2F38CDA01199056EB9ABE51 /* MathPrettyTextTests.swift */,
 				1D8B7DF46B3C41B82AC9F0E8 /* PromptV2Tests.swift */,
+				8483275A4F63A2D06CD4CFAA /* ReadingCommandTests.swift */,
+				9589E5A9440ECDDBDB87F4BA /* ReadingEngineTests.swift */,
 				5A108780BBC0B8F9794FECE6 /* ReplyAssemblerSpeechTests.swift */,
 				F40848A39312970B4242629D /* ReplyAssemblerTests.swift */,
 				A2D0406DCB5F627611BBD2B4 /* SettingsSecretsTests.swift */,
@@ -489,6 +528,9 @@
 				C9D612B3F0266A0FFA4BEC44 /* ConnectMethodRow.swift */,
 				01CC70E5327BD07B920833FC /* GlassCard.swift */,
 				C27052ECD2FFC79652B5CDB3 /* OnboardingView.swift */,
+				5855B2A017E94ACC4E02F4DB /* PlaybackBar.swift */,
+				D8F6143D265CE1F16F25B137 /* SegmentCardView.swift */,
+				4ABA39C930DC209A26E80636 /* StatusChip.swift */,
 				A1E4A28F9C0979733D4ABDB2 /* SwirlOrb.swift */,
 				1ABBF4AC21A442A2C3CF6750 /* Theme.swift */,
 				6329C61801054C63D4B9646C /* SolutionView.swift */,
@@ -632,7 +674,10 @@
 				EB6BEF2BD2B4FC7E24248FDE /* BlueprintGeminiE2ETests.swift in Sources */,
 				F5908580D9F4B16DB68B7155 /* BlueprintPhotoLibraryE2ETests.swift in Sources */,
 				B8F54CEF6FDC8F15D3CB16DA /* GeminiLiveSmokeTests.swift in Sources */,
+				890B7823D40A3A21CFC88A1C /* MathPrettyTextTests.swift in Sources */,
 				EE934F49699329BF96B1EBF8 /* PromptV2Tests.swift in Sources */,
+				5F91DE63EF6CE7C2E4141E16 /* ReadingCommandTests.swift in Sources */,
+				5FFFB9B8C486EBCBD767C3AF /* ReadingEngineTests.swift in Sources */,
 				8D0B265C6A29995F22F6E9C4 /* ReplyAssemblerSpeechTests.swift in Sources */,
 				DFAA24EAAC4F8BF3CD9FA71C /* ReplyAssemblerTests.swift in Sources */,
 				F999D96ED7C879D8C3826786 /* SettingsSecretsTests.swift in Sources */,
@@ -651,6 +696,7 @@
 				3D871EEF1178A47F4999C7F2 /* AdditionalInstructionsView.swift in Sources */,
 				6878487E101CAC3A8BF651E9 /* AnimatedBackground.swift in Sources */,
 				340B27EF885BA532E70F610C /* AnswerFormat.swift in Sources */,
+				BADCF45B804B6FA3E6CF064A /* AppLog.swift in Sources */,
 				52E3A16AB6227CDA3D67817D /* AppSettings.swift in Sources */,
 				A7A3B0467B07F116AEF20BEE /* AudioSessionManager.swift in Sources */,
 				3069D5D002C64029E1A09728 /* Config.swift in Sources */,
@@ -659,6 +705,7 @@
 				E002D977473CAE9959691682 /* Conversation.swift in Sources */,
 				788325C7CD43F35F069DCDCE /* ConversationListView.swift in Sources */,
 				DBAD28D914AC862DB5E6F367 /* ConversationManager.swift in Sources */,
+				71EF6B07861382723760624E /* DebugSettingsView.swift in Sources */,
 				2784894BD708606371B4EE08 /* EnglishMathReader.swift in Sources */,
 				7694BA570FF3ACCF29E2C5C9 /* GeminiLiveService.swift in Sources */,
 				F1D86E9A3AB2A994A205AB83 /* GeminiSettingsView.swift in Sources */,
@@ -670,24 +717,33 @@
 				A580A5C8203945C08F937508 /* MathLexer.swift in Sources */,
 				8A21B16FD2692448989EABCD /* MathNode.swift in Sources */,
 				2CFB4CDB9C6570528D4B90C5 /* MathParser.swift in Sources */,
+				D278926EF715AD9A2A52A9BA /* MathPrettyText.swift in Sources */,
 				3B42A908E7B5156AE9926601 /* MathReadingStyle.swift in Sources */,
 				81A4286CAED0C7F9CAF73FEF /* MathSpanSplitter.swift in Sources */,
+				20B9D77FCEBBB3D5955312FF /* MathSpeechSettingsView.swift in Sources */,
 				341497F0AA31AE9C6E137386 /* MemoriesView.swift in Sources */,
 				BFFCBC7433DD8C3C4423B343 /* MetricsCollector.swift in Sources */,
 				738FE89FA077FF411C6A61E6 /* MetricsSink.swift in Sources */,
 				37787EEECF8236DABFDE4D3D /* OVExceptionCatcher.m in Sources */,
 				2947D6E5D6D5B7080C53D478 /* OnboardingView.swift in Sources */,
 				EF5319DFC76B8BD9A50EF195 /* OpenVisionApp.swift in Sources */,
+				0412970766BE8F25F236E41E /* PlaybackBar.swift in Sources */,
 				187BDB9C9579D6DFA99EE108 /* PromptV2.swift in Sources */,
 				2CFA17B093845C6F1B98F4E9 /* PronunciationDictionary.swift in Sources */,
+				57BC26509BD268CE37306AAD /* ReadingCommand.swift in Sources */,
+				B60BA6ADBCF1DD137660F332 /* ReadingEngine.swift in Sources */,
+				80971E1563B3BB5407A9A39D /* ReadingMachine.swift in Sources */,
 				631794BAF25EC8C5FCC8BE48 /* ReadingModel.swift in Sources */,
+				B60F0696219F0839EEE51410 /* ReadingSettingsView.swift in Sources */,
 				CAE01E40753444C60C15A8D0 /* ReplyAssembler.swift in Sources */,
+				E342A6086A726F93CD35C6C7 /* SegmentCardView.swift in Sources */,
 				1D0AEF3C7A810FF410C8F2E5 /* SessionRecorder.swift in Sources */,
 				92C71533063AC23805A32861 /* SettingsSecrets.swift in Sources */,
 				F7718545E4E6BB4A7773B564 /* SettingsManager.swift in Sources */,
 				1EEA4B0E379A76881244FAB9 /* SettingsView.swift in Sources */,
 				6C065C29CC13488E67A70363 /* SoundService.swift in Sources */,
 				E1A743F377EA6A40636E71B3 /* SpeechActivityDetector.swift in Sources */,
+				5CD38A436473FBD6298E7FC8 /* StatusChip.swift in Sources */,
 				F5155F1DD262090EC1804C5F /* SwirlOrb.swift in Sources */,
 				36B8F01F46E7AA5F0BC0CD3C /* SystemMetrics.swift in Sources */,
 				C328DABCDFDF6531B38D4834 /* TTSService.swift in Sources */,

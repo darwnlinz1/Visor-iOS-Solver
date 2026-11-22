@@ -1,16 +1,13 @@
 name: E2E (Blueprint)
 
-# End-to-end checks for the glasses solver workflow (see PLAN.md).
-#   1. blueprint-guard  — seconds, on Linux: source-level guards for the 7 "fatal pitfalls"
-#                         and project integrity (scripts/blueprint/verify_blueprint.py).
+# End-to-end checks for the OpenVision v2 voice-first solver workflow (see PLAN.md).
+#   1. blueprint-guard  — seconds, on Linux: source-level guards for Lessons 1-7, logging, camera-on-demand,
+#                         v2 UI integrity, secret leaks, and pbxproj round-trip self-test.
 #   2. simulator-e2e    — every OpenVisionTests suite on an iOS 18+ iPhone simulator (a manual
-#                         run can tick blueprint_only for the Blueprint suites alone), among
-#                         them the real GeminiLiveService (streaming, retries, history) against a
-#                         scripted endpoint, the real TTS, and the real photo library.
-#   3. live Gemini      — opt-in (workflow_dispatch → live_gemini): the same app code against the
-#                         real Gemini API, to catch prompt/model drift. Uses API quota.
-# Hardware-only checks (glasses shutter, temple speaker, volume HUD) are the manual protocol in
-# PLAN.md section 7 (H1-H12).
+#                         run can tick blueprint_only for the Blueprint suites alone), including
+#                         GeminiLiveService v2.1 streaming, VietMathSpeech, ReadingEngine, TTS,
+#                         and the real Photo Library (Meta album filter).
+#   3. live Gemini      — opt-in (workflow_dispatch -> live_gemini): real Gemini API smoke tests.
 
 on:
   pull_request:
@@ -32,7 +29,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Keep in step with ci.yml / build-ipa.yml.
   DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
 jobs:
@@ -42,8 +38,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - name: Verify blueprint invariants
-        run: python3 scripts/blueprint/verify_blueprint.py
+      - name: Verify blueprint invariants and pbxproj tool
+        run: |
+          python3 scripts/blueprint/verify_blueprint.py
+          python3 scripts/pbxproj_files.py --self-test
 
   simulator-e2e:
     name: Blueprint E2E (iOS simulator)
@@ -67,11 +65,9 @@ jobs:
 
       - name: Build and run the E2E suites
         env:
-          # pull_request and push runs have no inputs, so they run every suite.
           SUITE: ${{ inputs.blueprint_only && 'blueprint' || 'all' }}
           XCBEAUTIFY_ARGS: --renderer github-actions
           TEST_RUNNER_OPENVISION_LIVE_GEMINI: ${{ inputs.live_gemini && '1' || '' }}
-          # Repository secret (Settings → Secrets → Actions), only read when live_gemini is ticked.
           TEST_RUNNER_OPENVISION_GEMINI_API_KEYS: ${{ inputs.live_gemini && secrets.GEMINI_API_KEYS || '' }}
         run: scripts/e2e/run-simulator-tests.sh
 

@@ -1,13 +1,9 @@
 name: CI
 
-# Compiles the app and its test target on every pull request and push to main, so a PR that
-# doesn't build never reaches a reviewer. The build is for a generic iOS device with code
-# signing off: that proves the code compiles against the SDK without needing certificates,
-# and it matches how the app is actually run (on a phone; the simulator can't do Bluetooth
-# or on-device MLX).
+# Compiles the app and its test target on every pull request and push to main, and runs the fast
+# pure-Swift Services/Speech test suites before invoking xcodebuild so logic regressions fail in seconds.
 #
-# Standard GitHub-hosted macOS runners are free for public repositories. Keep this on the
-# plain `macos-*` labels — "larger" runners are billed even for public repos.
+# Standard GitHub-hosted macOS runners are free for public repositories. Keep this on plain `macos-*`.
 
 on:
   pull_request:
@@ -19,9 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pin the Xcode on the image so a runner image update can't change the SDK underneath a PR.
-  # Bump deliberately (and check the pinned mlx-swift-lm still compiles) when moving to a new
-  # Xcode. Xcode 27 is not on GitHub's images yet; see actions/runner-images.
   DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
 jobs:
@@ -32,17 +25,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Static blueprint guard & pbxproj self-test
+        run: |
+          python3 scripts/blueprint/verify_blueprint.py
+          python3 scripts/pbxproj_files.py --self-test
+
+      - name: Run pure-Swift Speech/Reading tests (fast)
+        run: scripts/swift-local/run.sh
+
       - name: Provide the gitignored config files
-        # Same two copies the README asks a new contributor to make. The project refuses to
-        # build without them; the examples' placeholder values are enough to compile, and the
-        # real values only matter at runtime on a device.
         run: |
           cp Config.xcconfig.example Config.xcconfig
           cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
 
       - name: Cache Swift packages
-        # Package.resolved is gitignored (whole xcworkspace), so key on the files that hold
-        # the pins. The MLX, Kokoro and Meta DAT checkouts are the slow part of a cold build.
         uses: actions/cache@v6
         with:
           path: .spm
@@ -55,8 +51,6 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
 
       - name: Build for testing
-        # mlx-swift ships a build plugin (CudaBuild) and mlx-swift-lm uses Swift macros; Xcode
-        # refuses both until a human approves them, which is what the two -skip flags do here.
         run: |
           set -o pipefail
           xcodebuild build-for-testing \

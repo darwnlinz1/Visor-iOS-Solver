@@ -72,4 +72,11 @@ final class TextChunkingTests: XCTestCase {
         XCTAssertEqual(TextChunking.sentences("no terminator here"),
                        ["no terminator here"])
     }
+
+    func testSentencesNeverSplitsInsideDollarMath() {
+        XCTAssertEqual(TextChunking.sentences("Ta có $x = 2.5$. Vậy $y = 1$."),
+                       ["Ta có $x = 2.5$.", "Vậy $y = 1$."])
+        XCTAssertEqual(TextChunking.sentences("Set $a = 1. 2$ is weird. Done."),
+                       ["Set $a = 1. 2$ is weird.", "Done."])
+    }
 }

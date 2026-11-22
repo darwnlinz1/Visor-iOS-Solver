@@ -25,16 +25,19 @@ reviews:
   path_instructions:
     - path: "OpenVision/**/*.swift"
       instructions: |
-        This is an iOS 18+ SwiftUI app running MLX models on-device and talking to
-        Meta Ray-Ban glasses over Bluetooth. Pay special attention to:
-        - Memory pressure: on-device model loads run close to the iOS jetsam limit;
-          flag anything that could duplicate large buffers or retain model containers.
-        - Concurrency: @MainActor isolation, Task.detached usage, and state races
-          between the speech recognizer, TTS engines, and SwiftUI state.
-        - Audio-session handling: AVAudioSession routing with Bluetooth HFP is fragile;
-          question changes that stop/rebuild the audio engine.
-        - UI state machines: agentState transitions (idle/listening/thinking/speaking)
-          have a history of race bugs — verify guards against TTS still speaking.
+        This is an iOS 18+ SwiftUI voice-first math/exam solver for Meta Ray-Ban glasses using
+        Gemini REST SSE (v2.1 structured format), Apple Speech + Silero VAD (FluidAudio),
+        VietMathSpeech + ReadingEngine, and Meta Wearables DAT SDK. Pay special attention to:
+        - Pure Foundation boundary: OpenVision/Services/Speech/ must compile on Linux (no UIKit,
+          SwiftUI, Combine, AVFoundation, OSLog, or `as NSString`).
+        - Concurrency & Hang Risk: @MainActor isolation, keeping blocking AVAudioSession calls
+          off the main thread, and avoiding state races between VoiceCommandService, ReadingEngine,
+          TTSService, and GeminiLiveService.
+        - Audio-session invariants (PLAN.md Lessons 1-4): single shared mic tap, stable
+          .playAndRecord/.default options for glasses HFP, >= 350ms echo settle delay after TTS,
+          and setting .speaking + isBargeInPaused before queueing speech.
+        - Privacy & security: never log API keys/prefixes/tokens; gate user text on verboseLogging;
+          Camera Roll fallback must only read Meta/Ray-Ban/Stories albums.
         Do not comment on Xcode project structure, code sign settings, or asset files.
 
 chat:

@@ -47,7 +47,8 @@ final class SettingsSecretsTests: XCTestCase {
         XCTAssertEqual(merged.unreadable, ["geminiAPIKey"], "so a save can't delete the stored key")
     }
 
-    /// A settings.json from before the clean-up (other backends, Kokoro, telemetry) still loads.
+    /// A settings.json from before the clean-up (other backends, Kokoro, telemetry) still loads,
+    /// and all new v2 §4.6 settings fall back to their defaults without wiping saved fields (N18).
     func testOlderSettingsFilesStillDecode() throws {
         let old = #"{"aiBackend":"local_gemma","ttsEngine":"kokoro","telemetryURL":"http://x","wakeWord":"Hey Vision","showTranscripts":false}"#
         let defaults = try JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSettings())) as? [String: Any] ?? [:]
@@ -56,6 +57,25 @@ final class SettingsSecretsTests: XCTestCase {
         let settings = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: merged))
         XCTAssertEqual(settings.wakeWord, "Hey Vision")
         XCTAssertFalse(settings.showTranscripts)
+        XCTAssertEqual(settings.mcqRate, 0.5)
+        XCTAssertEqual(settings.essayRate, 0.42)
+        XCTAssertEqual(settings.pauseBetweenAnswers, 0.5)
+        XCTAssertEqual(settings.pauseBetweenLines, 1.2)
+        XCTAssertTrue(settings.readLineNumbers)
+        XCTAssertEqual(settings.mathRateFactor, 0.85)
+        XCTAssertEqual(settings.pauseAfterFormula, 0.3)
+        XCTAssertFalse(settings.dictationMode)
+        XCTAssertEqual(settings.dictationAutoContinue, 0)
+        XCTAssertFalse(settings.repeatFormulaInDictation)
+        XCTAssertEqual(settings.mathVerbosity, "natural")
+        XCTAssertEqual(settings.symbolicFractionWord, "tren")
+        XCTAssertEqual(settings.negativeWord, "am")
+        XCTAssertEqual(settings.letterStyle, "vietnameseNames")
+        XCTAssertEqual(settings.pronunciationOverrides, [:])
+        XCTAssertFalse(settings.hideTextSpeakOnly)
+        XCTAssertFalse(settings.debugOverlay)
+        XCTAssertFalse(settings.verboseLogging)
+        XCTAssertFalse(settings.fullResolutionPhotos)
     }
 
     func testKeychainRoundTrip() {

@@ -8,13 +8,7 @@ enum Config {
     // MARK: - Optional Default API Keys
     // Leave empty to require in-app configuration (recommended for open source)
 
-    /// Default OpenClaw gateway URL (empty = must configure in app)
-    static let defaultOpenClawGatewayURL = ""
-
-    /// Default OpenClaw auth token (empty = must configure in app)
-    static let defaultOpenClawAuthToken = ""
-
-    /// Default Gemini API key (empty = must configure in app)
+    /// Default Gemini API key (empty = must configure in Settings -> Gemini, stored in Keychain)
     static let defaultGeminiAPIKey = ""
 
     // MARK: - App Constants

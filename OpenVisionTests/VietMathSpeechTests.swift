@@ -812,6 +812,20 @@ final class VietMathSpeechTests: XCTestCase {
         XCTAssertEqual(en("$50\\%$"), "50 percent")
     }
 
+    func testParenthesizedNegativeBaseDiffersFromNegatedPower() {
+        check([
+            row("$(-5)^2$", "âm 5, tất cả bình phương"),
+            row("$-5^2$", "âm 5 bình phương"),
+            row("$(-2)^3$", "âm 2, tất cả lập phương"),
+            row("$(-x)^2$", "âm x, tất cả bình phương"),
+            row("$2(-5)$", "2 nhân âm 5"),
+        ])
+        let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
+        XCTAssertEqual(en("$(-5)^2$"), "negative 5, all squared")
+        XCTAssertEqual(en("$-5^2$"), "negative 5 squared")
+        XCTAssertEqual(en("$(-2)^3$"), "negative 2, all cubed")
+    }
+
     func testEnglishReaderStructures() {
         let en = { (text: String) in self.reading(text, .default, vietnamese: false) }
         XCTAssertEqual(en("$\\frac{x+1}{x-1}$"), "x plus 1, over x minus 1")
