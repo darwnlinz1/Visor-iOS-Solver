@@ -9,6 +9,8 @@
 #
 # A new test file runs as soon as it is in the test target (scripts/pbxproj_files.py add ...);
 # GeminiLiveSmokeTests skips itself unless TEST_RUNNER_OPENVISION_LIVE_GEMINI=1.
+# With CI=true (GitHub Actions sets it) a skipped BlueprintPhotoLibraryE2ETests test fails the
+# run, because the script grants Photos access and those tests must run (PLAN.md N1).
 #
 # The simulator cannot do Bluetooth (glasses) or the on-device MLX models; checklist tests that
 # need the real Ray-Ban hardware are in PLAN.md section 7 (manual protocol).
@@ -185,12 +187,32 @@ grant_photos_access() {
 
 # xcbeautify prints a skipped test without its reason: show the reasons from the raw output,
 # with the Photos TCC row as the tests left it (does test-without-building reinstall reset it?).
+# With CI=true, returns 1 after the report when a BlueprintPhotoLibraryE2ETests test skipped
+# (PLAN.md N1); skips in other suites never fail. xcodebuild prints two raw lines per skip:
+#   .../BlueprintPhotoLibraryE2ETests.swift:20: -[OpenVisionTests.BlueprintPhotoLibraryE2ETests testX] : Test skipped - ...
+#   Test Case '-[OpenVisionTests.BlueprintPhotoLibraryE2ETests testX]' skipped (0.062 seconds).
 report_skips() {
   echo "::group::Skipped tests and why"
   grep -h -E "Test skipped|\[BlueprintPhotoLibraryE2ETests\]" build/test-output.log 2>/dev/null || echo "no skipped tests"
   echo "Photos TCC row after the run:"
   photos_tcc_rows
   echo "::endgroup::"
+  [ "${CI:-}" = "true" ] || return 0
+  local name list="" count=0
+  while IFS= read -r name; do
+    list="${list:+$list, }$name"
+    count=$((count + 1))
+  done < <(LC_ALL=C sed -n -E \
+    -e "s/.*-\[([[:alnum:]_]+\.)?BlueprintPhotoLibraryE2ETests ([[:alnum:]_]+)] : Test skipped.*/\2/p" \
+    -e "s/^Test Case '-\[([[:alnum:]_]+\.)?BlueprintPhotoLibraryE2ETests ([[:alnum:]_]+)]' skipped .*/\2/p" \
+    build/test-output.log 2>/dev/null | LC_ALL=C sort -u)
+  if [ "$count" -gt 0 ]; then
+    echo "::error::BlueprintPhotoLibraryE2ETests skipped $count test(s) on CI: $list." \
+      "These tests must run (PLAN.md N1); the reason and the Photos TCC row are in the" \
+      "\"Skipped tests and why\" group above."
+    return 1
+  fi
+  echo "CI skip check: no BlueprintPhotoLibraryE2ETests test was skipped."
 }
 
 xcodebuild build-for-testing "${COMMON[@]}" | pretty ${XCBEAUTIFY_ARGS:-}
@@ -215,8 +237,13 @@ mkdir -p "$(dirname "$RESULT")"
 status=0
 xcodebuild test-without-building "${COMMON[@]}" ${ONLY[@]+"${ONLY[@]}"} -resultBundlePath "$RESULT" \
   | tee build/test-output.log | pretty ${XCBEAUTIFY_ARGS:-} || status=$?
-report_skips
+# Report first; a failed run still ends through dump_crash_reports, then the skip check fails it.
+skip_status=0
+report_skips || skip_status=$?
 if [ "$status" -ne 0 ]; then
   dump_crash_reports
+  exit 1
+fi
+if [ "$skip_status" -ne 0 ]; then
   exit 1
 fi
