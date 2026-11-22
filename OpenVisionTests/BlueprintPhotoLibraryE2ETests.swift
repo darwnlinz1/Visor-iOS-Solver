@@ -3,8 +3,8 @@
 // (what Meta View does after the temple shutter) is found by RecentPhotoScanner at full
 // resolution, and an old photo is not mistaken for "the one I just took".
 //
-// Needs Photos read/write permission for the host app. CI grants it before the run
-// (scripts/e2e/run-simulator-tests.sh → `simctl privacy grant photos`); without it these skip.
+// Needs full Photos access for the host app. CI grants it before the run
+// (scripts/e2e/run-simulator-tests.sh → grant_photos_access); without it these skip.
 
 import XCTest
 import Photos
@@ -15,8 +15,21 @@ final class BlueprintPhotoLibraryE2ETests: XCTestCase {
 
     override func setUp() async throws {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        // Printed on every run so the CI log shows why these tests ran or skipped (PLAN.md N1).
+        print("[BlueprintPhotoLibraryE2ETests] Photos authorization (.readWrite): \(status.rawValue) \(Self.name(of: status))")
         try XCTSkipUnless(status == .authorized,
-                          "Photos access not granted (status \(status.rawValue)); run via scripts/e2e/run-simulator-tests.sh")
+                          "Photos access not granted (status \(status.rawValue) \(Self.name(of: status))); run via scripts/e2e/run-simulator-tests.sh")
+    }
+
+    nonisolated private static func name(of status: PHAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "notDetermined"
+        case .restricted: return "restricted"
+        case .denied: return "denied"
+        case .authorized: return "authorized"
+        case .limited: return "limited"
+        @unknown default: return "unknown"
+        }
     }
 
     func testJustTakenGlassesPhotoIsFoundAndPreparedForUpload() async throws {

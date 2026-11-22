@@ -17,6 +17,35 @@ import MWDATCore
 import MWDATCamera
 import MWDATInputs
 
+/// Outcome of `Wearables.configure()` at app start (OpenVisionApp.init). The SDK traps on any
+/// `Wearables.shared` access after a failed configure, so GlassesManager reads `shared` only once
+/// this says the SDK is configured; otherwise the app runs without glasses (PLAN.md N2).
+@MainActor
+enum WearablesBootstrap {
+    /// Why configure() failed or did not run; nil once it succeeded.
+    private(set) static var configureError: String? = "Wearables.configure() chưa chạy"
+
+    static var isConfigured: Bool { configureError == nil }
+
+    static func configureSucceeded() {
+        configureError = nil
+    }
+
+    static func configureFailed(_ reason: String) {
+        configureError = reason
+    }
+
+    /// Debug builds only: OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1 skips configure(), so CI can
+    /// launch the app the way it starts when the SDK cannot initialise.
+    static var simulatesConfigureFailure: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["OPENVISION_SIMULATE_DAT_CONFIG_FAILURE"] == "1"
+        #else
+        return false
+        #endif
+    }
+}
+
 /// A press of the glasses' capture button.
 enum GlassesButtonPress: String {
     case shortPress
@@ -66,9 +95,22 @@ final class GlassesManager: ObservableObject {
     /// True while a full-resolution photo is being taken / transferred from the glasses.
     @Published private(set) var isTakingPhoto: Bool = false
 
+    /// Set when the glasses SDK could not be configured at launch (Settings → Kính shows it).
+    /// Every glasses feature is off until the app is started again.
+    @Published private(set) var sdkUnavailableReason: String?
+
+    /// What the wearer sees when a glasses feature is used without a configured SDK.
+    static var sdkUnavailableMessage: String {
+        "SDK kính chưa khởi tạo được: \(WearablesBootstrap.configureError ?? "không rõ lỗi")"
+    }
+
     // MARK: - Private Properties
 
-    private let wearables = Wearables.shared
+    /// `Wearables.shared`, or nil after a failed configure(). Read lazily, never before
+    /// WearablesBootstrap says the SDK is configured: `shared` traps otherwise.
+    private var wearables: (any WearablesInterface)? {
+        WearablesBootstrap.isConfigured ? Wearables.shared : nil
+    }
 
     // Session: one per link to the glasses. Camera and Inputs are its children.
     private var deviceSession: DeviceSession?
@@ -127,8 +169,23 @@ final class GlassesManager: ObservableObject {
 
     private init() {
         print("[GlassesManager] Initializing")
-        setupRegistrationListener()
-        setupDevicesListener()
+        guard let wearables else {
+            // NSLog, not print: it reaches the console at once (CI's launch check reads it).
+            sdkUnavailableReason = Self.sdkUnavailableMessage
+            NSLog("[GlassesManager] %@ (glasses features off until the app restarts)", Self.sdkUnavailableMessage)
+            return
+        }
+        setupRegistrationListener(wearables)
+        setupDevicesListener(wearables)
+    }
+
+    /// The SDK, or nil when configure() failed at launch; then `errorMessage` says so (unless
+    /// `reportError` is false, for background work the wearer did not ask for).
+    private func requireSDK(reportError: Bool = true) -> (any WearablesInterface)? {
+        if let wearables { return wearables }
+        print("[GlassesManager] \(Self.sdkUnavailableMessage)")
+        if reportError { errorMessage = Self.sdkUnavailableMessage }
+        return nil
     }
 
     // MARK: - Registration
@@ -136,6 +193,7 @@ final class GlassesManager: ObservableObject {
     /// Register app with Meta AI
     func register() async throws {
         print("[GlassesManager] Starting registration")
+        guard let wearables = requireSDK() else { return }
 
         for await state in wearables.registrationStateStream() {
             if case .registered = state {
@@ -153,6 +211,7 @@ final class GlassesManager: ObservableObject {
     /// Unregister app from Meta AI
     func unregister() async {
         print("[GlassesManager] Starting unregistration")
+        guard let wearables = requireSDK() else { return }
         wantsButtonLink = false
         linkRetryTask?.cancel()
         endSession()
@@ -167,6 +226,16 @@ final class GlassesManager: ObservableObject {
         } catch {
             errorMessage = "Huỷ đăng ký thất bại: \(error.localizedDescription)"
             print("[GlassesManager] Unregistration error: \(error)")
+        }
+    }
+
+    /// Stage/update the on-glasses developer component through Meta AI (Settings → Kính).
+    func openDATGlassesAppUpdate() async {
+        guard let wearables = requireSDK() else { return }
+        do {
+            try await wearables.openDATGlassesAppUpdate()
+        } catch {
+            errorMessage = "Không mở được cập nhật: \(error.localizedDescription)"
         }
     }
 
@@ -194,6 +263,7 @@ final class GlassesManager: ObservableObject {
             print("[GlassesManager] \(message)")
             if reportErrors { errorMessage = message }
         }
+        guard let wearables = requireSDK(reportError: reportErrors) else { return nil }
         guard isRegistered else {
             report("Chưa đăng ký với Meta AI")
             return nil
@@ -303,6 +373,7 @@ final class GlassesManager: ObservableObject {
     }
 
     private func ensureCameraPermission() async -> Bool {
+        guard let wearables = requireSDK() else { return false }
         do {
             var status = try await wearables.checkPermissionStatus(.camera)
             if status != .granted {
@@ -356,6 +427,7 @@ final class GlassesManager: ObservableObject {
             print("[GlassesManager] Not starting the stream — a photo is being taken")
             return
         }
+        guard requireSDK() != nil else { return }
         guard isRegistered else {
             errorMessage = "Chưa đăng ký với Meta AI"
             return
@@ -415,6 +487,7 @@ final class GlassesManager: ObservableObject {
 
     /// Capture a 720p still from the running video stream (fallback path).
     func capturePhoto() async {
+        guard requireSDK() != nil else { return }
         guard isStreaming, let stream = camera?.stream else {
             errorMessage = "Camera kính phải đang bật để chụp"
             return
@@ -442,6 +515,7 @@ final class GlassesManager: ObservableObject {
     }
 
     func captureFullResolutionPhoto(fullResolution: Bool, timeout: TimeInterval = 25) async -> Data? {
+        guard requireSDK() != nil else { return nil }
         guard !isTakingPhoto else { return nil }
         guard isRegistered, connectedDevice != nil else { return nil }
         // A recording owns the stream; the stream still is the right tool then.
@@ -624,6 +698,7 @@ final class GlassesManager: ObservableObject {
 
     private func startButtonLink() async {
         guard wantsButtonLink, inputs == nil, !inputsPermissionDenied else { return }
+        guard requireSDK(reportError: false) != nil else { buttonLinkStatus = Self.sdkUnavailableMessage; return }
         guard isRegistered else { buttonLinkStatus = "Chưa đăng ký kính"; return }
         guard connectedDevice != nil else { buttonLinkStatus = "Chờ kính kết nối…"; return }
 
@@ -778,7 +853,7 @@ final class GlassesManager: ObservableObject {
 
     // MARK: - Private Methods
 
-    private func setupRegistrationListener() {
+    private func setupRegistrationListener(_ wearables: any WearablesInterface) {
         registrationTask = Task {
             for await state in wearables.registrationStateStream() {
                 await MainActor.run {
@@ -794,7 +869,7 @@ final class GlassesManager: ObservableObject {
         }
     }
 
-    private func setupDevicesListener() {
+    private func setupDevicesListener(_ wearables: any WearablesInterface) {
         devicesTask = Task {
             for await devices in wearables.devicesStream() {
                 await MainActor.run {
