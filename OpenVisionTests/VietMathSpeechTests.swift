@@ -770,6 +770,20 @@ final class VietMathSpeechTests: XCTestCase {
         XCTAssertEqual(reading("Giấy A4 và vitamin C."), "Giấy A4 và vitamin xê.")
     }
 
+    func testCompoundUnitsWithoutANumber() {
+        // Review B8: "km/h" alone is a unit ("km/hát" before).
+        check([
+            row("Đổi ra km/h.", "Đổi ra ki-lô-mét trên giờ."),
+            row("Đơn vị là m/s.", "Đơn vị là mét trên giây."),
+            row("Đơn vị là g/l hoặc mol/l.", "Đơn vị là gam trên lít hoặc mol trên lít."),
+            row("Vận tốc (km/h) là", "Vận tốc (ki-lô-mét trên giờ) là"),
+            row("Đổi 60 km/h ra m/s.", "Đổi 60 ki-lô-mét trên giờ ra mét trên giây."),
+        ])
+        // Two time units are the shorthand "h/s" (học sinh), not "giờ trên giây".
+        XCTAssertEqual(reading("Số h/s đi học.", asWritten), "Số h/s đi học.")
+        XCTAssertFalse(reading("Số h/s đi học.").contains("giây"))
+    }
+
     func testUnicodeMathInProse() {
         XCTAssertEqual(reading("Ta có x² + 1 > 0 với mọi x."), "Ta có ích bình phương cộng 1 lớn hơn 0 với mọi ích.")
         XCTAssertEqual(reading("Góc bằng π/2 rad."), "Góc bằng pi trên 2 ra-đi-an")

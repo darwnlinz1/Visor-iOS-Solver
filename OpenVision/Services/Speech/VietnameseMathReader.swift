@@ -677,6 +677,11 @@ private struct ProseNormalizer {
                     i += used
                 }
             case .word(let word):
+                if let (spoken, used) = compoundUnit(tokens, at: i) {
+                    out += spoken
+                    i += used
+                    continue
+                }
                 out += spokenWord(word, before: token(i - 1), after: token(i + 1))
                 i += 1
             }
@@ -771,6 +776,23 @@ private struct ProseNormalizer {
     }
 
     private let proseSingleLetterUnits: Set<String> = ["m", "g", "s", "l", "h", "N", "J", "W", "V", "K"]
+    private let timeUnits: Set<String> = ["h", "s", "min", "ms"]
+
+    /// "km/h", "m/s" without a number ("Đổi ra km/h."): the unit, not two words and a letter name.
+    /// Two time units ("h/s", shorthand for "học sinh") and anything glued to more letters stay as written.
+    private func compoundUnit(_ tokens: [Token], at j: Int) -> (String, Int)? {
+        guard case .word(let head)? = tokens[safe: j], case .other("/")? = tokens[safe: j + 1],
+              case .word(let tail)? = tokens[safe: j + 2] else { return nil }
+        let symbol = head + "/" + tail
+        guard isUnit(symbol), !(timeUnits.contains(head) && timeUnits.contains(tail)) else { return nil }
+        for neighbour in [tokens[safe: j - 1], tokens[safe: j + 3]] {
+            switch neighbour {
+            case .word?, .number?, .other("/")?: return nil  // "a/km/h", "km/h2"
+            default: break
+            }
+        }
+        return (dictionary.unit(symbol), 3)
+    }
 
     private func isUnit(_ symbol: String) -> Bool {
         let parts = symbol.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
