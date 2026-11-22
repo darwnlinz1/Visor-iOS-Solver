@@ -257,8 +257,9 @@ enum AnswerFormat {
     private static let sentenceTerminators: Set<Character> = [".", "!", "?", "…"]
 
     /// Splits text into sentences: a terminator (. ! ? …) followed by whitespace, never inside `$…$`,
-    /// so "2.5" and formulas stay whole. With `isComplete == false` only finished sentences are
-    /// returned (the text may still grow), and they never change as it grows.
+    /// so "2.5" and formulas stay whole, and never right after a list marker, so "1. Mở app." stays
+    /// one sentence. With `isComplete == false` only finished sentences are returned (the text may
+    /// still grow), and they never change as it grows.
     static func sentences(in text: String, isComplete: Bool = true) -> [String] {
         let chars = Array(text)
         var result: [String] = []
@@ -280,7 +281,8 @@ enum AnswerFormat {
                 if i + 1 < chars.count && chars[i + 1] == "$" { i += 1 }   // "$$" is one delimiter
             } else if !inMath && sentenceTerminators.contains(ch) {
                 let next = i + 1
-                if next < chars.count ? chars[next].isWhitespace : isComplete {
+                let atBoundary = next < chars.count ? chars[next].isWhitespace : isComplete
+                if atBoundary && !isListMarker(chars[start..<next]) {
                     take(next)
                 }
             }
@@ -288,6 +290,16 @@ enum AnswerFormat {
         }
         if isComplete { take(chars.count) }
         return result
+    }
+
+    /// "1.", "12.", "a.", "B.": a sentence that is only this is the number or letter of a list item,
+    /// so it goes on ("1. Paris là thủ đô." is one sentence). "Chọn đáp án a." still ends.
+    private static func isListMarker(_ text: ArraySlice<Character>) -> Bool {
+        let marker = text.drop(while: { $0.isWhitespace })
+        guard marker.last == ".", (2...3).contains(marker.count) else { return false }
+        let label = marker.dropLast()
+        if label.count == 1, let letter = label.first, letter.isLetter { return true }
+        return label.allSatisfy { $0.isASCII && $0.isNumber }
     }
 
     // MARK: - Scanner

@@ -319,6 +319,21 @@ final class AnswerFormatTests: XCTestCase {
                        "an unfinished sentence is held back")
     }
 
+    /// "1." is the number of a list item, not a sentence of its own.
+    func testListMarkersDoNotEndASentence() {
+        XCTAssertEqual(AnswerFormat.parse("1. Paris là thủ đô của Pháp.\n2. Nó có tháp Eiffel.").sections,
+                       [AnswerSection(.answer, "1. Paris là thủ đô của Pháp."), AnswerSection(.answer, "2. Nó có tháp Eiffel.")])
+        XCTAssertEqual(AnswerFormat.parse("ANSWER: 1. Mở app. 2. Chụp ảnh.").sections,
+                       [AnswerSection(.answer, "1. Mở app."), AnswerSection(.answer, "2. Chụp ảnh.")])
+        XCTAssertEqual(AnswerFormat.sentences(in: "a. Mở app. B. Chụp ảnh. 12. Gửi đi."),
+                       ["a. Mở app.", "B. Chụp ảnh.", "12. Gửi đi."])
+        XCTAssertEqual(AnswerFormat.sentences(in: "Chọn đáp án a. Ta có x = 2. Đáp số là 2. Hết."),
+                       ["Chọn đáp án a.", "Ta có x = 2.", "Đáp số là 2.", "Hết."],
+                       "a sentence that ends with a letter or a number still ends")
+        XCTAssertEqual(AnswerFormat.sentences(in: "1. Mở", isComplete: false), [], "the marker waits for its sentence")
+        XCTAssertEqual(AnswerFormat.sentences(in: "1. Mở app. 2", isComplete: false), ["1. Mở app."])
+    }
+
     // MARK: - Question answers
 
     func testTrueFalseVariantsAreNormalized() {
@@ -472,6 +487,9 @@ final class AnswerFormatTests: XCTestCase {
             "```\nTYPE: MCQ\nQ1: A\n---\n| Câu | Đáp án |\n|---|---|\n```",
             "TYPE: OTHER\nANSWER: Giá là 2.5 euro. Ta có $a. b$ chưa đóng. Rồi.\nDisplay: vẫn đọc. \\displaystyle cũng vậy.",
             "TYPE: ESSAY\nL1: Ta có $\\frac{1}{",
+            "1. Paris là thủ đô của Pháp.\n2. Nó có tháp Eiffel.",
+            "ANSWER: 1. Mở app. 2. Chụp ảnh.",
+            "TYPE: OTHER\nANSWER: a. Mở app.  b. Chụp ảnh. 12. Gửi đi.\nChọn đáp án a. Ta có x = 2.",
         ]
         for reply in replies {
             assertStreamingContract(reply)
