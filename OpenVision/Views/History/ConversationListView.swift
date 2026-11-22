@@ -1,5 +1,7 @@
 // OpenVision - ConversationListView.swift
-// List of past conversations with search and delete
+// Redesigned "Lịch sử" screen (PLAN.md §4.5, T5.5, T6.3):
+// 100% Vietnamese UI, structured SegmentCardView rendering, offline "Đọc lại" via ReadingEngine,
+// and "Tiếp tục hội thoại" using v2.1 seedHistory.
 
 import SwiftUI
 
@@ -7,9 +9,8 @@ struct ConversationListView: View {
     // MARK: - Environment
 
     @EnvironmentObject var settingsManager: SettingsManager
+    @EnvironmentObject var router: AppRouter
 
-    // The single source of truth. The old version kept a local @State copy that was never
-    // even populated — History was permanently empty.
     @ObservedObject private var conversationManager = ConversationManager.shared
 
     // MARK: - State
@@ -27,18 +28,19 @@ struct ConversationListView: View {
                     conversationList
                 }
             }
-            .navigationTitle("History")
-            .searchable(text: $searchText, prompt: "Search conversations")
+            .navigationTitle("Lịch sử")
+            .searchable(text: $searchText, prompt: "Tìm kiếm hội thoại")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        // Fresh conversation: next exchange starts a new History entry with
-                        // no carried-over model context.
+                        HapticFeedback.light()
                         conversationManager.startNewConversation()
                         GeminiLiveService.shared.clearConversationHistory()
+                        router.openLive()
                     } label: {
-                        Image(systemName: "plus")
+                        Image(systemName: "square.and.pencil")
                     }
+                    .accessibilityLabel("Cuộc hội thoại mới")
                 }
             }
         }
@@ -47,15 +49,16 @@ struct ConversationListView: View {
     // MARK: - Empty State
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Theme.Spacing.lg) {
             Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 60))
-                .foregroundColor(.secondary)
+                .font(.system(size: 56))
+                .foregroundColor(Theme.accent.opacity(0.7))
 
-            Text("No conversations yet")
+            Text("Chưa có hội thoại nào")
                 .font(.headline)
+                .foregroundColor(Theme.textPrimary)
 
-            Text("Start a conversation with the AI assistant to see your history here.")
+            Text("Hỏi bài trên màn hình Trực tiếp để xem lại và nghe lại lời giải tại đây.")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -79,17 +82,11 @@ struct ConversationListView: View {
         .listStyle(.plain)
     }
 
-    // MARK: - Filtered Conversations
-
     private var filteredConversations: [Conversation] {
         conversationManager.search(searchText)
     }
 
-    // MARK: - Methods
-
     private func deleteConversations(at offsets: IndexSet) {
-        // Resolve against the FILTERED list (offsets come from it), then delete via the
-        // manager so the removal persists.
         let targets = offsets.map { filteredConversations[$0] }
         for conversation in targets {
             conversationManager.deleteConversation(conversation)
@@ -103,7 +100,7 @@ struct ConversationRow: View {
     let conversation: Conversation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(conversation.title)
                     .font(.headline)
@@ -117,21 +114,27 @@ struct ConversationRow: View {
             }
 
             if let lastMessage = conversation.messages.last {
-                Text(lastMessage.content)
+                Text(MathPrettyText.format(lastMessage.content))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .lineLimit(2)
             }
 
-            HStack {
-                Label("\(conversation.messages.count)", systemImage: "bubble.left")
+            HStack(spacing: 12) {
+                Label("\(conversation.messages.count) tin", systemImage: "bubble.left")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
                 if conversation.hasPhotos {
-                    Label("", systemImage: "photo")
+                    Label("Có ảnh", systemImage: "photo")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Theme.accent)
+                }
+
+                if conversation.messages.contains(where: { $0.reading != nil }) {
+                    Label("Nghe lại được", systemImage: "speaker.wave.2")
+                        .font(.caption)
+                        .foregroundColor(Theme.info)
                 }
             }
         }
@@ -143,30 +146,44 @@ struct ConversationRow: View {
 
 struct ConversationDetailView: View {
     let conversation: Conversation
+    @EnvironmentObject var router: AppRouter
+    @ObservedObject private var readingEngine = ReadingEngine.shared
+    @ObservedObject private var settingsManager = SettingsManager.shared
     @State private var resumed = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 12) {
-                ForEach(conversation.messages) { message in
-                    MessageBubble(message: message)
+        VStack(spacing: 0) {
+            ScrollView {
+                LazyVStack(spacing: Theme.Spacing.md) {
+                    ForEach(conversation.messages) { message in
+                        HistoryMessageItem(message: message, readingEngine: readingEngine)
+                    }
                 }
+                .padding()
             }
-            .padding()
+
+            if readingEngine.plan != nil {
+                PlaybackBar(engine: readingEngine, settingsManager: settingsManager)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+            }
         }
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    // Continue this conversation: make it current (new messages append to it)
-                    // and reload its recent exchanges as the model's live context, so the next
-                    // "Ok Vision" follow-up picks up where it left off.
+                    HapticFeedback.success()
                     ConversationManager.shared.resumeConversation(conversation)
-                    GeminiLiveService.shared.seedHistory(from: conversation.messages.map { ($0.role == .user, $0.content) })
+                    GeminiLiveService.shared.seedHistory(
+                        from: conversation.messages.map {
+                            (isUser: $0.role == .user, text: $0.content, reading: $0.reading)
+                        }
+                    )
                     resumed = true
+                    router.openLive()
                 } label: {
-                    Label(resumed ? "Resumed" : "Continue", systemImage: resumed ? "checkmark.circle" : "arrow.right.circle")
+                    Label(resumed ? "Đã mở" : "Tiếp tục", systemImage: resumed ? "checkmark.circle" : "arrow.right.circle")
                 }
                 .disabled(resumed)
             }
@@ -174,65 +191,63 @@ struct ConversationDetailView: View {
     }
 }
 
-// MARK: - Message Bubble
+// MARK: - History Message Item
 
-struct MessageBubble: View {
+private struct HistoryMessageItem: View {
     let message: Message
-    @State private var openSolution: SolutionItem?
-
-    /// Assistant replies with formulas or structure open in the rendered solution view.
-    private var hasRichSolution: Bool {
-        message.role == .assistant
-            && (message.content.contains("$") || message.content.contains("\\(") || message.content.contains("\\[")
-                || message.content.contains("```") || message.content.contains("\n|"))
-    }
+    @ObservedObject var readingEngine: ReadingEngine
 
     var body: some View {
-        HStack {
-            // User on the right, assistant on the left — same as the live transcript.
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
             if message.role == .user {
-                Spacer(minLength: 40)
-            }
-
-            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
-                if let photoData = message.photoData, let uiImage = UIImage(data: photoData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: 220, maxHeight: 160)
-                        .cornerRadius(12)
-                        .clipped()
-                }
-
-                Text(message.content)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(message.role == .user ? AnyShapeStyle(Theme.buttonGradient) : AnyShapeStyle(Color(.systemGray5)))
-                    .foregroundColor(message.role == .user ? Color.black.opacity(0.9) : .primary)
-                    .cornerRadius(16)
-
-                HStack(spacing: 10) {
-                    Text(message.timestamp.formatted(date: .omitted, time: .shortened))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    if hasRichSolution {
-                        Button {
-                            openSolution = SolutionItem(markdown: message.content)
-                        } label: {
-                            Label("Xem công thức", systemImage: "function")
-                                .font(.caption2.weight(.semibold))
+                TranscriptBubble(
+                    text: message.content,
+                    isUser: true,
+                    isStreaming: false,
+                    photoData: message.photoData
+                )
+            } else if let record = message.reading, !record.segments.isEmpty {
+                let isCurrent = readingEngine.plan?.record == record
+                SegmentCardView(
+                    record: record,
+                    activeSegmentIndex: isCurrent ? readingEngine.currentSegmentIndex : nil,
+                    activeSpokenPiece: isCurrent ? readingEngine.currentPieceText : nil,
+                    activeWordRange: isCurrent ? readingEngine.currentWordRange : nil,
+                    isReadingActive: isCurrent && readingEngine.state == .reading,
+                    onSelectSegment: { index in
+                        HapticFeedback.light()
+                        if isCurrent {
+                            readingEngine.jump(to: index)
+                        } else {
+                            readingEngine.replay(record: record, startingAt: index)
                         }
-                        .foregroundColor(Theme.accent)
+                    },
+                    onReplay: {
+                        HapticFeedback.light()
+                        readingEngine.replay(record: record)
                     }
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    TranscriptBubble(text: message.content, isUser: false, isStreaming: false)
+                    Button {
+                        HapticFeedback.light()
+                        let parsed = AnswerFormat.parse(message.content)
+                        let lang = TTSService.containsVietnamese(message.content) ? "vi" : "en"
+                        let record = ReplyAssembler(languageCode: lang).record(for: parsed)
+                        readingEngine.replay(record: record)
+                    } label: {
+                        Label("Đọc lại", systemImage: "speaker.wave.2.fill")
+                            .font(Theme.Typography.badge)
+                            .foregroundColor(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .sheet(item: $openSolution) { item in
-                SolutionSheet(markdown: item.markdown)
-            }
 
-            if message.role == .assistant {
-                Spacer(minLength: 40)
-            }
+            Text(message.timestamp.formatted(date: .omitted, time: .shortened))
+                .font(.caption2)
+                .foregroundColor(.secondary)
         }
     }
 }
@@ -240,4 +255,6 @@ struct MessageBubble: View {
 #Preview {
     ConversationListView()
         .environmentObject(SettingsManager.shared)
+        .environmentObject(AppRouter())
+        .preferredColorScheme(.dark)
 }

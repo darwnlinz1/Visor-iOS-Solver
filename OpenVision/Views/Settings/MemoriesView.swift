@@ -1,21 +1,15 @@
 // OpenVision - MemoriesView.swift
-// AI memories management (key-value pairs)
+// AI memories management (key-value pairs, 100% Vietnamese UI).
 
 import SwiftUI
 
 struct MemoriesView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var settingsManager: SettingsManager
-
-    // MARK: - State
 
     @State private var selectedMemory: (key: String, value: String)?
     @State private var showingEditor: Bool = false
     @State private var showingDeleteConfirmation: Bool = false
     @State private var memoryToDelete: String?
-
-    // MARK: - Body
 
     var body: some View {
         List {
@@ -26,10 +20,10 @@ struct MemoriesView: View {
                             .font(.largeTitle)
                             .foregroundColor(.secondary)
 
-                        Text("No memories yet")
+                        Text("Chưa có mục ghi nhớ nào")
                             .font(.headline)
 
-                        Text("Add memories manually to give the AI context about you.")
+                        Text("Thêm ngữ cảnh để trợ lý luôn nhớ về bạn (ví dụ: lớp học, môn thi, mục tiêu).")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -46,8 +40,7 @@ struct MemoriesView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(key)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
+                                    .font(.subheadline.weight(.medium))
                                     .foregroundColor(.primary)
 
                                 Text(settingsManager.settings.memories[key] ?? "")
@@ -62,18 +55,18 @@ struct MemoriesView: View {
                                 memoryToDelete = key
                                 showingDeleteConfirmation = true
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                Label("Xoá", systemImage: "trash")
                             }
                         }
                     }
                 } header: {
-                    Text("Stored Memories")
+                    Text("Đã lưu")
                 } footer: {
-                    Text("\(settingsManager.settings.memories.count) memories")
+                    Text("\(settingsManager.settings.memories.count) mục ghi nhớ")
                 }
             }
         }
-        .navigationTitle("Memories")
+        .navigationTitle("Ghi nhớ")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -83,6 +76,7 @@ struct MemoriesView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("Thêm ghi nhớ")
             }
         }
         .sheet(isPresented: $showingEditor) {
@@ -92,44 +86,34 @@ struct MemoriesView: View {
             )
         }
         .confirmationDialog(
-            "Delete Memory",
+            "Xoá ghi nhớ",
             isPresented: $showingDeleteConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
+            Button("Xoá", role: .destructive) {
                 if let key = memoryToDelete {
                     settingsManager.deleteMemory(key: key)
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Huỷ", role: .cancel) {}
         } message: {
             if let key = memoryToDelete {
-                Text("Are you sure you want to delete '\(key)'?")
+                Text("Bạn có chắc muốn xoá '\(key)'?")
             }
         }
     }
-
-    // MARK: - Computed Properties
 
     private var sortedMemoryKeys: [String] {
         settingsManager.settings.memories.keys.sorted()
     }
 }
 
-// MARK: - Memory Editor View
-
 struct MemoryEditorView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var settingsManager: SettingsManager
     @Environment(\.dismiss) private var dismiss
 
-    // MARK: - Properties
-
     let existingKey: String?
     let existingValue: String
-
-    // MARK: - State
 
     @State private var key: String = ""
     @State private var value: String = ""
@@ -137,34 +121,32 @@ struct MemoryEditorView: View {
 
     var isNewMemory: Bool { existingKey == nil }
 
-    // MARK: - Body
-
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Key")
+                        Text("Khoá")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        TextField("user_name", text: $key)
+                        TextField("lop_hoc", text: $key)
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                             .disabled(!isNewMemory)
                     }
                 } header: {
-                    Text("Identifier")
+                    Text("Định danh")
                 } footer: {
-                    Text("A short identifier (e.g., 'user_name', 'favorite_color')")
+                    Text("Tên ngắn gọn (ví dụ: 'lop_hoc', 'mon_thi')")
                 }
 
                 Section {
                     TextEditor(text: $value)
                         .frame(minHeight: 100)
                 } header: {
-                    Text("Value")
+                    Text("Nội dung")
                 } footer: {
-                    Text("The information to remember")
+                    Text("Thông tin muốn trợ lý luôn ghi nhớ")
                 }
 
                 if !isNewMemory {
@@ -174,26 +156,26 @@ struct MemoryEditorView: View {
                         } label: {
                             HStack {
                                 Spacer()
-                                Label("Delete Memory", systemImage: "trash")
+                                Label("Xoá ghi nhớ", systemImage: "trash")
                                 Spacer()
                             }
                         }
                     }
                 }
             }
-            .navigationTitle(isNewMemory ? "New Memory" : "Edit Memory")
+            .navigationTitle(isNewMemory ? "Ghi nhớ mới" : "Sửa ghi nhớ")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("Lưu") {
                         saveMemory()
                         dismiss()
                     }
-                    .disabled(key.isEmpty || value.isEmpty)
+                    .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || value.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button("Huỷ") {
                         dismiss()
                     }
                 }
@@ -203,31 +185,28 @@ struct MemoryEditorView: View {
                 value = existingValue
             }
             .confirmationDialog(
-                "Delete Memory",
+                "Xoá ghi nhớ",
                 isPresented: $showingDeleteConfirmation,
                 titleVisibility: .visible
             ) {
-                Button("Delete", role: .destructive) {
+                Button("Xoá", role: .destructive) {
                     if let existingKey {
                         settingsManager.deleteMemory(key: existingKey)
                     }
                     dismiss()
                 }
-                Button("Cancel", role: .cancel) {}
+                Button("Huỷ", role: .cancel) {}
             } message: {
-                Text("Are you sure you want to delete this memory?")
+                Text("Bạn có chắc muốn xoá ghi nhớ này?")
             }
         }
     }
-
-    // MARK: - Methods
 
     private func saveMemory() {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let existingKey, existingKey != trimmedKey {
-            // Key was renamed
             settingsManager.renameMemory(oldKey: existingKey, newKey: trimmedKey)
         }
 
@@ -241,4 +220,5 @@ struct MemoryEditorView: View {
         MemoriesView()
             .environmentObject(SettingsManager.shared)
     }
+    .preferredColorScheme(.dark)
 }

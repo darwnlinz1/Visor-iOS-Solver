@@ -72,7 +72,7 @@ struct GeminiSettingsView: View {
         }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
+                Button("Lưu") {
                     saveSettings()
                     dismiss()
                 }

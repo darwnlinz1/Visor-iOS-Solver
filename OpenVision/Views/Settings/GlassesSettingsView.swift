@@ -194,8 +194,8 @@ struct GlassesSettingsView: View {
         Section {
             Toggle(isOn: $settingsManager.settings.fullResolutionPhotos) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Ảnh độ phân giải đầy đủ")
-                    Text(settingsManager.settings.fullResolutionPhotos ? "~12 MP — rõ chữ nhỏ nhất, truyền lâu hơn" : "1080p — nhanh hơn")
+                    Text("Ảnh độ phân giải đầy đủ (~12 MP)")
+                    Text(settingsManager.settings.fullResolutionPhotos ? "Rất chậm qua Bluetooth, 30–60 giây" : "Nhanh, ~1–2 giây (khuyên dùng)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -301,7 +301,8 @@ struct GlassesSettingsView: View {
             let started = Date()
             if let data = await glassesManager.captureFullResolutionPhoto(fullResolution: full) {
                 let size = UIImage(data: data).map { "\(Int($0.size.width * $0.scale))×\(Int($0.size.height * $0.scale))" } ?? "?"
-                testPhotoResult = String(format: "%@ · %.1f s", size, Date().timeIntervalSince(started))
+                let source = glassesManager.lastPhotoSource ?? "glasses"
+                testPhotoResult = String(format: "%@ · %@ · %.1f s", source, size, Date().timeIntervalSince(started))
             } else {
                 testPhotoResult = "Không chụp được"
             }

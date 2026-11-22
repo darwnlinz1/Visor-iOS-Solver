@@ -1,7 +1,34 @@
 // OpenVision - MainTabView.swift
-// Main tab navigation: Voice Agent, History, Settings
+// Main tab navigation in Vietnamese (PLAN.md §4.5, T6.1): Trực tiếp | Lịch sử | Cài đặt.
 
 import SwiftUI
+
+enum SettingsDestination: Hashable {
+    case glasses
+    case gemini
+    case voice
+    case reading
+    case mathSpeech
+    case debug
+}
+
+@MainActor
+final class AppRouter: ObservableObject {
+    @Published var selectedTab: MainTabView.Tab = .live
+    @Published var settingsPath = NavigationPath()
+
+    func openSettings(_ destination: SettingsDestination? = nil) {
+        selectedTab = .settings
+        settingsPath = NavigationPath()
+        if let destination {
+            settingsPath.append(destination)
+        }
+    }
+
+    func openLive() {
+        selectedTab = .live
+    }
+}
 
 struct MainTabView: View {
     // MARK: - Environment
@@ -10,28 +37,20 @@ struct MainTabView: View {
     @EnvironmentObject var glassesManager: GlassesManager
     @EnvironmentObject var conversationManager: ConversationManager
 
-    // MARK: - State
+    // MARK: - Router
 
-    @State private var selectedTab: Tab = .voice
+    @StateObject private var router = AppRouter()
 
     // MARK: - Tab Enum
 
     enum Tab: String, CaseIterable {
-        case voice = "Voice"
-        case history = "History"
-        case settings = "Settings"
+        case live = "Trực tiếp"
+        case history = "Lịch sử"
+        case settings = "Cài đặt"
 
         var icon: String {
             switch self {
-            case .voice: return "waveform.circle.fill"
-            case .history: return "clock.fill"
-            case .settings: return "gearshape.fill"
-            }
-        }
-
-        var selectedIcon: String {
-            switch self {
-            case .voice: return "waveform.circle.fill"
+            case .live: return "waveform.circle.fill"
             case .history: return "clock.fill"
             case .settings: return "gearshape.fill"
             }
@@ -41,40 +60,35 @@ struct MainTabView: View {
     // MARK: - Body
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            // Voice Agent Tab
+        TabView(selection: $router.selectedTab) {
             VoiceAgentView()
                 .tabItem {
-                    Label(Tab.voice.rawValue, systemImage: Tab.voice.icon)
+                    Label(Tab.live.rawValue, systemImage: Tab.live.icon)
                 }
-                .tag(Tab.voice)
+                .tag(Tab.live)
 
-            // History Tab
             ConversationListView()
                 .tabItem {
                     Label(Tab.history.rawValue, systemImage: Tab.history.icon)
                 }
                 .tag(Tab.history)
 
-            // Settings Tab
             SettingsView()
                 .tabItem {
                     Label(Tab.settings.rawValue, systemImage: Tab.settings.icon)
                 }
                 .tag(Tab.settings)
         }
+        .environmentObject(router)
         .tint(Theme.accent)
         .onAppear {
-            // Customize tab bar appearance for dark mode
             let appearance = UITabBarAppearance()
             appearance.configureWithOpaqueBackground()
-            appearance.backgroundColor = UIColor(white: 0.05, alpha: 0.95)
+            appearance.backgroundColor = UIColor(white: 0.05, alpha: 0.96)
 
-            // Normal state
             appearance.stackedLayoutAppearance.normal.iconColor = .gray
             appearance.stackedLayoutAppearance.normal.titleTextAttributes = [.foregroundColor: UIColor.gray]
 
-            // Selected state — the theme's emerald accent
             let accent = UIColor(Theme.accent)
             appearance.stackedLayoutAppearance.selected.iconColor = accent
             appearance.stackedLayoutAppearance.selected.titleTextAttributes = [.foregroundColor: accent]

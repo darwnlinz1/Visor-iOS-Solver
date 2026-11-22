@@ -1,50 +1,42 @@
 // OpenVision - AdditionalInstructionsView.swift
-// Custom AI instructions editor
+// Custom AI instructions editor (100% Vietnamese UI).
 
 import SwiftUI
 
 struct AdditionalInstructionsView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var settingsManager: SettingsManager
     @Environment(\.dismiss) private var dismiss
 
-    // MARK: - State
-
     @State private var instructions: String = ""
-
-    // MARK: - Body
 
     var body: some View {
         VStack(spacing: 0) {
-            // Editor
             TextEditor(text: $instructions)
                 .padding()
                 .scrollContentBackground(.hidden)
                 .background(Color(.systemGroupedBackground))
 
-            // Character count
             HStack {
                 Spacer()
-                Text("\(instructions.count) characters")
+                Text("\(instructions.count) ký tự")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding()
             }
             .background(Color(.systemGroupedBackground))
         }
-        .navigationTitle("Custom Instructions")
+        .navigationTitle("Hướng dẫn riêng")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
+                Button("Lưu") {
                     saveInstructions()
                     dismiss()
                 }
             }
 
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
+                Button("Huỷ") {
                     dismiss()
                 }
             }
@@ -56,7 +48,7 @@ struct AdditionalInstructionsView: View {
             VStack(spacing: 12) {
                 Divider()
 
-                Text("These instructions will be added to the AI assistant's system prompt. Use this to customize behavior, provide context about yourself, or set preferences.")
+                Text("Hướng dẫn này sẽ được nối vào system prompt của Gemini (ví dụ: trình độ lớp 12, phong cách trình bày, ngôn ngữ ưu tiên).")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -66,8 +58,6 @@ struct AdditionalInstructionsView: View {
             .background(Color(.systemBackground))
         }
     }
-
-    // MARK: - Methods
 
     private func saveInstructions() {
         settingsManager.settings.userPrompt = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -80,4 +70,5 @@ struct AdditionalInstructionsView: View {
         AdditionalInstructionsView()
             .environmentObject(SettingsManager.shared)
     }
+    .preferredColorScheme(.dark)
 }

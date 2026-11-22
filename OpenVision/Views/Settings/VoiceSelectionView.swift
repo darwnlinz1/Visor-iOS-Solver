@@ -105,12 +105,16 @@ struct VoiceSelectionView: View {
     private func preview(identifier: String?) {
         previewSynthesizer.stopSpeaking(at: .immediate)
         testingVoiceId = identifier
-        let utterance = AVSpeechUtterance(string: sample)
-        utterance.voice = identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
-            ?? TTSService.bestVoice(for: languagePrefix == "vi" ? "vi-VN" : "en-US")
-        utterance.rate = SettingsManager.shared.settings.speechRate
-        previewSynthesizer.speak(utterance)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+        Task { @MainActor in
+            await AudioSessionManager.shared.ensurePlaybackRouteAsync(
+                preferGlasses: SettingsManager.shared.settings.preferGlassesMic
+            )
+            let utterance = AVSpeechUtterance(string: sample)
+            utterance.voice = identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+                ?? TTSService.bestVoice(for: languagePrefix == "vi" ? "vi-VN" : "en-US")
+            utterance.rate = SettingsManager.shared.settings.clampedSpeechRate
+            previewSynthesizer.speak(utterance)
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
             if testingVoiceId == identifier { testingVoiceId = nil }
         }
     }

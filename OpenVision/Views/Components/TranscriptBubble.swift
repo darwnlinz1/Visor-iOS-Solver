@@ -1,6 +1,5 @@
 // OpenVision - TranscriptBubble.swift
-// Emerald-themed transcript bubbles: user = solid emerald (right), AI = frosted glass (left).
-// Bubbles float directly over the background — no outer card box.
+// Emerald-themed transcript bubbles and typing indicator (iOS 17+ onChange fixed, Vietnamese labels).
 
 import SwiftUI
 
@@ -34,64 +33,71 @@ struct TypingIndicator: View {
     }
 }
 
-/// One transcript bubble. The text renders live (the token stream already animates it) —
-/// no artificial per-character typing effect.
+/// One transcript bubble.
 struct TranscriptBubble: View {
     let text: String
     let isUser: Bool
     let isStreaming: Bool
     var photoData: Data? = nil
+    var onTapPhoto: ((Data) -> Void)? = nil
 
     var body: some View {
         HStack {
-            if isUser { Spacer(minLength: 48) }
+            if isUser { Spacer(minLength: 40) }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 5) {
-                Text(isUser ? "You" : "Vision")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
+                Text(isUser ? "Bạn" : "Vision")
+                    .font(Theme.Typography.badge)
                     .foregroundColor(isUser ? Theme.accent.opacity(0.9) : Theme.heading.opacity(0.85))
                     .textCase(.uppercase)
-                    .tracking(1.2)
+                    .tracking(1.0)
 
                 if isUser, let photoData, let uiImage = UIImage(data: photoData) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: 180, maxHeight: 130)
-                        .cornerRadius(12)
-                        .clipped()
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.accent.opacity(0.4), lineWidth: 1))
+                    Button {
+                        onTapPhoto?(photoData)
+                    } label: {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: 190, maxHeight: 135)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                                    .stroke(Theme.accent.opacity(0.45), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Xem ảnh đã đính kèm")
                 }
 
-                Text(text)
-                    .font(.callout)
-                    .foregroundColor(isUser ? Color.black.opacity(0.9) : Theme.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(bubbleBackground)
+                if !text.isEmpty {
+                    Text(isUser ? text : MathPrettyText.format(text))
+                        .font(Theme.Typography.body)
+                        .foregroundColor(isUser ? Color.black.opacity(0.92) : Theme.textPrimary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(bubbleBackground)
+                }
             }
 
-            if !isUser { Spacer(minLength: 48) }
+            if !isUser { Spacer(minLength: 32) }
         }
     }
 
     @ViewBuilder
     private var bubbleBackground: some View {
         if isUser {
-            // Solid emerald — the signature accent, black text on green like the reference CTAs.
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .fill(Theme.buttonGradient)
-                .shadow(color: Theme.accent.opacity(0.35), radius: 12, y: 2)
+                .shadow(color: Theme.accent.opacity(0.28), radius: 10, y: 2)
         } else {
-            // Frosted near-black glass with a faint emerald edge.
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Theme.bgElevated.opacity(0.85))
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.bgCard.opacity(0.92))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                         .stroke(
                             LinearGradient(
-                                colors: [Theme.accent.opacity(0.35), Theme.bgElevatedStroke],
+                                colors: [Theme.accent.opacity(0.32), Theme.bgElevatedStroke],
                                 startPoint: .topLeading, endPoint: .bottomTrailing
                             ),
                             lineWidth: 1
@@ -101,8 +107,7 @@ struct TranscriptBubble: View {
     }
 }
 
-/// The conversation transcript: user bubble, then the AI reply. Long replies scroll inside a
-/// bounded area and auto-follow the newest text while streaming.
+/// Compact transcript pair (retained for previews and legacy callers).
 struct TranscriptView: View {
     let userText: String
     let aiText: String
@@ -112,61 +117,42 @@ struct TranscriptView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            // Attached photo preview while waiting for prompt (Capture First, Ask Later workflow)
             if userText.isEmpty, let photoData = userPhotoData, let uiImage = UIImage(data: photoData) {
                 HStack {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
                         HStack(spacing: 6) {
                             Circle().fill(Theme.success).frame(width: 8, height: 8)
-                            Text("ẢNH KÍNH ĐÃ ĐÍNH KÈM")
-                                .font(.caption2.weight(.bold))
+                            Text("Ảnh kính đã đính kèm")
+                                .font(Theme.Typography.badge)
                                 .foregroundColor(Theme.accent)
-                                .textCase(.uppercase)
-                                .tracking(1.0)
                             if let onDetach = onDetachPhoto {
                                 Button(action: onDetach) {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(.caption)
                                         .foregroundColor(Theme.textSecondary)
                                 }
-                                .padding(.leading, 4)
+                                .accessibilityLabel("Gỡ ảnh đính kèm")
                             }
                         }
                         Image(uiImage: uiImage)
                             .resizable()
                             .scaledToFill()
                             .frame(maxWidth: 180, maxHeight: 130)
-                            .cornerRadius(12)
-                            .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.accent, lineWidth: 1.5))
-                            .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 2)
-                        Text("Đã đính kèm ảnh kính. Nhập hoặc đọc câu hỏi...")
-                            .font(.caption2)
-                            .foregroundColor(Theme.textSecondary)
                     }
                     .padding(10)
                     .background(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                             .fill(Theme.bgElevated.opacity(0.92))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Theme.accent.opacity(0.3), lineWidth: 1)
-                            )
+                            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card).stroke(Theme.accent.opacity(0.3), lineWidth: 1))
                     )
                 }
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .opacity
-                ))
             }
 
             if !userText.isEmpty {
                 TranscriptBubble(text: userText, isUser: true, isStreaming: false, photoData: userPhotoData)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .opacity
-                    ))
             }
 
             if !aiText.isEmpty {
@@ -175,35 +161,22 @@ struct TranscriptView: View {
                         TranscriptBubble(text: aiText, isUser: false, isStreaming: isAIStreaming)
                             .id("reply")
                     }
-                    .frame(maxHeight: 190)
-                    .fixedSize(horizontal: false, vertical: aiFitsWithoutScrolling)
-                    .onChange(of: aiText) { _ in
-                        // Follow the newest text as it streams in.
+                    .frame(maxHeight: 200)
+                    .fixedSize(horizontal: false, vertical: aiText.count < 220)
+                    .onChange(of: aiText) { _, _ in
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo("reply", anchor: .bottom)
                         }
                     }
                 }
-                .transition(.asymmetric(
-                    insertion: .move(edge: .leading).combined(with: .opacity),
-                    removal: .opacity
-                ))
             } else if isAIStreaming {
                 HStack {
                     TypingIndicator()
                     Spacer()
                 }
-                .transition(.opacity)
             }
         }
-        // Animate bubble appear/disappear only — not every streamed token.
-        .animation(.easeInOut(duration: 0.3), value: userText.isEmpty)
-        .animation(.easeInOut(duration: 0.3), value: aiText.isEmpty)
-        .animation(.easeInOut(duration: 0.3), value: userPhotoData != nil)
     }
-
-    /// Short replies size to content (no dead space); long ones cap at maxHeight and scroll.
-    private var aiFitsWithoutScrolling: Bool { aiText.count < 220 }
 }
 
 /// Tool status indicator
@@ -218,8 +191,7 @@ struct ToolStatusView: View {
                 .foregroundColor(Theme.accent)
 
             Text(toolName)
-                .font(.subheadline)
-                .fontWeight(.medium)
+                .font(.subheadline.weight(.medium))
 
             if isRunning {
                 ProgressView()
@@ -241,17 +213,13 @@ struct ToolStatusView: View {
 #Preview {
     ZStack {
         Theme.bg.ignoresSafeArea()
-
-        VStack(spacing: 24) {
+        VStack(spacing: 20) {
             TranscriptView(
-                userText: "Ok Vision, what's the weather like today?",
-                aiText: "Based on your location, it's currently 72°F and sunny. Perfect weather for being outside!",
+                userText: "Giải phương trình x^2 - 5x + 6 = 0",
+                aiText: "Dòng 1: Ta có $\\Delta = (-5)^2 - 4 \\cdot 6 = 1$.",
                 isAIStreaming: false
             )
-
             TypingIndicator()
-
-            ToolStatusView(toolName: "weather_lookup", isRunning: true)
         }
         .padding()
     }
