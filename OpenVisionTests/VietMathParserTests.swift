@@ -377,6 +377,26 @@ final class VietMathParserTests: XCTestCase {
         XCTAssertEqual(MathSpanSplitter.split("Đáp án A. 2x + 1"), [.prose("Đáp án A. "), .math("2x + 1")])
     }
 
+    func testLabelsNeverStartABareFormula() {
+        // A chunk ending with ":" is a label (review X1), like "1.", "100." and "b)".
+        XCTAssertEqual(MathSpanSplitter.split("Câu 12: 3/4."), [.prose("Câu 12: "), .math("3/4"), .prose(".")])
+        XCTAssertEqual(MathSpanSplitter.split("Câu 12: x = 2."), [.prose("Câu 12: "), .math("x = 2"), .prose(".")])
+        XCTAssertEqual(MathSpanSplitter.split("TH1: x ≥ 0."), [.prose("TH1: "), .math("x ≥ 0"), .prose(".")])
+        XCTAssertEqual(MathSpanSplitter.split("Question 12: 3/4.", vietnamese: false),
+                       [.prose("Question 12: "), .math("3/4"), .prose(".")])
+        XCTAssertEqual(MathSpanSplitter.split("Dòng 100. x = 2."), [.prose("Dòng 100. "), .math("x = 2"), .prose(".")])
+        XCTAssertEqual(MathSpanSplitter.split("b) x = 2"), [.prose("b) "), .math("x = 2")])
+        XCTAssertEqual(MathSpanSplitter.split("12) x = 2"), [.prose("12) "), .math("x = 2")])
+        // A chunk with math before its colon stays in the formula.
+        XCTAssertEqual(MathSpanSplitter.split("Δ: x - y + 1 = 0"), [.math("Δ: x - y + 1 = 0")])
+        // A label inside a formula is not cut out; four digits are not a label.
+        XCTAssertEqual(MathSpanSplitter.split("x = 100. y = 2"), [.math("x = 100. y = 2")])
+        XCTAssertEqual(MathSpanSplitter.split("1000. x = 2"), [.math("1000. x = 2")])
+        for prose in ["Câu 4: -2,5.", "Lúc 10:30 sáng.", "Tỉ số 3:2.", "Câu 12: 5."] {
+            XCTAssertEqual(MathSpanSplitter.split(prose), [.prose(prose)], prose)
+        }
+    }
+
     func testProseThatIsNotAFormula() {
         for prose in ["Câu 1-5 làm trước.", "Kính Ray-Ban Meta", "Ngày 12/5/2026 thi", "Lúc 10:30 sáng",
                       "Câu 3: a đúng, b sai.", "Dài 2,5 cm", "Giảm 50%", "Góc 30°", "Đáp số: -3",

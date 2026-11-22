@@ -364,6 +364,55 @@ final class VietMathSpeechTests: XCTestCase {
                        [.words("e mũ 2 x cộng 1", isMath: true)])
     }
 
+    // MARK: - Labels before a bare formula (review X1)
+
+    private func prose(_ text: String) -> SpeechPiece { .words(text, isMath: false) }
+    private func math(_ text: String) -> SpeechPiece { .words(text, isMath: true) }
+
+    func testShortAnswerAndStepLabelsStayProse() {
+        // The short answers ReplyAssembler speaks ("Câu N: <value>.") and step labels: the label and its
+        // colon are prose, so the colon is never read as division ("Câu 12 chia 3, trên 4").
+        let cases: [(String, [SpeechPiece])] = [
+            ("Câu 12: 3/4.", [prose("Câu 12:"), math("ba phần tư")]),
+            ("Câu 12: -1/2.", [prose("Câu 12:"), math("âm một phần hai")]),
+            ("Câu 12: √2.", [prose("Câu 12:"), math("căn 2")]),
+            ("Câu 12: 2√3.", [prose("Câu 12:"), math("2 căn 3")]),
+            ("Câu 12: x = 2.", [prose("Câu 12:"), math("ích bằng 2")]),
+            ("Câu 12: −3.", [prose("Câu 12:"), math("âm 3")]),
+            ("Câu 12: x².", [prose("Câu 12:"), math("ích bình phương")]),
+            ("Câu 12: 10^3.", [prose("Câu 12:"), math("10 lập phương")]),
+            ("Bước 1: x = 2.", [prose("Bước 1:"), math("ích bằng 2")]),
+            ("Ví dụ 2: x = 2.", [prose("Ví dụ 2:"), math("ích bằng 2")]),
+            ("TH1: x ≥ 0.", [prose("TH1:"), math("ích lớn hơn hoặc bằng 0")]),
+            ("Dòng 100. x = 2.", [prose("Dòng 100."), math("ích bằng 2")]),
+            ("b) x = 2.", [prose("bê)"), math("ích bằng 2")]),
+            ("1) x = 2.", [prose("1)"), math("ích bằng 2")]),
+            // Unchanged.
+            ("Câu 4: -2,5.", [prose("Câu 4: âm 2 phẩy 5.")]),
+            ("Câu 12: $x = 2$.", [prose("Câu 12:"), math("ích bằng 2")]),
+            ("Đáp số: 3/4.", [prose("Đáp số:"), math("ba phần tư")]),
+            ("Lúc 10:30 sáng.", [prose("Lúc 10:30 sáng.")]),
+            ("Tỉ số 3:2.", [prose("Tỉ số 3:2.")]),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(VietMathSpeech.render(input, vietnamese: true, style: .default), expected, input)
+        }
+        XCTAssertEqual(VietMathSpeech.render("Question 12: 3/4.", vietnamese: false, style: .default),
+                       [prose("Question 12:"), math("3 over 4")])
+        check([
+            row("Câu 12: 3/4.", "Câu 12: ba phần tư"),
+            row("Câu 12: -1/2.", "Câu 12: âm một phần hai"),
+            row("Câu 12: √2.", "Câu 12: căn 2", explicit: "Câu 12: căn bậc hai của 2"),
+            row("Câu 12: 2√3.", "Câu 12: 2 căn 3", explicit: "Câu 12: 2 căn bậc hai của 3"),
+            row("Câu 12: x = 2.", "Câu 12: x bằng 2"),
+            row("Câu 12: −3.", "Câu 12: âm 3"),
+            row("Câu 12: x².", "Câu 12: x bình phương"),
+            row("Bước 1: x = 2.", "Bước 1: x bằng 2"),
+            row("Dòng 100. x = 2.", "Dòng 100. x bằng 2"),
+            row("Câu 4: -2,5.", "Câu 4: âm 2 phẩy 5."),
+        ])
+    }
+
     func testMultipleChoiceAnswersReadLetterNames() {
         XCTAssertEqual(reading("Câu 1: A."), "Câu 1: a.")
         XCTAssertEqual(reading("Câu 2: C."), "Câu 2: xê.")

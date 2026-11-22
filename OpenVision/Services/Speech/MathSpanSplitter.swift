@@ -191,10 +191,13 @@ enum MathSpanSplitter {
         guard coreStart < coreEnd else { return }
         let core = Array(chars[coreStart..<coreEnd])
 
-        // Labels: "A." "b)" "1." at the start of an option or a step.
+        // Labels: "A." "b)" "1." "100." at the start of an option or a step. A chunk ending with ":"
+        // ("12:", "TH1:") is also a label, set below once it is known to hold no math.
         let rawEnd = chars[chunk.end - 1]
-        if core.count <= 2, rawEnd == "." || rawEnd == ")",
-           core.allSatisfy({ MathLexer.isDigit($0) }) || (core.count == 1 && MathLexer.isASCIILetter(core[0])) {
+        let labelCore = rawEnd == ")" && core.last == ")" ? core.dropLast() : core[...]
+        let isNumberLabel = (1...3).contains(labelCore.count) && labelCore.allSatisfy { MathLexer.isDigit($0) }
+        let isLetterLabel = labelCore.count == 1 && MathLexer.isASCIILetter(labelCore[labelCore.startIndex])
+        if rawEnd == "." || rawEnd == ")", isNumberLabel || isLetterLabel {
             chunk.isLabel = true
         }
         if isDate(core, previous: previous) || isTime(core) { return }
@@ -245,6 +248,9 @@ enum MathSpanSplitter {
         }
         chunk.compatible = true
         chunk.anchor = anchor
+        // "Câu 12: 3/4.", "Bước 1: x = 2.", "TH1: x ≥ 0.": the label and its colon stay prose, so the
+        // colon is never read as division. "Δ: x - y + 1 = 0" holds math and stays in the formula.
+        if rawEnd == ":", !anchor { chunk.isLabel = true }
     }
 
     /// A run of ASCII letters that can be part of a formula.
