@@ -1275,7 +1275,8 @@ Quy tắc chung cho đợt song song (rút ra từ đợt 1):
 
 ## 12. Kiểm thử: agent tự chạy gì, ở đâu
 
-Năm lớp, từ nhanh tới chậm. Một task chỉ xong khi mọi lớp liên quan tới nó xanh.
+Năm lớp, từ nhanh tới chậm. Một task chỉ xong khi mọi lớp liên quan tới nó xanh. Trên máy Mac có Xcode,
+chạy đủ các lớp (cả Gemini thật và iPhone) theo prompt ở §13.6.
 | Lớp | Lệnh | Ở đâu, bao lâu | Bắt được gì |
 |---|---|---|---|
 | 1. Guard tĩnh | `python3 scripts/blueprint/verify_blueprint.py` (hoặc `make blueprint-check`) | sandbox, vài giây | bất biến âm thanh (lesson 1–4), prompt, pbxproj hai chiều, Info.plist, chuỗi giống API key |
@@ -1414,3 +1415,163 @@ PLAN.md §11. Trước khi gộp, tự kiểm lại mọi lỗi blocker của re
 xanh, kiểm từng suite mới có dòng "Executed" trong log E2E. Cập nhật PLAN.md §3.1 và §5 (commit "Docs: …").
 Báo cáo theo §10, kèm link PR và các bước H cần chủ dự án chạy (bảng ở §7).
 ```
+
+### 13.6 Kiểm tra toàn bộ và test đầu–cuối trên Mac
+Dùng sau mỗi đợt, trên máy Mac có Xcode của chủ dự án. Thời gian: bước 1–5 khoảng 30–45 phút, bước 6 khoảng
+20–30 phút, bước 9 tuỳ số bước H.
+```
+Bạn là agent kiểm thử chạy trên máy Mac (có Xcode) của chủ dự án. Repo: darwnlinz1/Visor-iOS-Solver, app iOS
+OpenVision (kính Ray-Ban Meta + Gemini, đọc lời giải bài tập và đề thi bằng giọng nói). Sandbox Linux trước đây
+không có Xcode, nên việc của bạn là chạy mọi kiểm tra cần Mac, ghi số liệu thật và báo lỗi có bằng chứng.
+
+QUY TẮC
+- Lượt này chỉ kiểm tra: không sửa code app, không commit, không push, không mở PR, không chạy `xcodegen generate`.
+- Mọi file bạn tạo (probe, log, build, audio, báo cáo) nằm trong ~/openvision-check/. Cuối lượt
+  `git status --porcelain` trong repo phải rỗng.
+- Bí mật: API key Gemini chỉ đi qua biến môi trường, nhập bằng `read -rs` (không gõ thẳng trong lệnh, không echo,
+  không ghi ra file, không đưa vào báo cáo). Không in nội dung Config.xcconfig và OpenVision/Config/Config.swift.
+- Một bước bị chặn: ghi lỗi nguyên văn, thử tối đa 2 cách, rồi làm bước sau.
+- Lưu log từng bước: `<lệnh> 2>&1 | tee ~/openvision-check/logs/<bước>.log`.
+
+0. CHUẨN BỊ
+- Trong repo: `git fetch origin && git switch feature/voice-v2 && git pull --ff-only`; ghi `git rev-parse --short HEAD`.
+- Đọc AGENTS.md, rồi PLAN.md §0, §3.1, §4.2–4.4, §7, §12.
+- Ghi môi trường: `sw_vers`, `xcodebuild -version` (CI dùng Xcode 26.6), `xcrun simctl list runtimes` (cần iOS 18+),
+  `swift --version`, `python3 --version`. Tuỳ chọn: `brew install xcbeautify`.
+- `mkdir -p ~/openvision-check/logs`. Lần build đầu tải Swift package (Meta DAT), mất vài phút.
+
+1. GUARD VÀ SCRIPT (số mong đợi lấy từ CI ở 159bb7a)
+- `python3 scripts/blueprint/verify_blueprint.py` → "44 passed/warned, 0 failed" (một WARN về build-ipa.yml là bình thường).
+- `python3 scripts/pbxproj_files.py --self-test` → pass.
+
+2. MODULE THUẦN (OpenVision/Services/Speech) TRÊN macOS
+- `scripts/swift-local/run.sh` → "Executed 143 tests, with 0 failures". Ghi mọi warning của các file Speech.
+
+3. BUILD iOS
+a) Như CI (thiết bị, Debug, không ký):
+     xcodebuild build-for-testing -project OpenVision.xcodeproj -scheme OpenVision \
+       -destination 'generic/platform=iOS' -clonedSourcePackagesDirPath .spm \
+       -derivedDataPath ~/openvision-check/DD-device-ci -skipPackagePluginValidation -skipMacroValidation \
+       CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM=
+   CI ghi 0 warning. Liệt kê mọi warning trong code của app (file:dòng, nội dung), bỏ qua package bên thứ ba.
+b) Release + IPA như .github/workflows/build-ipa.yml: lệnh trên đổi thành `xcodebuild build … -configuration Release`
+   với `-derivedDataPath ~/openvision-check/DD-release`; rồi trong ~/openvision-check/ipa/ tạo Payload/, chép
+   OpenVision.app vào, `zip -qry OpenVision.ipa Payload`. Ghi kích thước IPA. Chạy
+   `make verify-ipa IPA=$HOME/openvision-check/ipa/OpenVision.ipa`: phải thấy đủ RecentPhotoScanner, cleanSpokenAudio,
+   conversationHistory, PhotoPayload, streamGenerateContent, SolverIntent.
+
+4. E2E TRÊN SIMULATOR, MỌI SUITE
+- `make e2e` (script tự chọn iPhone iOS 18+ mới nhất; muốn chọn máy khác thì đặt SIMULATOR_UDID).
+- Mong đợi như CI: "Test suites: all"; 13 suite; "Executed 218 tests, with 3 tests skipped and 0 failures" (3 skip là
+  GeminiLiveSmokeTests, chạy ở bước 5); 3 test BlueprintPhotoLibraryE2ETests chạy thật; lần khởi động không SDK in
+  "SDK kính chưa khởi tạo được".
+- Lập bảng từng suite (số test, lỗi, skip, thời gian) từ
+  `grep -E "Test Suite '|Executed [0-9]+ tests" build/test-output.log`.
+- Test lỗi: ghi tên, thông báo, file:dòng; chạy lại riêng suite đó một lần (`xcodebuild test-without-building` với các
+  tham số COMMON trong scripts/e2e/run-simulator-tests.sh và `-only-testing:OpenVisionTests/<Suite>`) để biết lỗi ổn
+  định hay chập chờn.
+
+5. GEMINI THẬT: SMOKE TEST CÓ SẴN
+     read -rs OV_KEYS        # dán key; nhiều key cách nhau bằng dấu phẩy
+     export OV_KEYS
+     TEST_RUNNER_OPENVISION_GEMINI_API_KEYS="$OV_KEYS" make e2e-live
+- Mong đợi: GeminiLiveSmokeTests chạy 3 test, không skip, pass. Trước đợt 2, các test này kiểm hợp đồng CŨ
+  (SPOKEN/DISPLAY) vì app chưa nối prompt v2.1; như vậy là đúng.
+
+6. PROMPT v2.1 VÀ MODULE MỚI VỚI GEMINI THẬT (bước quan trọng nhất)
+Trước đợt 2, app chưa gọi PromptV2, AnswerFormat, ReplyAssembler, VietMathSpeech. Bước này kiểm với model thật rằng
+chuỗi "prompt v2.1 → Gemini → AnswerFormat → ReplyAssembler → VietMathSpeech" cho câu đọc đúng.
+Dựng probe ngoài repo:
+- ~/openvision-check/prompt-probe/Package.swift: swift-tools-version 5.9, platforms [.macOS(.v13)], một executableTarget
+  "PromptProbe".
+- Sources/PromptProbe/: symlink mọi file <repo>/OpenVision/Services/Speech/*.swift (để dùng được kiểu internal) và
+  main.swift của bạn. Chạy bằng `swift run -c release PromptProbe`.
+- Gửi request giống app (GeminiLiveService.makeRequestBody và userTurn):
+  POST https://generativelanguage.googleapis.com/v1beta/models/<model>:streamGenerateContent?alt=sse, header
+  x-goog-api-key = key đầu tiên trong OV_KEYS. Body:
+    systemInstruction.parts[0].text = PromptV2.systemPrompt(now: Date(), timeZone: .current, userPrompt: "", memories: [:])
+    contents = các lượt trước (nếu có) + {"role":"user","parts":[ảnh nếu có, {"text": câu hỏi}]}
+      ảnh: {"inlineData":{"mimeType":"image/jpeg","data":"<base64>"},"mediaResolution":{"level":"MEDIA_RESOLUTION_ULTRA_HIGH"}}
+      lượt model trong lịch sử: {"role":"model","parts":[{"text": câu trả lời}, {"text":"","thoughtSignature": chữ ký nếu có}]}
+    generationConfig = {"temperature":0.2,"maxOutputTokens":8192,"thinkingConfig":{"thinkingLevel":"LOW"}}
+  Model gemini-3.5-flash-lite; nếu 404 hoặc hết quota thì gemini-3.1-flash-lite. Nếu HTTP 400 nhắc tới mediaResolution,
+  gửi lại không có trường đó. Ảnh thu nhỏ như app: `sips -Z 3072 -s format jpeg -s formatOptions 85 in.jpg --out out.jpg`.
+- Đọc SSE: dòng "data: {…}" → candidates[0].content.parts[*].text (bỏ part có "thought": true), thoughtSignature,
+  candidates[0].finishReason.
+- Mỗi lần nhận thêm chữ: AnswerFormat.partialAnswer(in: accumulated). Cuối: AnswerFormat.parse(raw, finishReason:) →
+  ReplyAssembler(languageCode:).plan(turnID: UUID(), parsed:) → mỗi đoạn qua
+  VietMathSpeech.render(segment.speechText, vietnamese:, style: .default) và VietMathSpeech.spokenText(_:).
+  languageCode = "vi" nếu câu hỏi có chữ tiếng Việt có dấu, ngược lại "en".
+- Mỗi ca chạy 2 lần. Lưu cho mỗi lần: câu trả lời thô, loại bài, các đoạn (kind, displayText, speechText), câu đọc từng
+  đoạn, kết quả từng kiểm tra.
+Kiểm tra cho mỗi câu trả lời:
+  K1 Dòng không rỗng đầu tiên là "TYPE: MCQ|ESSAY|MIXED|OTHER", và loại parse ra đúng loại mong đợi.
+  K2 MCQ: chỉ có dòng Q (không P, L hay lời giải thích); mỗi đáp án là chữ cái, danh sách Đ/S, một số, hoặc "?".
+  K3 ESSAY: mỗi dòng L ≤ 25 từ và ≤ 2 công thức $…$; có FINAL; không "$$", không markdown (**, #, gạch đầu dòng, bảng).
+  K4 Không nhắc màn hình hay điện thoại (không khớp /màn hình|điện thoại|screen|phone/i).
+  K5 Đúng ngôn ngữ: hỏi tiếng Việt thì nội dung tiếng Việt có dấu; hỏi tiếng Anh thì tiếng Anh.
+  K6 Câu đọc: không có \ $ { } ^ _; mỗi mẩu ≤ 200 ký tự; câu tiếng Việt không có "equals", "squared", "over", "plus", "minus".
+  K7 Stream: sections của mỗi partialAnswer là tiền tố của sections cuối; loại bài đã biết thì không đổi.
+  K8 Đáp số đúng như cột "Đáp án".
+  K9 Ca CAPTURE: parsed.requestsCapture == true và không có đoạn nào để đọc. Ca END: parsed.endsConversation == true và
+     "[[END]]" không có trong câu đọc nào.
+Các ca (gửi nguyên văn):
+  #   | Câu hỏi | Loại mong đợi | Đáp án
+  1   | Giải giúp mình: Câu 1. Nghiệm của phương trình 2x − 4 = 0 là A. x = 1  B. x = 2  C. x = −2  D. x = 4. Câu 2. Giá trị của log₂ 8 là A. 2  B. 3  C. 4  D. 8. | MCQ | Q1: B; Q2: B
+  2   | Câu 1 (đúng/sai). Cho hàm số f(x) = x² − 4x + 3. a) f(1) = 0. b) Hàm số đồng biến trên khoảng (−∞; 2). c) Đồ thị cắt trục Oy tại điểm (0; 3). d) Giá trị nhỏ nhất của f(x) là −2. | MCQ | a Đ, b S, c Đ, d S
+  3   | Câu 1 (trả lời ngắn). Tính tích phân từ 0 đến 2 của (2x + 1) dx. | MCQ | 6
+  4   | Giải phương trình x² − 5x + 6 = 0, trình bày tự luận. | ESSAY | x = 2; x = 3
+  5   | Giải phương trình x² − 4x + 3 = 0 bằng công thức nghiệm thu gọn. | ESSAY | Δ' = 1; x = 1; x = 3
+  6   | Tìm giá trị lớn nhất và nhỏ nhất của hàm số y = x³ − 3x + 1 trên đoạn [0; 2]. | ESSAY | lớn nhất 3 tại x = 2; nhỏ nhất −1 tại x = 1
+  7   | Trong mặt phẳng Oxy cho A(1; 2), B(3; −2). Tìm toạ độ véc-tơ AB và độ dài đoạn AB. | ESSAY | (2; −4); 2√5
+  8   | Giải chi tiết từng bước: tính đạo hàm của y = sin x · cos x. | ESSAY, có đáp số (không giấu đáp án) | y' = cos 2x
+  9   | Câu 1. 3 + 4 × 2 bằng A. 14  B. 11  C. 10  D. 9. Bài 2. Giải hệ phương trình x + y = 3 và x − y = 1. | MIXED | Q1: B; x = 2, y = 1
+  10  | Question 1. What is the derivative of x^3? A. 3x  B. x^2  C. 3x^2  D. 3x^3 | MCQ (tiếng Anh) | C
+  11  | Solve 2x + 3 = 11 step by step. | ESSAY (tiếng Anh) | x = 4
+  12  | Thủ đô của Pháp là gì? | OTHER | Paris
+  13  | Giải câu này giúp mình. (không gửi ảnh) | CAPTURE (K9) | -
+  14  | Cảm ơn nhé, tạm biệt. | END (K9) | -
+  15  | Hai lượt: gửi ca 1, rồi gửi kèm lịch sử câu "Tại sao câu 2 chọn B?" | lượt 2: ESSAY | log₂ 8 = 3
+  16+ | Ảnh đề thật nếu chủ dự án đặt trong ~/openvision-check/photos/, câu hỏi "Giải hết các câu trong ảnh." | MCQ hoặc MIXED | chủ dự án đối chiếu
+Tổng kết bước 6: bảng ca × K1–K9 (✅/❌), tỉ lệ đúng đáp số, và mọi ❌ kèm câu trả lời thô.
+
+7. NGHE THỬ CÁCH ĐỌC (tuỳ chọn; giọng macOS gần với iOS)
+- `say -v '?' | grep -i vi_VN` (thường là Linh). Dùng probe lấy VietMathSpeech.spokenText cho 15 mẫu H13 (PLAN.md §7) và
+  câu đọc của ca 1, 4, 5; tạo file `say -v Linh -o ~/openvision-check/audio/<tên>.aiff "<câu>"`.
+- Chủ dự án nghe và ghi chỗ đọc sai hoặc khó nghe. Đây là dữ liệu cho spike S7.
+
+8. ĐỘ PHỦ, SANITIZER, ẢNH MÀN HÌNH (tuỳ chọn, trên simulator)
+- Độ phủ: `xcodebuild test` với tham số COMMON của scripts/e2e/run-simulator-tests.sh (UDID lấy từ dòng "Simulator:"
+  trong log bước 4), thêm `-enableCodeCoverage YES -resultBundlePath ~/openvision-check/Coverage.xcresult`; rồi
+  `xcrun xccov view --report ~/openvision-check/Coverage.xcresult`. Liệt kê độ phủ theo file của app, đánh dấu file dưới
+  20%. Test Ảnh có thể skip ở lượt này (không có bước cấp quyền): chấp nhận.
+- Thread Sanitizer: như trên nhưng `-enableThreadSanitizer YES` (không bật chung với độ phủ). Ghi mọi cảnh báo data race.
+- Ảnh màn hình: chủ dự án mở app trong Simulator, đi qua onboarding, Cài đặt, Lịch sử; bạn chụp bằng
+  `xcrun simctl io <UDID> screenshot ~/openvision-check/screens/<tên>.png`. Đây là mốc trước khi làm lại giao diện.
+
+9. iPHONE THẬT VÀ KÍNH (cùng chủ dự án)
+- Chủ dự án điền Config.xcconfig và OpenVision/Config/Config.swift thật (PLAN.md §8). Không in các giá trị này.
+- Build và cài: dễ nhất là Xcode (chọn iPhone, bấm Run); debug console của Xcode thấy cả print lẫn NSLog. Dòng lệnh:
+  `xcrun devicectl list devices`; `xcodebuild -project OpenVision.xcodeproj -scheme OpenVision -configuration Debug
+  -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates -derivedDataPath ~/openvision-check/DD-device
+  -clonedSourcePackagesDirPath .spm -skipPackagePluginValidation -skipMacroValidation build`; rồi
+  `xcrun devicectl device install app --device <UDID> ~/openvision-check/DD-device/Build/Products/Debug-iphoneos/OpenVision.app`.
+- Bắt buộc: các bước H trong bảng "Chạy bước nào sau đợt nào" (PLAN.md §7) cho đợt vừa xong; sau đợt 1 là H1 và H9.
+  Thêm cho đợt 1: lần khởi động bình thường không có dòng "SDK kính chưa khởi tạo được", và Cài đặt → Kính →
+  Đăng ký app vẫn chạy (T2.5 đã đổi cách GlassesManager lấy SDK).
+- Tuỳ chọn, làm mốc trước đợt 2: H2–H12 trên bản hiện tại (app vẫn đọc theo định dạng cũ).
+- Mỗi bước H: hướng dẫn chủ dự án từng thao tác, ghi kết quả theo mẫu báo cáo phần cứng ở PLAN.md §7, lưu log (Xcode
+  debug console hoặc Console.app lọc process OpenVision) vào ~/openvision-check/logs/.
+
+10. BÁO CÁO: ~/openvision-check/REPORT.md
+  1. Môi trường: macOS, Xcode, runtime simulator, commit, iPhone và iOS, firmware kính (nếu có).
+  2. Bảng tổng: bước 1–9 → ✅, ❌ hoặc bỏ qua (lý do); số liệu chính (số test, warning, kích thước IPA, thời gian).
+  3. Lỗi, mỗi lỗi một mục: mã M1, M2…; mức (blocker = đọc sai đáp án, crash, hỏng build, test đỏ; should-fix; nit);
+     module; bằng chứng (lệnh; đầu vào → kết quả → mong đợi; trích log); cách tái hiện; file:dòng nếu biết; gợi ý sửa.
+  4. Bảng bước 6 và đánh giá: model có theo định dạng v2.1 đủ tốt để làm đợt 2 không; prompt cần sửa gì (trích nguyên
+     văn câu trả lời sai).
+  5. Kết quả phần cứng theo mẫu PLAN.md §7.
+  6. Danh sách file trong ~/openvision-check/ để chủ dự án gửi lại.
+Cuối lượt: `git status --porcelain` trong repo phải rỗng; trả lời bằng bảng tổng và danh sách lỗi.
+```
+Sau đợt 2, các con số mong đợi ở bước 1, 2, 4, 5 đổi theo PR của đợt đó; cập nhật chúng ở đây khi tích hợp.

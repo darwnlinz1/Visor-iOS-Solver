@@ -11,7 +11,8 @@ File này chỉ là lối vào. Nguồn sự thật là [PLAN.md](PLAN.md) (ti�
 2. §3.1: những gì đã xong và ở commit nào.
 3. §11: đợt đang làm, thứ tự task, ai sửa file nào.
 4. §5: từng task (Việc, Không làm, Xong khi, Chi tiết).
-5. §12: cách test. §9: cách đọc CI từ sandbox. §10: mẫu báo cáo. §13: prompt mẫu cho từng vai.
+5. §12: cách test. §9: cách đọc CI từ sandbox. §10: mẫu báo cáo. §13: prompt mẫu cho từng vai
+   (§13.6: kiểm tra toàn bộ và test đầu–cuối trên máy Mac có Xcode).
 
 Comment trong code mâu thuẫn với `PLAN.md` thì tin `PLAN.md`. `PLAN.md` mô tả sai code hiện có thì tin code
 và ghi lại trong PR.
