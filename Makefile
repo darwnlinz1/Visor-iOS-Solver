@@ -1,6 +1,6 @@
 # OpenVision Makefile
 
-.PHONY: setup generate clean open help blueprint-check e2e e2e-all e2e-blueprint e2e-live verify-ipa
+.PHONY: setup generate check-config clean open help blueprint-check e2e e2e-all e2e-blueprint e2e-live verify-ipa
 
 # Default target
 help:
@@ -45,7 +45,7 @@ check-config:
 		echo "Please copy Config.xcconfig.example to Config.xcconfig and fill in your values"; \
 		exit 1; \
 	fi
-	@if grep -Eq '^[[:space:]]*[A-Z_]+[[:space:]]*=.*(YOUR_TEAM_ID|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN|XXXXXXXXXX)' Config.xcconfig; then \
+	@if sed 's|//.*||' Config.xcconfig | grep -Eiq '^[[:space:]]*[][A-Za-z0-9_=*.-]+[[:space:]]*=.*(YOUR_TEAM_ID|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN|XXXXXXXXXX)'; then \
 		echo "❌ Error: Config.xcconfig still has placeholder values"; \
 		echo "Please edit Config.xcconfig (use META_APP_ID = 0 and empty CLIENT_TOKEN for Developer Mode, or real Meta credentials)"; \
 		exit 1; \

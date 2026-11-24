@@ -15,11 +15,11 @@ on:
         type: string
         default: ""
       apple_team_id:
-        description: "Optional 10-char Apple Team ID for MWDAT.TeamID (or configure APPLE_TEAM_ID secret)"
+        description: "Optional 10-char Apple Team ID for MWDAT.TeamID (developer mode uses this input only and never pulls APPLE_TEAM_ID secret; production falls back to APPLE_TEAM_ID secret)"
         type: string
         default: ""
       omit_empty_team_id:
-        description: "Developer mode only: omit MWDAT.TeamID key instead of writing empty string (Spike S5 A/B toggle)"
+        description: "Developer mode only (leave apple_team_id empty): omit MWDAT.TeamID key instead of writing empty string (Spike S5 A/B toggle; rejected in production)"
         type: boolean
         default: false
       bundle_id:
@@ -100,38 +100,49 @@ jobs:
           set -euo pipefail
           rm -rf Payload OpenVision.ipa
           mkdir -p Payload
-          APP_PATH="$(find DerivedData/Build/Products -name "OpenVision.app" -type d | head -n 1)"
+          if [ -d "DerivedData/Build/Products/Release-iphoneos/OpenVision.app" ]; then
+            APP_PATH="DerivedData/Build/Products/Release-iphoneos/OpenVision.app"
+          else
+            APP_PATH="$(find DerivedData/Build/Products -maxdepth 2 -type d -name "OpenVision.app" | sed -n '1p')"
+          fi
           if [ -z "$APP_PATH" ]; then
             echo "::error::OpenVision.app not found in DerivedData/Build/Products"
             exit 1
           fi
           echo "Found app at: $APP_PATH"
-          cp -r "$APP_PATH" Payload/
+          cp -Rp "$APP_PATH" Payload/
 
           MWDAT_MODE="${INPUT_MWDAT_MODE:-developer}"
+          OMIT_EMPTY_TEAM_ID="${INPUT_OMIT_EMPTY_TEAM_ID:-false}"
           RESOLVED_META_APP_ID="${INPUT_META_APP_ID:-}"
-          if [ -z "$RESOLVED_META_APP_ID" ] && [ "$MWDAT_MODE" = "production" ]; then
-            RESOLVED_META_APP_ID="${VAR_META_APP_ID:-${SECRET_META_APP_ID:-}}"
-          fi
-          RESOLVED_TEAM_ID="${INPUT_APPLE_TEAM_ID:-${SECRET_APPLE_TEAM_ID:-}}"
           RESOLVED_BUNDLE_ID="${INPUT_BUNDLE_ID:-${VAR_BUNDLE_ID:-}}"
           RESOLVED_URL_SCHEME="${INPUT_URL_SCHEME:-openvision}"
-          OMIT_EMPTY_TEAM_ID="${INPUT_OMIT_EMPTY_TEAM_ID:-false}"
 
-          export MWDAT_TEAM_ID="$RESOLVED_TEAM_ID"
           if [ "$MWDAT_MODE" = "production" ]; then
+            if [ "$OMIT_EMPTY_TEAM_ID" = "true" ]; then
+              echo "::error::omit_empty_team_id=true is only allowed in developer mode"
+              exit 1
+            fi
+            if [ -z "$RESOLVED_META_APP_ID" ]; then
+              RESOLVED_META_APP_ID="${VAR_META_APP_ID:-${SECRET_META_APP_ID:-}}"
+            fi
+            RESOLVED_TEAM_ID="${INPUT_APPLE_TEAM_ID:-${SECRET_APPLE_TEAM_ID:-}}"
             export MWDAT_CLIENT_TOKEN="${SECRET_META_CLIENT_TOKEN:-}"
           else
+            # Developer mode: never pull repository secrets (APPLE_TEAM_ID / META_APP_ID / META_CLIENT_TOKEN)
+            # into public Developer Mode IPAs, and never override omit_empty_team_id=true.
+            RESOLVED_TEAM_ID="${INPUT_APPLE_TEAM_ID:-}"
             export MWDAT_CLIENT_TOKEN=""
           fi
+          export MWDAT_TEAM_ID="$RESOLVED_TEAM_ID"
 
-          python3 scripts/blueprint/patch_ipa_mwdat.py \
-            --plist Payload/OpenVision.app/Info.plist \
-            --mode "$MWDAT_MODE" \
-            --meta-app-id "$RESOLVED_META_APP_ID" \
-            --bundle-id "$RESOLVED_BUNDLE_ID" \
-            --url-scheme "$RESOLVED_URL_SCHEME" \
-            --omit-empty-team-id "$OMIT_EMPTY_TEAM_ID"
+          python3 -B scripts/blueprint/patch_ipa_mwdat.py \
+            --plist="Payload/OpenVision.app/Info.plist" \
+            --mode="$MWDAT_MODE" \
+            --meta-app-id="$RESOLVED_META_APP_ID" \
+            --bundle-id="$RESOLVED_BUNDLE_ID" \
+            --url-scheme="$RESOLVED_URL_SCHEME" \
+            --omit-empty-team-id="$OMIT_EMPTY_TEAM_ID"
 
           zip -r -y OpenVision.ipa Payload
 

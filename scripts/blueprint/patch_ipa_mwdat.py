@@ -15,6 +15,7 @@ are NEVER printed to stdout or stderr. Output plist is always written in binary 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import plistlib
 import re
@@ -26,6 +27,8 @@ SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
 TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
 DIGITS_RE = re.compile(r"^[0-9]+$")
 BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
+DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+FORBIDDEN_URL_CHARS = set('"\'`;|<>{}\\^')
 
 
 def has_placeholder(value: str) -> bool:
@@ -40,6 +43,16 @@ def has_placeholder(value: str) -> bool:
 
 def has_whitespace(value: str) -> bool:
     return any(ch.isspace() for ch in value)
+
+
+def is_valid_custom_scheme(scheme: str) -> bool:
+    return (
+        bool(scheme)
+        and not has_placeholder(scheme)
+        and not has_whitespace(scheme)
+        and SCHEME_RE.fullmatch(scheme) is not None
+        and scheme.lower() not in ("http", "https")
+    )
 
 
 def parse_bool(raw: str) -> bool:
@@ -69,11 +82,65 @@ def ensure_primary_url_type(plist: dict) -> dict:
     return url_types[0]
 
 
-def validate_https_universal_link(url: str) -> bool:
-    if has_placeholder(url) or has_whitespace(url):
+def is_valid_https_host(host: str, netloc: str) -> bool:
+    if not host or len(host) > 253:
         return False
-    parsed = urlparse(url)
-    return parsed.scheme == "https" and bool(parsed.netloc)
+    if ":" in host:
+        if not netloc.startswith("["):
+            return False
+        try:
+            ipaddress.IPv6Address(host)
+            return True
+        except ValueError:
+            return False
+    try:
+        ipaddress.IPv4Address(host)
+        return True
+    except ValueError:
+        pass
+    labels = host.split(".")
+    if any(not DNS_LABEL_RE.fullmatch(label) for label in labels):
+        return False
+    if all(label.isdigit() for label in labels):
+        return False
+    return True
+
+
+def validate_https_universal_link(url: str) -> bool:
+    if (
+        not url
+        or has_placeholder(url)
+        or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F or ch in FORBIDDEN_URL_CHARS for ch in url)
+    ):
+        return False
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        return False
+    host = parsed.hostname
+    if not host or not is_valid_https_host(host, parsed.netloc):
+        return False
+    # Reject empty/malformed port syntax (e.g. https://example.com:/dat)
+    netloc = parsed.netloc
+    if netloc.startswith("["):
+        bracket_end = netloc.find("]")
+        if bracket_end == -1:
+            return False
+        remainder = netloc[bracket_end + 1 :]
+        if remainder and (not remainder.startswith(":") or not remainder[1:].isdigit()):
+            return False
+    elif ":" in netloc:
+        _, port_str = netloc.rsplit(":", 1)
+        if not port_str.isdigit():
+            return False
+    if port is not None and not (1 <= port <= 65535):
+        return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,11 +175,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--omit-empty-team-id",
-        nargs="?",
-        const="true",
-        default="false",
+        default=False,
         type=parse_bool,
-        help="In developer mode, remove MWDAT.TeamID instead of writing '' when MWDAT_TEAM_ID is empty.",
+        help="In developer mode (when MWDAT_TEAM_ID is empty), pass true/false to remove MWDAT.TeamID instead of writing ''.",
     )
     args = parser.parse_args(argv)
 
@@ -129,12 +194,14 @@ def main(argv: list[str] | None = None) -> int:
         fail("Info.plist root must be a dictionary")
 
     mode = args.mode
+    if args.omit_empty_team_id and mode == "production":
+        fail("--omit-empty-team-id=true is only allowed in developer mode")
+
     raw_meta_app_id = args.meta_app_id
     if raw_meta_app_id is None:
         raw_meta_app_id = os.environ.get("MWDAT_META_APP_ID", "")
-    raw_meta_app_id = raw_meta_app_id.strip()
 
-    # 1. Validate MetaAppID
+    # 1. Validate MetaAppID (reject placeholders or whitespace BEFORE any stripping)
     if raw_meta_app_id and (has_placeholder(raw_meta_app_id) or has_whitespace(raw_meta_app_id)):
         fail(f"Invalid --meta-app-id: placeholder or whitespace is not allowed (got {raw_meta_app_id!r})")
 
@@ -158,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2. Validate / override CFBundleIdentifier
     primary_url_type = ensure_primary_url_type(plist)
-    bundle_id_override = args.bundle_id.strip()
+    bundle_id_override = args.bundle_id
     if bundle_id_override:
         if (
             has_placeholder(bundle_id_override)
@@ -170,28 +237,38 @@ def main(argv: list[str] | None = None) -> int:
         primary_url_type["CFBundleURLName"] = bundle_id_override
         final_bundle_id = bundle_id_override
     else:
-        existing_bundle_id = str(plist.get("CFBundleIdentifier", "")).strip()
+        existing_bundle_id = plist.get("CFBundleIdentifier")
         if (
-            not existing_bundle_id
+            not isinstance(existing_bundle_id, str)
+            or not existing_bundle_id
             or has_placeholder(existing_bundle_id)
             or has_whitespace(existing_bundle_id)
+            or not BUNDLE_ID_RE.fullmatch(existing_bundle_id)
         ):
-            fail(f"Existing CFBundleIdentifier in Info.plist is missing or invalid: {existing_bundle_id!r}")
+            fail(
+                "Existing CFBundleIdentifier in Info.plist is missing or invalid "
+                f"(got {existing_bundle_id!r})"
+            )
         final_bundle_id = existing_bundle_id
-        existing_url_name = str(primary_url_type.get("CFBundleURLName", "")).strip()
-        if not existing_url_name or has_placeholder(existing_url_name):
+        existing_url_name = primary_url_type.get("CFBundleURLName")
+        if (
+            not isinstance(existing_url_name, str)
+            or not existing_url_name
+            or has_placeholder(existing_url_name)
+            or has_whitespace(existing_url_name)
+        ):
             primary_url_type["CFBundleURLName"] = final_bundle_id
 
     # 3. Validate URL scheme / AppLinkURLScheme
-    raw_url_scheme = (args.url_scheme or "openvision").strip()
+    raw_url_scheme = "openvision" if args.url_scheme == "" else args.url_scheme
     if not raw_url_scheme or has_placeholder(raw_url_scheme) or has_whitespace(raw_url_scheme):
         fail(f"Invalid --url-scheme: {raw_url_scheme!r}")
 
     if mode == "developer":
         scheme = raw_url_scheme[:-3] if raw_url_scheme.endswith("://") else raw_url_scheme
-        if not SCHEME_RE.fullmatch(scheme) or scheme.lower() in ("http", "https"):
+        if not is_valid_custom_scheme(scheme):
             fail(
-                "Developer mode requires a valid custom RFC 3986 URL scheme (e.g. 'openvision'), "
+                "Developer mode requires a valid custom RFC 3986 URL scheme (e.g. 'openvision', not http/https), "
                 f"got {raw_url_scheme!r}"
             )
         primary_url_type["CFBundleURLSchemes"] = [scheme]
@@ -205,13 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             valid_existing = (
                 isinstance(existing_schemes, list)
                 and len(existing_schemes) > 0
-                and all(
-                    isinstance(s, str)
-                    and not has_placeholder(s)
-                    and not has_whitespace(s)
-                    and SCHEME_RE.fullmatch(s) is not None
-                    for s in existing_schemes
-                )
+                and all(isinstance(s, str) and is_valid_custom_scheme(s) for s in existing_schemes)
             )
             if not valid_existing:
                 primary_url_type["CFBundleURLSchemes"] = ["openvision"]
@@ -219,10 +290,10 @@ def main(argv: list[str] | None = None) -> int:
             fail("Production mode forbids insecure http:// AppLinkURLScheme; use https:// Universal Link")
         else:
             scheme = raw_url_scheme[:-3] if raw_url_scheme.endswith("://") else raw_url_scheme
-            if not SCHEME_RE.fullmatch(scheme):
+            if not is_valid_custom_scheme(scheme):
                 fail(
-                    "Production mode --url-scheme must be an https:// Universal Link or valid custom scheme, "
-                    f"got {raw_url_scheme!r}"
+                    "Production mode --url-scheme must be a valid https:// Universal Link or custom scheme "
+                    f"(not http/https), got {raw_url_scheme!r}"
                 )
             print(
                 "::warning::Production mode normally requires an https:// Universal Link for "
@@ -233,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             app_link_url_scheme = f"{scheme}://"
 
     # 4. Validate MWDAT_TEAM_ID from environment (NEVER print raw value)
-    raw_team_id = os.environ.get("MWDAT_TEAM_ID", "").strip()
+    raw_team_id = os.environ.get("MWDAT_TEAM_ID", "")
     team_id_status: str
     mwdat = plist.get("MWDAT")
     if not isinstance(mwdat, dict):
@@ -241,10 +312,12 @@ def main(argv: list[str] | None = None) -> int:
         plist["MWDAT"] = mwdat
 
     if raw_team_id:
-        if has_placeholder(raw_team_id) or not TEAM_ID_RE.fullmatch(raw_team_id):
+        if args.omit_empty_team_id:
+            fail("--omit-empty-team-id=true cannot be combined with a non-empty MWDAT_TEAM_ID")
+        if has_whitespace(raw_team_id) or has_placeholder(raw_team_id) or not TEAM_ID_RE.fullmatch(raw_team_id):
             fail(
                 "MWDAT_TEAM_ID must be a 10-character uppercase alphanumeric Apple Team ID "
-                "(e.g. AB12CD34EF) with no placeholders"
+                "(e.g. AB12CD34EF) with no placeholders or whitespace"
             )
         mwdat["TeamID"] = raw_team_id
         team_id_status = "<set>"
@@ -259,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
             team_id_status = "<empty>"
 
     # 5. Validate MWDAT_CLIENT_TOKEN from environment (NEVER print raw value)
-    raw_client_token = os.environ.get("MWDAT_CLIENT_TOKEN", "").strip()
+    raw_client_token = os.environ.get("MWDAT_CLIENT_TOKEN", "")
     if mode == "developer":
         # Never leak a production ClientToken into a Developer Mode IPA.
         mwdat["ClientToken"] = ""
