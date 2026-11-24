@@ -3,6 +3,7 @@
 
 import SwiftUI
 import AVFoundation
+import UIKit
 
 struct VoiceSelectionView: View {
     /// "vi" or "en".
@@ -43,9 +44,13 @@ struct VoiceSelectionView: View {
             }
 
             Section {
-                Link(destination: URL(string: "App-prefs:ACCESSIBILITY&path=SPEECH")!) {
+                Button {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                } label: {
                     HStack {
-                        Label("Tải thêm giọng", systemImage: "square.and.arrow.down")
+                        Label("Mở Cài đặt iOS để tải thêm giọng", systemImage: "square.and.arrow.down")
                         Spacer()
                         Image(systemName: "arrow.up.right.square")
                             .foregroundColor(.secondary)
@@ -57,7 +62,12 @@ struct VoiceSelectionView: View {
         }
         .navigationTitle(title)
         .onAppear {
+            TTSService.invalidateVoiceCache()
             voices = TTSService.availableVoices(for: languagePrefix)
+        }
+        .onDisappear {
+            previewSynthesizer.stopSpeaking(at: .immediate)
+            testingVoiceId = nil
         }
     }
 
@@ -65,44 +75,51 @@ struct VoiceSelectionView: View {
 
     @ViewBuilder
     private func voiceRow(name: String, quality: AVSpeechSynthesisVoiceQuality?, identifier: String?) -> some View {
-        Button {
-            selection = identifier
-        } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(name)
-                        .foregroundColor(.primary)
-                    if let quality {
-                        Text(TTSService.qualityDisplayName(quality))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+        HStack {
+            Button {
+                selection = identifier
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(name)
+                            .foregroundColor(.primary)
+                        if let quality {
+                            Text(TTSService.qualityDisplayName(quality))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
+                    Spacer()
                 }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
 
-                Spacer()
+            Button {
+                preview(identifier: identifier)
+            } label: {
+                Image(systemName: testingVoiceId == identifier ? "speaker.wave.2.fill" : "play.circle")
+                    .foregroundColor(Theme.accent)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Nghe thử \(name)")
 
-                Button {
-                    preview(identifier: identifier)
-                } label: {
-                    Image(systemName: testingVoiceId == identifier ? "speaker.wave.2.fill" : "play.circle")
-                        .foregroundColor(Theme.accent)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Nghe thử \(name)")
-
-                if selection == identifier {
-                    Image(systemName: "checkmark")
-                        .foregroundColor(Theme.accent)
-                        .fontWeight(.semibold)
-                }
+            if selection == identifier {
+                Image(systemName: "checkmark")
+                    .foregroundColor(Theme.accent)
+                    .fontWeight(.semibold)
             }
         }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Actions
 
     private func preview(identifier: String?) {
+        if ReadingEngine.shared.isActive {
+            ReadingEngine.shared.stop()
+        }
+        TTSService.shared.stop()
         previewSynthesizer.stopSpeaking(at: .immediate)
         testingVoiceId = identifier
         Task { @MainActor in

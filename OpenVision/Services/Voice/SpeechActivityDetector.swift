@@ -49,10 +49,16 @@ final class SpeechActivityDetector: @unchecked Sendable {
     // MARK: - State
 
     /// True once the CoreML model is loaded and chunks are being scored.
-    private(set) var isAvailable = false
+    var isAvailable: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isAvailable
+    }
 
-    /// Serialises access to `pending` / `converter` between the audio thread and the consumer.
+    /// Serialises access to shared state between the audio thread, lifecycle methods, and consumer.
     private let lock = NSLock()
+    private var _isAvailable = false
+    private var needsStateReset = false
 
     /// 16 kHz mono samples not yet formed into a full VAD chunk.
     private var pending: [Float] = []
@@ -83,19 +89,15 @@ final class SpeechActivityDetector: @unchecked Sendable {
 
         let manager: VadManager
         do {
-            // Threshold is deliberately above the library default (0.85): the glasses HFP mic is
-            // 8 kHz and noisy, and a false "speech" only costs a little latency whereas a false
-            // "silence" cuts the user off mid-sentence.
-            manager = try await VadManager(config: VadConfig(defaultThreshold: 0.9))
+            // Threshold is deliberately below the library default (0.85): the glasses HFP mic is
+            // 8 kHz and noisy; in Silero VAD a lower threshold keeps speech classified as speech
+            // (reducing false silences that would cut the user off mid-sentence).
+            manager = try await VadManager(config: VadConfig(defaultThreshold: 0.6))
         } catch {
-            print("[VAD] Unavailable, falling back to timer-based end-of-turn: \(error)")
-            isAvailable = false
+            AppLog.warning(.voice, "[VAD] Unavailable, falling back to timer-based end-of-turn: \(error.localizedDescription)")
+            markUnavailable()
             return
         }
-
-        vad = manager
-        isAvailable = true
-        print("[VAD] Ready — acoustic end-of-turn active (threshold 0.9)")
 
         let (stream, continuation) = AsyncStream<[Float]>.makeStream(
             // The audio thread must never block on a slow consumer. If VAD inference falls behind,
@@ -103,12 +105,16 @@ final class SpeechActivityDetector: @unchecked Sendable {
             // growing backlog would report speech-end later and later.
             bufferingPolicy: .bufferingNewest(8)
         )
-        chunks = continuation
+        markReady(manager: manager, continuation: continuation)
+        AppLog.info(.voice, "[VAD] Ready — acoustic end-of-turn active (threshold 0.6)")
 
         consumerTask = Task { [weak self] in
             var state = await manager.makeStreamState()
             for await chunk in stream {
                 guard !Task.isCancelled else { break }
+                if let self, self.consumeStateResetFlag() {
+                    state = await manager.makeStreamState()
+                }
                 do {
                     let result = try await manager.processStreamingChunk(chunk, state: state)
                     state = result.state
@@ -117,7 +123,7 @@ final class SpeechActivityDetector: @unchecked Sendable {
                     }
                 } catch {
                     // A single bad chunk shouldn't kill detection for the session.
-                    print("[VAD] Chunk failed: \(error)")
+                    AppLog.warning(.voice, "[VAD] Chunk failed: \(error.localizedDescription)")
                 }
             }
         }
@@ -125,27 +131,30 @@ final class SpeechActivityDetector: @unchecked Sendable {
 
     /// Stop consuming and release the model.
     func stop() {
-        chunks?.finish()
-        chunks = nil
-        consumerTask?.cancel()
-        consumerTask = nil
-        vad = nil
-        isAvailable = false
         lock.lock()
+        let continuation = chunks
+        chunks = nil
+        _isAvailable = false
+        needsStateReset = false
         pending.removeAll()
         converter = nil
         converterInputFormat = nil
         lock.unlock()
+
+        continuation?.finish()
+        consumerTask?.cancel()
+        consumerTask = nil
+        vad = nil
     }
 
-    /// Drop buffered audio and converter state. Call on audio-route changes: a converter built for
-    /// the old format produces garbage after the route flips (see the stale-format rule in
-    /// docs — a stopped engine reports the pre-change format).
+    /// Drop buffered audio, converter state, and Silero LSTM stream state. Call on audio-route
+    /// changes or recognition restarts so stale hysteresis doesn't leak across turns.
     func reset() {
         lock.lock()
         pending.removeAll()
         converter = nil
         converterInputFormat = nil
+        needsStateReset = true
         lock.unlock()
     }
 
@@ -153,7 +162,12 @@ final class SpeechActivityDetector: @unchecked Sendable {
 
     /// Feed one buffer from the mic tap. **Called on the Core Audio render thread.**
     func feed(_ buffer: AVAudioPCMBuffer) {
-        guard isAvailable, let targetFormat else { return }
+        guard let targetFormat else { return }
+        lock.lock()
+        let active = _isAvailable
+        let continuation = chunks
+        lock.unlock()
+        guard active, let continuation else { return }
 
         guard let converted = convert(buffer, to: targetFormat) else { return }
 
@@ -167,19 +181,42 @@ final class SpeechActivityDetector: @unchecked Sendable {
         lock.unlock()
 
         // yield() is non-blocking and thread-safe — the whole reason for the AsyncStream hop.
-        for chunk in ready { chunks?.yield(chunk) }
+        for chunk in ready { continuation.yield(chunk) }
     }
 
     // MARK: - Private
+
+    private func markUnavailable() {
+        lock.lock()
+        _isAvailable = false
+        lock.unlock()
+    }
+
+    private func markReady(manager: VadManager, continuation: AsyncStream<[Float]>.Continuation) {
+        lock.lock()
+        vad = manager
+        chunks = continuation
+        _isAvailable = true
+        needsStateReset = false
+        lock.unlock()
+    }
+
+    private func consumeStateResetFlag() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let flag = needsStateReset
+        needsStateReset = false
+        return flag
+    }
 
     @MainActor
     private func deliver(_ event: VadStreamEvent) {
         switch event.kind {
         case .speechStart:
-            print("[VAD] speechStart")
+            AppLog.debug(.voice, "[VAD] speechStart")
             onSpeechStart?()
         case .speechEnd:
-            print("[VAD] speechEnd")
+            AppLog.debug(.voice, "[VAD] speechEnd")
             onSpeechEnd?()
         }
     }

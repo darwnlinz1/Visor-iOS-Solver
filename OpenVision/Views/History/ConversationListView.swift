@@ -4,6 +4,7 @@
 // and "Tiếp tục hội thoại" using v2.1 seedHistory.
 
 import SwiftUI
+import UIKit
 
 struct ConversationListView: View {
     // MARK: - Environment
@@ -144,19 +145,41 @@ struct ConversationRow: View {
 
 // MARK: - Conversation Detail View
 
+private struct HistoryPhotoPreview: Identifiable {
+    let id = UUID()
+    let data: Data
+}
+
 struct ConversationDetailView: View {
-    let conversation: Conversation
+    let initialConversation: Conversation
     @EnvironmentObject var router: AppRouter
+    @ObservedObject private var conversationManager = ConversationManager.shared
     @ObservedObject private var readingEngine = ReadingEngine.shared
     @ObservedObject private var settingsManager = SettingsManager.shared
     @State private var resumed = false
+    @State private var previewPhoto: HistoryPhotoPreview?
+
+    init(conversation: Conversation) {
+        self.initialConversation = conversation
+    }
+
+    private var conversation: Conversation {
+        conversationManager.conversations.first(where: { $0.id == initialConversation.id }) ?? initialConversation
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(spacing: Theme.Spacing.md) {
                     ForEach(conversation.messages) { message in
-                        HistoryMessageItem(message: message, readingEngine: readingEngine)
+                        HistoryMessageItem(
+                            message: message,
+                            readingEngine: readingEngine,
+                            readLineNumbers: settingsManager.settings.readLineNumbers,
+                            onTapPhoto: { data in
+                                previewPhoto = HistoryPhotoPreview(data: data)
+                            }
+                        )
                     }
                 }
                 .padding()
@@ -170,13 +193,36 @@ struct ConversationDetailView: View {
         }
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $previewPhoto) { item in
+            NavigationStack {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    if let uiImage = UIImage(data: item.data) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .padding()
+                    }
+                }
+                .navigationTitle("Ảnh đề bài")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Đóng") { previewPhoto = nil }
+                            .foregroundColor(Theme.accent)
+                    }
+                }
+            }
+            .preferredColorScheme(.dark)
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     HapticFeedback.success()
                     ConversationManager.shared.resumeConversation(conversation)
+                    let seedMessages = conversation.messages.filter { $0.role == .user || $0.role == .assistant }
                     GeminiLiveService.shared.seedHistory(
-                        from: conversation.messages.map {
+                        from: seedMessages.map {
                             (isUser: $0.role == .user, text: $0.content, reading: $0.reading)
                         }
                     )
@@ -196,6 +242,8 @@ struct ConversationDetailView: View {
 private struct HistoryMessageItem: View {
     let message: Message
     @ObservedObject var readingEngine: ReadingEngine
+    let readLineNumbers: Bool
+    var onTapPhoto: ((Data) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
@@ -204,12 +252,14 @@ private struct HistoryMessageItem: View {
                     text: message.content,
                     isUser: true,
                     isStreaming: false,
-                    photoData: message.photoData
+                    photoData: message.photoData,
+                    onTapPhoto: onTapPhoto
                 )
             } else if let record = message.reading, !record.segments.isEmpty {
                 let isCurrent = readingEngine.plan?.record == record
                 SegmentCardView(
                     record: record,
+                    cardID: "\(message.id.uuidString)-",
                     activeSegmentIndex: isCurrent ? readingEngine.currentSegmentIndex : nil,
                     activeSpokenPiece: isCurrent ? readingEngine.currentPieceText : nil,
                     activeWordRange: isCurrent ? readingEngine.currentWordRange : nil,
@@ -234,7 +284,7 @@ private struct HistoryMessageItem: View {
                         HapticFeedback.light()
                         let parsed = AnswerFormat.parse(message.content)
                         let lang = TTSService.containsVietnamese(message.content) ? "vi" : "en"
-                        let record = ReplyAssembler(languageCode: lang).record(for: parsed)
+                        let record = ReplyAssembler(languageCode: lang, readLineNumbers: readLineNumbers).record(for: parsed)
                         readingEngine.replay(record: record)
                     } label: {
                         Label("Đọc lại", systemImage: "speaker.wave.2.fill")

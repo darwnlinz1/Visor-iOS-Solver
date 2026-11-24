@@ -57,6 +57,7 @@ struct VietnameseMathReader {
         case .setMinus: spoken = "trừ"
         case .perpendicular: spoken = "vuông góc với"
         case .parallel: spoken = "song song với"
+        case .notParallel: spoken = "không song song với"
         case .similar: spoken = "đồng dạng với"
         case .congruent: spoken = "bằng"
         case .equivalent: spoken = "đồng dư với"
@@ -509,6 +510,7 @@ struct VietnameseMathReader {
     /// 0…999 999 999 in words: 21 → "hai mươi mốt", 105 → "một trăm linh năm", 15 → "mười lăm".
     /// Larger numbers stay digits.
     static func spell(_ value: Int) -> String {
+        if value == Int.min { return String(value) }
         guard value >= 0 else { return "âm " + spell(-value) }
         guard value < 1_000_000_000 else { return String(value) }
         if value == 0 { return "không" }

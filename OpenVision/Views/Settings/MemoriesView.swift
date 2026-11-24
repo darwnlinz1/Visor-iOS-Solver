@@ -3,11 +3,16 @@
 
 import SwiftUI
 
+private struct MemoryEditTarget: Identifiable {
+    let id = UUID()
+    let key: String?
+    let value: String
+}
+
 struct MemoriesView: View {
     @EnvironmentObject var settingsManager: SettingsManager
 
-    @State private var selectedMemory: (key: String, value: String)?
-    @State private var showingEditor: Bool = false
+    @State private var editingTarget: MemoryEditTarget?
     @State private var showingDeleteConfirmation: Bool = false
     @State private var memoryToDelete: String?
 
@@ -35,8 +40,10 @@ struct MemoriesView: View {
                 Section {
                     ForEach(sortedMemoryKeys, id: \.self) { key in
                         Button {
-                            selectedMemory = (key: key, value: settingsManager.settings.memories[key] ?? "")
-                            showingEditor = true
+                            editingTarget = MemoryEditTarget(
+                                key: key,
+                                value: settingsManager.settings.memories[key] ?? ""
+                            )
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(key)
@@ -71,18 +78,17 @@ struct MemoriesView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    selectedMemory = nil
-                    showingEditor = true
+                    editingTarget = MemoryEditTarget(key: nil, value: "")
                 } label: {
                     Image(systemName: "plus")
                 }
                 .accessibilityLabel("Thêm ghi nhớ")
             }
         }
-        .sheet(isPresented: $showingEditor) {
+        .sheet(item: $editingTarget) { target in
             MemoryEditorView(
-                existingKey: selectedMemory?.key,
-                existingValue: selectedMemory?.value ?? ""
+                existingKey: target.key,
+                existingValue: target.value
             )
         }
         .confirmationDialog(
@@ -171,7 +177,7 @@ struct MemoryEditorView: View {
                         saveMemory()
                         dismiss()
                     }
-                    .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || value.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 ToolbarItem(placement: .cancellationAction) {

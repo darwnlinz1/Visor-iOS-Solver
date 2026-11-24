@@ -17,6 +17,23 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack(path: $router.settingsPath) {
             Form {
+                // 0. Chế độ sử dụng (Giải bài tập / Sử dụng bình thường)
+                Section {
+                    NavigationLink(value: SettingsDestination.workflowMode) {
+                        HStack {
+                            Label("Chế độ hoạt động", systemImage: settingsManager.settings.usageMode.systemImage)
+                            Spacer()
+                            Text(settingsManager.settings.usageMode.displayName)
+                                .font(.caption)
+                                .foregroundColor(Theme.accent)
+                        }
+                    }
+                } header: {
+                    Text("Chế độ sử dụng")
+                } footer: {
+                    Text(settingsManager.settings.usageMode.summary)
+                }
+
                 // 1. Kính Ray-Ban Meta
                 Section {
                     NavigationLink(value: SettingsDestination.glasses) {
@@ -164,6 +181,7 @@ struct SettingsView: View {
             .navigationTitle("Cài đặt")
             .navigationDestination(for: SettingsDestination.self) { destination in
                 switch destination {
+                case .workflowMode: WorkflowModeSettingsView()
                 case .glasses: GlassesSettingsView()
                 case .gemini: GeminiSettingsView()
                 case .voice: VoiceSettingsView()

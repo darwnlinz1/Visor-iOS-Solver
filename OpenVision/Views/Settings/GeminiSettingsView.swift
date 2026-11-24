@@ -12,6 +12,7 @@ struct GeminiSettingsView: View {
     // MARK: - State
 
     @State private var apiKey: String = ""
+    @State private var didSaveExplicitly: Bool = false
 
     // MARK: - Body
 
@@ -24,7 +25,7 @@ struct GeminiSettingsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     SecureField("AQ.… hoặc AIza…  (nhiều key: cách nhau bằng dấu phẩy)", text: $apiKey)
-                        .autocapitalization(.none)
+                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
             } header: {
@@ -66,13 +67,17 @@ struct GeminiSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             apiKey = settingsManager.settings.geminiAPIKey
+            didSaveExplicitly = false
         }
         .onDisappear {
-            saveSettings()
+            if !didSaveExplicitly {
+                saveSettings()
+            }
         }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Lưu") {
+                    didSaveExplicitly = true
                     saveSettings()
                     dismiss()
                 }
@@ -84,8 +89,13 @@ struct GeminiSettingsView: View {
 
     private func saveSettings() {
         // Normalised to "key1, key2" — GeminiLiveService.parseKeys reads any separator.
-        settingsManager.settings.geminiAPIKey = GeminiLiveService.parseKeys(apiKey).joined(separator: ", ")
+        let normalized = GeminiLiveService.parseKeys(apiKey).joined(separator: ", ")
+        let changed = normalized != settingsManager.settings.geminiAPIKey
+        settingsManager.settings.geminiAPIKey = normalized
         settingsManager.saveNow()
+        if changed {
+            GeminiLiveService.shared.resetNetworkState()
+        }
     }
 }
 

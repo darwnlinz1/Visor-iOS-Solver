@@ -6,11 +6,18 @@
 import Foundation
 
 enum ReadingCommand: Equatable, Sendable {
+    enum JumpScope: Equatable, Sendable {
+        case any
+        case question
+        case line
+        case problem
+    }
+
     case pause
     case resume
     case next
     case previous
-    case jump(Int)
+    case jump(Int, scope: JumpScope = .any)
     case repeatCurrent
     case restart
     case slower
@@ -46,9 +53,9 @@ enum ReadingCommand: Equatable, Sendable {
         ]
         if restartPhrases.contains(normalized) { return .restart }
 
-        // 2. Jump to specific question / line number: "đọc lại câu 3", "câu 3", "dòng 5", "question 3", "line 5"
-        if let number = parseJumpNumber(normalized) {
-            return .jump(number)
+        // 2. Jump to specific question / line / problem number: "đọc lại câu 3", "dòng 5", "bài 2", "question 3", "line 5"
+        if let target = parseJumpTarget(normalized) {
+            return .jump(target.number, scope: target.scope)
         }
 
         // 3. Pause
@@ -129,20 +136,30 @@ enum ReadingCommand: Equatable, Sendable {
             .joined(separator: " ")
     }
 
-    private static func parseJumpNumber(_ normalized: String) -> Int? {
-        let prefixes = [
-            "đọc lại câu ", "doc lai cau ", "đọc câu ", "doc cau ", "nhảy tới câu ", "nhay toi cau ", "câu ", "cau ",
-            "đọc lại dòng ", "doc lai dong ", "đọc dòng ", "doc dong ", "nhảy tới dòng ", "nhay toi dong ", "dòng ", "dong ",
-            "đọc lại bài ", "doc lai bai ", "đọc bài ", "doc bai ", "bài ", "bai ",
-            "repeat question ", "read question ", "go to question ", "question ",
-            "repeat line ", "read line ", "go to line ", "line ",
-            "repeat problem ", "problem "
+    private static func parseJumpTarget(_ normalized: String) -> (number: Int, scope: JumpScope)? {
+        let prefixes: [(String, JumpScope)] = [
+            ("đọc lại câu ", .question), ("doc lai cau ", .question),
+            ("đọc câu ", .question), ("doc cau ", .question),
+            ("nhảy tới câu ", .question), ("nhay toi cau ", .question),
+            ("câu ", .question), ("cau ", .question),
+            ("đọc lại dòng ", .line), ("doc lai dong ", .line),
+            ("đọc dòng ", .line), ("doc dong ", .line),
+            ("nhảy tới dòng ", .line), ("nhay toi dong ", .line),
+            ("dòng ", .line), ("dong ", .line),
+            ("đọc lại bài ", .problem), ("doc lai bai ", .problem),
+            ("đọc bài ", .problem), ("doc bai ", .problem),
+            ("bài ", .problem), ("bai ", .problem),
+            ("repeat question ", .question), ("read question ", .question),
+            ("go to question ", .question), ("question ", .question),
+            ("repeat line ", .line), ("read line ", .line),
+            ("go to line ", .line), ("line ", .line),
+            ("repeat problem ", .problem), ("problem ", .problem)
         ]
-        for prefix in prefixes {
+        for (prefix, scope) in prefixes {
             if normalized.hasPrefix(prefix) {
                 let tail = String(normalized.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
                 if let n = parseSmallNumber(tail), n > 0 {
-                    return n
+                    return (n, scope)
                 }
             }
         }
@@ -151,18 +168,39 @@ enum ReadingCommand: Equatable, Sendable {
 
     private static func parseSmallNumber(_ token: String) -> Int? {
         if let n = Int(token) { return n }
-        let words: [String: Int] = [
-            "một": 1, "mot": 1, "one": 1,
+        let singleWords: [String: Int] = [
+            "một": 1, "mot": 1, "mốt": 1, "one": 1,
             "hai": 2, "two": 2,
             "ba": 3, "three": 3,
             "bốn": 4, "bon": 4, "tư": 4, "tu": 4, "four": 4,
-            "năm": 5, "nam": 5, "five": 5,
+            "năm": 5, "nam": 5, "lăm": 5, "lam": 5, "nhăm": 5, "nham": 5, "five": 5,
             "sáu": 6, "sau": 6, "six": 6,
             "bảy": 7, "bay": 7, "seven": 7,
             "tám": 8, "tam": 8, "eight": 8,
             "chín": 9, "chin": 9, "nine": 9,
-            "mười": 10, "muoi": 10, "ten": 10
+            "mười": 10, "muoi": 10, "ten": 10,
+            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+            "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20
         ]
-        return words[token]
+        if let direct = singleWords[token] { return direct }
+
+        // Vietnamese compound numbers 11..99 ("mười hai", "hai mươi mốt", "ba mươi lăm", "hai lăm")
+        let parts = token.split(separator: " ").map(String.init)
+        if parts.count == 2 {
+            if (parts[0] == "mười" || parts[0] == "muoi"), let u = singleWords[parts[1]], (1...9).contains(u) {
+                return 10 + u
+            }
+            if (parts[1] == "mươi" || parts[1] == "muoi"), let t = singleWords[parts[0]], (2...9).contains(t) {
+                return t * 10
+            }
+            if let t = singleWords[parts[0]], (2...9).contains(t), let u = singleWords[parts[1]], (1...9).contains(u) {
+                return t * 10 + u
+            }
+        } else if parts.count == 3, (parts[1] == "mươi" || parts[1] == "muoi"),
+                  let t = singleWords[parts[0]], (2...9).contains(t),
+                  let u = singleWords[parts[2]], (1...9).contains(u) {
+            return t * 10 + u
+        }
+        return nil
     }
 }

@@ -183,19 +183,19 @@ enum AppLog {
         lock.unlock()
     }
 
-    static func debug(_ category: LogCategory, _ message: String, sensitive: Bool = false) {
+    static func debug(_ category: LogCategory, _ message: @autoclosure () -> String, sensitive: Bool = false) {
         log(level: .debug, category: category, message: message, sensitive: sensitive)
     }
 
-    static func info(_ category: LogCategory, _ message: String, sensitive: Bool = false) {
+    static func info(_ category: LogCategory, _ message: @autoclosure () -> String, sensitive: Bool = false) {
         log(level: .info, category: category, message: message, sensitive: sensitive)
     }
 
-    static func warning(_ category: LogCategory, _ message: String, sensitive: Bool = false) {
+    static func warning(_ category: LogCategory, _ message: @autoclosure () -> String, sensitive: Bool = false) {
         log(level: .warning, category: category, message: message, sensitive: sensitive)
     }
 
-    static func error(_ category: LogCategory, _ message: String, sensitive: Bool = false) {
+    static func error(_ category: LogCategory, _ message: @autoclosure () -> String, sensitive: Bool = false) {
         log(level: .error, category: category, message: message, sensitive: sensitive)
     }
 
@@ -208,19 +208,33 @@ enum AppLog {
         return created
     }
 
-    private static func log(level: LogLevel, category: LogCategory, message: String, sensitive: Bool) {
+    private static func log(level: LogLevel, category: LogCategory, message: () -> String, sensitive: Bool) {
         if sensitive && !isVerboseLoggingEnabled { return }
-        let entry = LogEntry(level: level, category: category, message: message)
+        let resolvedMessage = message()
+        let entry = LogEntry(level: level, category: category, message: resolvedMessage)
         let osLogger = logger(for: category)
-        switch level {
-        case .debug:
-            osLogger.debug("\(message, privacy: .public)")
-        case .info:
-            osLogger.info("\(message, privacy: .public)")
-        case .warning:
-            osLogger.warning("\(message, privacy: .public)")
-        case .error:
-            osLogger.error("\(message, privacy: .public)")
+        if sensitive {
+            switch level {
+            case .debug:
+                osLogger.debug("\(resolvedMessage, privacy: .private)")
+            case .info:
+                osLogger.info("\(resolvedMessage, privacy: .private)")
+            case .warning:
+                osLogger.warning("\(resolvedMessage, privacy: .private)")
+            case .error:
+                osLogger.error("\(resolvedMessage, privacy: .private)")
+            }
+        } else {
+            switch level {
+            case .debug:
+                osLogger.debug("\(resolvedMessage, privacy: .public)")
+            case .info:
+                osLogger.info("\(resolvedMessage, privacy: .public)")
+            case .warning:
+                osLogger.warning("\(resolvedMessage, privacy: .public)")
+            case .error:
+                osLogger.error("\(resolvedMessage, privacy: .public)")
+            }
         }
         // Write to stderr so `xcrun simctl launch --console` (CI launch_smoke) sees startup lines immediately.
         let line = entry.formattedLine + "\n"

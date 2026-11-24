@@ -150,19 +150,31 @@ final class GeminiLiveService: ObservableObject {
 
     /// Primary solver entrypoint: send the wearer's words (+ optional glasses photo) to Gemini.
     func sendRESTMessage(_ text: String, imageData: Data?) async throws {
+        activeTask?.cancel()
         requestGeneration += 1
         let generation = requestGeneration
         isProcessing = true
         processingChangedCallback?(true)
         lastError = nil
 
+        let task = Task<Void, Error> { @MainActor [weak self] in
+            guard let self else { throw CancellationError() }
+            try await self.executeRESTMessage(text, imageData: imageData, generation: generation)
+        }
+        activeTask = task
+
         defer {
             if generation == requestGeneration {
+                activeTask = nil
                 isProcessing = false
                 processingChangedCallback?(false)
             }
         }
 
+        try await task.value
+    }
+
+    private func executeRESTMessage(_ text: String, imageData: Data?, generation: Int) async throws {
         guard !getAvailableKeyList().isEmpty else {
             lastError = "Chưa có API key Gemini — vào Cài đặt → Gemini để dán key"
             throw AIBackendError.notConfigured
@@ -178,7 +190,7 @@ final class GeminiLiveService: ObservableObject {
         if Self.isCaptureRequest(turn.rawText), image == nil, let capture = onCaptureRequested {
             AppLog.info(.gemini, "Model asked to see — capturing a photo")
             if let photo = await capture(question) {
-                guard generation == requestGeneration else { throw CancellationError() }
+                guard generation == requestGeneration, !Task.isCancelled else { throw CancellationError() }
                 image = photo
                 turn = try await performTurn(question: question, imageData: photo, generation: generation)
             } else {
@@ -266,6 +278,9 @@ final class GeminiLiveService: ObservableObject {
                 AppLog.warning(.gemini, "\(model) quota exhausted for \(keyLabel) — rotating")
                 coolDown(model: model, key: key, for: retryAfter ?? 60)
                 lastErrorMessage = "Gemini quota exhausted (429)"
+                if allCandidatesCoolingDown(keys: allKeys) {
+                    await backoff(attempt: attempt)
+                }
 
             case .badKey(let message):
                 AppLog.warning(.gemini, "\(keyLabel) rejected (\(message)) — dropping for an hour")
@@ -646,6 +661,13 @@ final class GeminiLiveService: ObservableObject {
         [cooldownKey(model, key), cooldownKey(nil, key), cooldownKey(model, nil)].contains { (cooldowns[$0] ?? .distantPast) > now }
     }
 
+    private func allCandidatesCoolingDown(keys: [String]) -> Bool {
+        let now = Date()
+        return Self.modelChain.allSatisfy { model in
+            keys.allSatisfy { key in isCoolingDown(model: model, key: key, now: now) }
+        }
+    }
+
     private func cooldownKey(_ model: String?, _ key: String?) -> String {
         "\(model ?? "*")|\(key ?? "*")"
     }
@@ -696,7 +718,8 @@ final class GeminiLiveService: ObservableObject {
             now: Date(),
             timeZone: .current,
             userPrompt: settings.userPrompt,
-            memories: settings.memories
+            memories: settings.memories,
+            modeHint: settings.usageMode.systemPromptHint
         )
     }
 }

@@ -4,6 +4,7 @@
 import SwiftUI
 
 enum SettingsDestination: Hashable {
+    case workflowMode
     case glasses
     case gemini
     case voice

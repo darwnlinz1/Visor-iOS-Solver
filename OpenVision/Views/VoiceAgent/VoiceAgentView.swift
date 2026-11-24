@@ -23,14 +23,14 @@ struct VoiceAgentView: View {
     @EnvironmentObject var glassesManager: GlassesManager
     @EnvironmentObject var conversationManager: ConversationManager
     @EnvironmentObject var router: AppRouter
+    @Environment(\.scenePhase) private var scenePhase
 
     // MARK: - ViewModel & Observed Services
 
     @StateObject private var viewModel = VoiceAgentViewModel()
-    @StateObject private var voiceCommandService = VoiceCommandService.shared
-    @StateObject private var ttsService = TTSService.shared
-    @StateObject private var readingEngine = ReadingEngine.shared
-    @StateObject private var photoScanner = RecentPhotoScanner.shared
+    @ObservedObject private var voiceCommandService = VoiceCommandService.shared
+    @ObservedObject private var ttsService = TTSService.shared
+    @ObservedObject private var readingEngine = ReadingEngine.shared
 
     // MARK: - Local UI state
 
@@ -97,6 +97,9 @@ struct VoiceAgentView: View {
         }
         .onChange(of: voiceCommandService.state) { _, newState in
             viewModel.voiceStateChanged(newState)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            viewModel.handleScenePhaseChanged(phase)
         }
     }
 
@@ -196,6 +199,17 @@ struct VoiceAgentView: View {
     private var statusChipStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Theme.Spacing.sm) {
+                // 0. Active usage mode chip (Study vs General)
+                StatusChip(
+                    icon: settingsManager.settings.usageMode.systemImage,
+                    label: settingsManager.settings.usageMode.shortLabel,
+                    tint: Theme.accent,
+                    isEmphasized: true,
+                    accessibilityHintText: "Đổi chế độ Giải bài tập hoặc Sử dụng bình thường"
+                ) {
+                    router.openSettings(.workflowMode)
+                }
+
                 // 1. Glasses chip
                 StatusChip(
                     icon: "eyeglasses",
@@ -229,9 +243,13 @@ struct VoiceAgentView: View {
                     router.openSettings(.gemini)
                 }
 
-                // 4. Photo readiness chip (updates every second)
-                TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                    photoChip(now: timeline.date)
+                // 4. Photo readiness chip (only ticks 1 Hz while a photo context is attached)
+                if viewModel.activePhotoContext != nil {
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        photoChip(now: timeline.date)
+                    }
+                } else {
+                    photoChip(now: Date())
                 }
 
                 // 5. Thinking / Reading status chip
@@ -395,12 +413,17 @@ struct VoiceAgentView: View {
 
                 // 3-step quick guide
                 VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text("Cách dùng nhanh")
+                    Text("Cách dùng nhanh (\(settingsManager.settings.usageMode.displayName))")
                         .font(Theme.Typography.cardTitle)
                         .foregroundColor(Theme.textSecondary)
-                    guideStep(number: "1", text: "Bấm nút chụp trên kính (hoặc nút máy ảnh bên dưới) để lấy đề bài.")
-                    guideStep(number: "2", text: "Nói \"\(settingsManager.settings.wakeWord)\" + câu hỏi, hoặc gõ thẳng vào ô bên dưới.")
-                    guideStep(number: "3", text: "Nghe lời giải qua loa kính hoặc loa ngoài iPhone; điều khiển đọc bất cứ lúc nào.")
+                    if settingsManager.settings.usageMode == .study {
+                        guideStep(number: "1", text: "Nhấn 1 lần nút kính để chụp và tự gửi kèm prompt giải bài ngay.")
+                        guideStep(number: "2", text: "Nhấn 2 lần nút kính để đọc lại câu trả lời gần nhất bất cứ lúc nào.")
+                    } else {
+                        guideStep(number: "1", text: "Nhấn 1 lần nút kính để chụp ảnh rồi nói câu lệnh tự do bạn muốn.")
+                        guideStep(number: "2", text: "Nhấn 2 lần nút kính để đọc lại câu trả lời cũ; đổi chế độ ở chip phía trên.")
+                    }
+                    guideStep(number: "3", text: "Hoặc nói \"\(settingsManager.settings.wakeWord)\" + câu hỏi, hay gõ trực tiếp ở ô bên dưới.")
                 }
                 .padding(Theme.Spacing.lg)
                 .background(cardSurface)
@@ -519,6 +542,7 @@ struct VoiceAgentView: View {
                                 let isActiveCard = isCurrentPlaybackCard(turn: turn, record: record)
                                 SegmentCardView(
                                     record: record,
+                                    cardID: "\(turn.id.uuidString)-",
                                     activeSegmentIndex: isActiveCard ? readingEngine.currentSegmentIndex : nil,
                                     activeSpokenPiece: isActiveCard ? readingEngine.currentPieceText : nil,
                                     activeWordRange: isActiveCard ? readingEngine.currentWordRange : nil,
@@ -578,8 +602,13 @@ struct VoiceAgentView: View {
             .onChange(of: readingEngine.currentSegmentIndex) { _, newIndex in
                 if let plan = readingEngine.plan, plan.segments.indices.contains(newIndex) {
                     let segID = plan.segments[newIndex].id
+                    let activeTurn = currentTurns.last { turn in
+                        guard let record = turn.readingRecord else { return false }
+                        return isCurrentPlaybackCard(turn: turn, record: record)
+                    }
+                    let targetID = activeTurn.map { "\($0.id.uuidString)-seg-\(segID)" } ?? "seg-\(segID)"
                     withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo("seg-\(segID)", anchor: .center)
+                        proxy.scrollTo(targetID, anchor: .center)
                     }
                 }
             }
@@ -593,7 +622,9 @@ struct VoiceAgentView: View {
 
     private func isCurrentPlaybackCard(turn: LiveTurn, record: ReadingRecord) -> Bool {
         guard let active = readingEngine.plan else { return false }
-        if turn.isActiveTurn { return true }
+        if turn.isActiveTurn, let livePlan = viewModel.activePlan, active.turnID == livePlan.turnID {
+            return true
+        }
         return active.record == record
     }
 

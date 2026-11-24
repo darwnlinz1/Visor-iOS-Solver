@@ -15,6 +15,7 @@ struct OpenVisionApp: App {
     // MARK: - App Storage
 
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @Environment(\.scenePhase) private var scenePhase
 
     // MARK: - Initialization
 
@@ -61,6 +62,11 @@ struct OpenVisionApp: App {
             .preferredColorScheme(.dark)
             .onOpenURL { url in
                 handleURL(url)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .background || phase == .inactive {
+                    settingsManager.saveNow()
+                }
             }
         }
     }

@@ -29,6 +29,9 @@ final class AudioSessionManager {
         /// No audio session active
         case inactive
 
+        /// Pure A2DP / speaker playback without opening a Bluetooth HFP mic channel
+        case playbackOnly
+
         /// Voice chat mode (aggressive echo cancellation for iPhone mic)
         case voiceChat
 
@@ -50,6 +53,44 @@ final class AudioSessionManager {
     private init() {
         lastInputPortUID = audioSession.currentRoute.inputs.first?.uid
         setupRouteChangeObserver()
+        setupInterruptionObserver()
+    }
+
+    private func setupInterruptionObserver() {
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                self?.handleAudioInterruption(notification)
+            }
+        }
+    }
+
+    private func handleAudioInterruption(_ notification: Notification) {
+        guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+        switch type {
+        case .began:
+            AppLog.info(.audio, "Audio session interrupted (phone call / Siri / alarm)")
+        case .ended:
+            let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+            AppLog.info(.audio, "Audio session interruption ended (shouldResume=\(options.contains(.shouldResume)))")
+            routeChangeWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.currentMode = .inactive
+                self.onRouteChange?()
+            }
+            routeChangeWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
+        @unknown default:
+            break
+        }
     }
 
     private func setupRouteChangeObserver() {
@@ -98,6 +139,9 @@ final class AudioSessionManager {
         switch mode {
         case .inactive:
             try deactivate()
+
+        case .playbackOnly:
+            try configureForPlaybackOnly()
 
         case .voiceChat:
             try configureVoiceChat()
@@ -184,11 +228,27 @@ final class AudioSessionManager {
         return usedGlasses
     }
 
-    /// Ensures playback audio works loudly right now (used by direct chat, History replay, and voice previews).
-    /// Does not tear down a running glasses HFP session; configures glasses or phone speaker if inactive.
-    func ensurePlaybackRouteAsync(preferGlasses: Bool) async {
+    /// Ensures playback audio works loudly right now (used by Study button solve, double-press repeat,
+    /// direct chat, History replay, and voice previews).
+    /// When the microphone is NOT active, configures pure `.playback` (`.spokenAudio` + `.duckOthers`)
+    /// so Ray-Ban Meta stays in stereo A2DP without switching to Bluetooth HFP call mode or beeping.
+    /// When the microphone IS active, preserves the running `.playAndRecord` session so the tap stays alive.
+    func ensurePlaybackRouteAsync(preferGlasses: Bool, isMicActive: Bool = false) async {
+        let micRunning = isMicActive || VoiceCommandService.shared.isListening
+        if !micRunning {
+            if currentMode == .playbackOnly { return }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                audioSessionQueue.async { [self] in
+                    try? self.configureForPlaybackOnly()
+                    continuation.resume()
+                }
+            }
+            currentMode = .playbackOnly
+            return
+        }
+
         let alreadyActiveOnGlasses = preferGlasses && isBluetoothHFPInputActive
-        if currentMode != .inactive && (alreadyActiveOnGlasses || !preferGlasses) {
+        if currentMode != .inactive && currentMode != .playbackOnly && (alreadyActiveOnGlasses || !preferGlasses) {
             // Still make sure built-in earpiece is overridden to loud speaker when no glasses/headphones are active.
             if !isBluetoothHFPActive && audioSession.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -201,6 +261,31 @@ final class AudioSessionManager {
             return
         }
         _ = await configurePreferredRouteAsync(preferGlasses: preferGlasses)
+    }
+
+    /// Gracefully deactivates the audio session when OpenVision is completely idle (no mic, no TTS,
+    /// no recording), releasing Bluetooth HFP and notifying music apps to resume / unduck smoothly.
+    func deactivateSessionAsync() async {
+        guard currentMode != .inactive else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            audioSessionQueue.async { [self] in
+                try? self.audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                continuation.resume()
+            }
+        }
+        currentMode = .inactive
+        AppLog.info(.audio, "Audio session deactivated (idle — A2DP music restored)")
+    }
+
+    /// Pure playback route (A2DP stereo to glasses/headphones, or iPhone loud speaker) with `.duckOthers`.
+    nonisolated func configureForPlaybackOnly() throws {
+        try audioSession.setCategory(
+            .playback,
+            mode: .spokenAudio,
+            options: [.duckOthers]
+        )
+        try audioSession.setActive(true)
+        AppLog.info(.audio, "Configured for playback-only (A2DP / loud speaker) — route: \(currentRouteDescription)")
     }
 
     // MARK: - Bluetooth HFP Routing
@@ -239,11 +324,13 @@ final class AudioSessionManager {
 
     /// Configure audio for phone-only use (no glasses): record from built-in mic and play spoken
     /// responses out of the LOUD speaker (audible even when the hardware mute switch is on).
+    /// Deliberately omits `.allowBluetoothHFP` so turning off "Dùng mic của kính" actually stays on
+    /// the iPhone mic instead of letting iOS re-select the glasses HFP input.
     nonisolated func configureForPhone() throws {
         try audioSession.setCategory(
             .playAndRecord,
             mode: .default,
-            options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP, .allowBluetoothHFP]
+            options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
         )
         try audioSession.setActive(true)
         try? audioSession.setPreferredInput(nil)
@@ -340,7 +427,7 @@ final class AudioSessionManager {
 
     nonisolated var isBluetoothAvailable: Bool {
         audioSession.availableInputs?.contains { port in
-            port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
+            port.portType == .bluetoothHFP || port.portType == .bluetoothLE
         } ?? false
     }
 

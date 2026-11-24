@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftUI
+import UIKit
 import CoreMedia
 import OSLog
 import MWDATCore
@@ -40,14 +41,7 @@ enum WearablesBootstrap {
     }
 }
 
-/// A press of the glasses' capture button.
-enum GlassesButtonPress: String {
-    case shortPress
-    case hold
-    case doublePress
-}
-
-/// Manages Meta Ray-Ban glasses registration, connection, camera and capture button.
+/// Manages Meta Ray-Ban glasses registration, connection, camera and capture/action buttons.
 @MainActor
 final class GlassesManager: ObservableObject {
     // MARK: - Singleton
@@ -65,6 +59,7 @@ final class GlassesManager: ObservableObject {
     @Published var lastPhotoData: Data?
     @Published var errorMessage: String?
     @Published private(set) var isButtonLinkActive: Bool = false
+    @Published private(set) var connectionPhase: GlassesConnectionPhase = .disabled
     @Published private(set) var buttonLinkStatus: String = "Tắt"
     @Published private(set) var isTakingPhoto: Bool = false
     @Published private(set) var sdkUnavailableReason: String?
@@ -105,7 +100,7 @@ final class GlassesManager: ObservableObject {
     /// Consecutive full-resolution failures; never reset per call (fixes B8 / T7.3).
     private var fullPhotoFailures = 0
 
-    // Capture-button link (MWDATInputs)
+    // Capture / Action button link (MWDATInputs)
     private var wantsButtonLink = false
     private var linkIncludesTouchpad = false
     private var inputs: Inputs?
@@ -116,7 +111,10 @@ final class GlassesManager: ObservableObject {
     private var inputsPermissionDenied = false
     private var inputsRevivalTask: Task<Void, Never>?
     private var linkRetryTask: Task<Void, Never>?
-    private var linkRetryDelay: UInt64 = 5
+    private var reconnectPolicy = GlassesReconnectPolicy()
+    private var inputDeduplicator = GlassesInputDeduplicator()
+    private let actionButtonDetector = ActionButtonPressDetector()
+    private var foregroundObserver: NSObjectProtocol?
 
     // Listener tokens
     private var registrationTask: Task<Void, Never>?
@@ -137,13 +135,42 @@ final class GlassesManager: ObservableObject {
 
     private init() {
         AppLog.info(.glasses, "Initializing")
+        actionButtonDetector.onPressClassified = { [weak self] press in
+            AppLog.info(.glasses, "Action button classified: \(press.rawValue)")
+            self?.onCaptureButton?(press)
+        }
         guard let wearables else {
             sdkUnavailableReason = Self.sdkUnavailableMessage
+            setConnectionPhase(.sdkUnavailable(Self.sdkUnavailableMessage))
             AppLog.warning(.glasses, "\(Self.sdkUnavailableMessage) (glasses features off until the app restarts)")
             return
         }
         setupRegistrationListener(wearables)
         setupDevicesListener(wearables)
+        setupForegroundObserver()
+    }
+
+    private func setConnectionPhase(_ phase: GlassesConnectionPhase) {
+        connectionPhase = phase
+        buttonLinkStatus = phase.displayText
+        isButtonLinkActive = phase.isReady
+    }
+
+    private func setupForegroundObserver() {
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard self.wantsButtonLink, !self.isButtonLinkActive, !self.inputsPermissionDenied else { return }
+                guard self.isRegistered, self.connectedDevice != nil, !self.isTakingPhoto else { return }
+                AppLog.info(.glasses, "App active — checking glasses button link")
+                self.reconnectPolicy.reset()
+                Task { await self.startButtonLink() }
+            }
+        }
     }
 
     private func requireSDK(reportError: Bool = true) -> (any WearablesInterface)? {
@@ -177,6 +204,10 @@ final class GlassesManager: ObservableObject {
         guard let wearables = requireSDK() else { return }
         wantsButtonLink = false
         linkRetryTask?.cancel()
+        linkRetryTask = nil
+        inputsRevivalTask?.cancel()
+        inputsRevivalTask = nil
+        reconnectPolicy.reset()
         endSession()
 
         do {
@@ -185,6 +216,7 @@ final class GlassesManager: ObservableObject {
             connectedDevice = nil
             connectedDeviceCount = 0
             errorMessage = nil
+            setConnectionPhase(.unregistered)
             AppLog.info(.glasses, "Unregistration successful")
         } catch {
             errorMessage = "Huỷ đăng ký thất bại: \(error.localizedDescription)"
@@ -275,9 +307,19 @@ final class GlassesManager: ObservableObject {
 
             AppLog.info(.glasses, "Starting device session...")
             try session.start()
+            if session.state == .started {
+                sessionStarted = true
+            }
 
             let deadline = Date().addingTimeInterval(15)
             while !sessionStarted, Date() < deadline, deviceSession != nil, generation == sessionGeneration {
+                if session.state == .started {
+                    sessionStarted = true
+                    break
+                }
+                if session.state == .stopped {
+                    break
+                }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             guard sessionStarted, generation == sessionGeneration else {
@@ -307,6 +349,8 @@ final class GlassesManager: ObservableObject {
         sessionGeneration += 1
         resolvePendingPhoto(nil)
         teardownInputs(removeFromSession: false)
+        actionButtonDetector.reset()
+        inputDeduplicator.reset()
         camera?.stop()
         deviceSession?.stop()
         sessionMonitorTask?.cancel()
@@ -639,7 +683,10 @@ final class GlassesManager: ObservableObject {
         }
         camera?.stream.stop()
         camera?.stop()
+        cleanupStreamListeners()
         isStreaming = false
+        lastFrame = nil
+        lastFrameTime = .distantPast
         if !wantsButtonLink { endSession() }
     }
 
@@ -697,11 +744,30 @@ final class GlassesManager: ObservableObject {
         return condition()
     }
 
-    // MARK: - Capture-button link (MWDATInputs, experimental)
+    // MARK: - Capture & Action button link (MWDATInputs, experimental)
 
     func applySettings(_ settings: AppSettings) async {
         await configureButtonLink(enabled: settings.captureButtonEnabled,
                                   includeTouchpad: settings.captureButtonIncludeTouchpad)
+    }
+
+    /// Forces a clean rebuild of the DAT session and button-event link (manual recovery tool).
+    func reconnectButtonLink() async {
+        guard wantsButtonLink else { return }
+        AppLog.info(.glasses, "Manual reconnect of glasses button link requested")
+        linkRetryTask?.cancel()
+        linkRetryTask = nil
+        inputsRevivalTask?.cancel()
+        inputsRevivalTask = nil
+        inputsPermissionDenied = false
+        reconnectPolicy.reset()
+        resetPhotoFailures()
+        if !isStreaming && !isTakingPhoto {
+            endSession()
+        } else {
+            teardownInputs(removeFromSession: true)
+        }
+        await startButtonLink()
     }
 
     func configureButtonLink(enabled: Bool, includeTouchpad: Bool) async {
@@ -709,58 +775,80 @@ final class GlassesManager: ObservableObject {
         wantsButtonLink = enabled
         linkIncludesTouchpad = includeTouchpad
         linkRetryTask?.cancel()
-        linkRetryDelay = 5
+        linkRetryTask = nil
+        inputsRevivalTask?.cancel()
+        inputsRevivalTask = nil
+        reconnectPolicy.reset()
 
         guard enabled else {
             teardownInputs(removeFromSession: true)
-            buttonLinkStatus = "Tắt"
+            setConnectionPhase(.disabled)
             if !isStreaming && !isTakingPhoto { endSession() }
             return
         }
+        // Allow retrying after the user enables Developer Mode in Meta AI without force-quitting.
+        inputsPermissionDenied = false
         if changed { teardownInputs(removeFromSession: true) }
         await startButtonLink()
     }
 
     private func startButtonLink() async {
         guard wantsButtonLink, inputs == nil, !inputsPermissionDenied else { return }
-        guard requireSDK(reportError: false) != nil else { buttonLinkStatus = Self.sdkUnavailableMessage; return }
-        guard isRegistered else { buttonLinkStatus = "Chưa đăng ký kính"; return }
-        guard connectedDevice != nil else { buttonLinkStatus = "Chờ kính kết nối…"; return }
+        guard requireSDK(reportError: false) != nil else {
+            setConnectionPhase(.sdkUnavailable(Self.sdkUnavailableMessage))
+            return
+        }
+        guard isRegistered else {
+            setConnectionPhase(.unregistered)
+            return
+        }
+        guard connectedDevice != nil else {
+            setConnectionPhase(.waitingForGlasses)
+            return
+        }
 
-        buttonLinkStatus = "Đang kết nối…"
+        setConnectionPhase(.connectingSession)
         guard let session = await ensureSession(reportErrors: false) else {
-            buttonLinkStatus = "Không mở được phiên kính"
             scheduleLinkRetry()
             return
         }
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
-        guard wantsButtonLink, inputs == nil, deviceSession != nil else { return }
+        // Brief settle after DeviceSession.started before attaching MWDATInputs.
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        guard wantsButtonLink, inputs == nil, deviceSession != nil, sessionStarted else { return }
         attachInputs(to: session)
     }
 
     private func attachInputs(to session: DeviceSession) {
+        // Meta DAT iOS lifecycle rule: always removeInputs() before calling addInputs() again.
+        if inputs != nil {
+            teardownInputs(removeFromSession: true)
+        }
+
+        // Listen to BOTH physical captureButton and actionButton without claiming `.captouch`,
+        // so temple touchpad taps (music play/pause/volume) stay completely untouched unless the
+        // user explicitly turns on the touchpad fallback toggle.
         let configuration = linkIncludesTouchpad
-            ? InputsConfiguration(sources: [.captouch, .captureButton, .actionButton], consumeBack: true)
-            : InputsConfiguration(sources: [.captureButton], consumeBack: false)
+            ? InputsConfiguration(sources: [.captouch, .captureButton, .actionButton], consumeBack: false)
+            : InputsConfiguration(sources: [.captureButton, .actionButton], consumeBack: false)
 
         let attached: Inputs?
         do {
             attached = try session.addInputs(configuration: configuration)
         } catch {
             AppLog.warning(.glasses, "addInputs failed: \(error.localizedDescription)")
-            buttonLinkStatus = "Không gắn được nút chụp — thử lại…"
+            try? session.removeInputs()
             scheduleLinkRetry()
             return
         }
         guard let attached else {
             AppLog.warning(.glasses, "addInputs returned nil")
-            buttonLinkStatus = "Kính này không gửi nút chụp cho app"
+            setConnectionPhase(.sdkUnavailable("Kính này không gửi nút bấm cho app"))
             return
         }
 
         inputs = attached
         inputsHasActivated = false
-        buttonLinkStatus = "Đang kích hoạt…"
+        setConnectionPhase(.attachingInputs)
 
         let events = attached.events
         inputsDrainTask = Task { @MainActor [weak self] in
@@ -768,6 +856,11 @@ final class GlassesManager: ObservableObject {
                 self?.receive(event)
             }
             AppLog.info(.glasses, "Inputs event stream ended")
+            guard let self, !Task.isCancelled else { return }
+            if self.wantsButtonLink && !self.inputsPermissionDenied && self.inputs != nil {
+                self.isButtonLinkActive = false
+                self.reviveInputsIfNeeded()
+            }
         }
 
         inputsStateToken = attached.statePublisher.listen { [weak self] state in
@@ -776,13 +869,11 @@ final class GlassesManager: ObservableObject {
                 AppLog.info(.glasses, "Inputs state: \(state)")
                 if case .active = state {
                     self.inputsHasActivated = true
-                    self.isButtonLinkActive = true
-                    self.buttonLinkStatus = "Đang hoạt động"
-                    self.linkRetryDelay = 5
+                    self.reconnectPolicy.reset()
+                    self.setConnectionPhase(.ready)
                 } else if case .inactive = state {
                     guard self.inputsHasActivated else { return }
-                    self.isButtonLinkActive = false
-                    self.buttonLinkStatus = "Đang kết nối lại…"
+                    self.setConnectionPhase(.attachingInputs)
                     self.reviveInputsIfNeeded()
                 }
             }
@@ -794,8 +885,13 @@ final class GlassesManager: ObservableObject {
                 AppLog.error(.glasses, "Inputs error: \(detail)")
                 if detail.localizedCaseInsensitiveContains("permissionDenied") {
                     self.inputsPermissionDenied = true
-                    self.isButtonLinkActive = false
-                    self.buttonLinkStatus = "Meta chưa cho phép app nhận nút chụp — bật Developer Mode trong Meta AI"
+                    self.teardownInputs(removeFromSession: true)
+                    self.setConnectionPhase(.permissionDenied)
+                } else {
+                    // On iOS, any InputsError stops event delivery while keeping the capability attached.
+                    // Explicitly remove and revive so the button link never dies silently.
+                    self.teardownInputs(removeFromSession: true)
+                    self.reviveInputsIfNeeded()
                 }
             }
         }
@@ -803,7 +899,11 @@ final class GlassesManager: ObservableObject {
 
     private func receive(_ event: InputEvent) {
         switch event {
-        case let .capture(pressType, source, _):
+        case let .capture(pressType, source, timestampMs):
+            guard inputDeduplicator.shouldAccept(channel: "capture-\(source)", timestampMs: timestampMs) else {
+                AppLog.debug(.glasses, "Deduplicated capture event at \(timestampMs)ms")
+                return
+            }
             let press: GlassesButtonPress
             switch pressType {
             case .shortPress: press = .shortPress
@@ -815,13 +915,29 @@ final class GlassesManager: ObservableObject {
             }
             AppLog.info(.glasses, "Capture button: \(press.rawValue) from \(source)")
             onCaptureButton?(press)
+
+        case let .button(buttonType, source, timestampMs):
+            guard inputDeduplicator.shouldAccept(channel: "button-\(source)", timestampMs: timestampMs) else {
+                AppLog.debug(.glasses, "Deduplicated action button event at \(timestampMs)ms")
+                return
+            }
+            AppLog.info(.glasses, "Hardware button: \(buttonType) from \(source) — classifying single/double press")
+            actionButtonDetector.registerPress()
+
         default:
             AppLog.debug(.glasses, "Ignored input \(event)")
         }
     }
 
     private func reviveInputsIfNeeded() {
-        guard wantsButtonLink, !inputsPermissionDenied, inputsRevivalTask == nil else { return }
+        guard reconnectPolicy.canAttemptReconnect(
+            wantsLink: wantsButtonLink,
+            isSDKAvailable: wearables != nil,
+            isRegistered: isRegistered,
+            hasConnectedDevice: connectedDevice != nil,
+            permissionDenied: inputsPermissionDenied
+        ) else { return }
+        guard inputsRevivalTask == nil else { return }
         guard inputs == nil || !isButtonLinkActive else { return }
         inputsRevivalTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -830,9 +946,9 @@ final class GlassesManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }
             try? await Task.sleep(nanoseconds: 800_000_000)
-            guard self.wantsButtonLink, !self.isButtonLinkActive else { return }
+            guard !Task.isCancelled, self.wantsButtonLink, !self.isButtonLinkActive, !self.inputsPermissionDenied else { return }
             self.teardownInputs(removeFromSession: true)
-            if let session = self.deviceSession, self.sessionStarted {
+            if let session = self.deviceSession, self.sessionStarted, session.state == .started {
                 self.attachInputs(to: session)
             } else {
                 await self.startButtonLink()
@@ -845,6 +961,7 @@ final class GlassesManager: ObservableObject {
         inputsDrainTask = nil
         inputsStateToken = nil
         inputsErrorToken = nil
+        actionButtonDetector.reset()
         if removeFromSession, inputs != nil {
             try? deviceSession?.removeInputs()
         }
@@ -854,10 +971,18 @@ final class GlassesManager: ObservableObject {
     }
 
     private func scheduleLinkRetry() {
-        guard wantsButtonLink, !inputsPermissionDenied else { return }
+        guard reconnectPolicy.canAttemptReconnect(
+            wantsLink: wantsButtonLink,
+            isSDKAvailable: wearables != nil,
+            isRegistered: isRegistered,
+            hasConnectedDevice: connectedDevice != nil,
+            permissionDenied: inputsPermissionDenied
+        ) else { return }
         linkRetryTask?.cancel()
-        let delay = linkRetryDelay
-        linkRetryDelay = min(linkRetryDelay * 2, 60)
+        let delay = reconnectPolicy.nextDelaySeconds()
+        let attempt = reconnectPolicy.attemptCount
+        setConnectionPhase(.reconnecting(attempt: attempt, delaySeconds: delay))
+        AppLog.info(.glasses, "Scheduling glasses link retry #\(attempt) in \(delay)s")
         linkRetryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
             guard let self, !Task.isCancelled, self.wantsButtonLink, self.inputs == nil else { return }
@@ -871,12 +996,23 @@ final class GlassesManager: ObservableObject {
         registrationTask = Task {
             for await state in wearables.registrationStateStream() {
                 await MainActor.run {
+                    let wasRegistered = self.isRegistered
                     if case .registered = state {
                         self.isRegistered = true
                         AppLog.info(.glasses, "Registration state: registered")
+                        if !wasRegistered && self.wantsButtonLink && self.connectedDevice != nil && self.inputs == nil {
+                            self.reconnectPolicy.reset()
+                            Task { await self.startButtonLink() }
+                        }
                     } else {
                         self.isRegistered = false
                         AppLog.info(.glasses, "Registration state: \(state)")
+                        if wasRegistered {
+                            self.linkRetryTask?.cancel()
+                            self.inputsRevivalTask?.cancel()
+                            self.endSession()
+                            self.setConnectionPhase(.unregistered)
+                        }
                     }
                 }
             }
@@ -887,13 +1023,29 @@ final class GlassesManager: ObservableObject {
         devicesTask = Task {
             for await devices in wearables.devicesStream() {
                 await MainActor.run {
-                    let hadDevice = self.connectedDevice != nil
+                    let previousDevice = self.connectedDevice
+                    let newDevice = devices.first
                     self.connectedDeviceCount = devices.count
-                    self.connectedDevice = devices.first
+                    self.connectedDevice = newDevice
                     AppLog.info(.glasses, "Devices updated: \(devices.count) connected")
-                    if !hadDevice, self.connectedDevice != nil, self.wantsButtonLink, self.inputs == nil {
-                        self.linkRetryDelay = 5
-                        Task { await self.startButtonLink() }
+                    if newDevice == nil {
+                        self.linkRetryTask?.cancel()
+                        self.linkRetryTask = nil
+                        self.inputsRevivalTask?.cancel()
+                        self.inputsRevivalTask = nil
+                        if self.deviceSession != nil {
+                            self.endSession()
+                        }
+                        self.setConnectionPhase(self.wantsButtonLink ? .waitingForGlasses : .disabled)
+                    } else if newDevice != previousDevice {
+                        if previousDevice != nil {
+                            self.endSession()
+                        }
+                        self.resetPhotoFailures()
+                        self.reconnectPolicy.reset()
+                        if self.wantsButtonLink, self.inputs == nil {
+                            Task { await self.startButtonLink() }
+                        }
                     }
                 }
             }

@@ -12,6 +12,7 @@ struct ReadingConfig: Equatable, Sendable {
     var essayRate: Float = 0.42
     var pauseBetweenAnswers: TimeInterval = 0.5
     var pauseBetweenLines: TimeInterval = 1.2
+    var readLineNumbers: Bool = true
     var mathRateFactor: Double = 0.85
     var pauseAfterFormula: TimeInterval = 0.3
     var dictationMode: Bool = false
@@ -68,7 +69,7 @@ enum ReadingEffect: Equatable, Sendable {
 
 /// Pure deterministic reading state machine.
 struct ReadingMachine: Equatable {
-    static let ratePresets: [Float] = [0.75, 1.0, 1.25, 1.5]
+    static let ratePresets: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5]
     static let minUtteranceRate: Float = 0.1
     static let maxUtteranceRate: Float = 0.75
 
@@ -107,7 +108,7 @@ struct ReadingMachine: Equatable {
     // MARK: - Plan lifecycle
 
     @discardableResult
-    mutating func start(plan: ReadingPlan, config: ReadingConfig? = nil) -> [ReadingEffect] {
+    mutating func start(plan: ReadingPlan, config: ReadingConfig? = nil, startingAt index: Int = 0) -> [ReadingEffect] {
         if let config { self.config = config }
         var effects: [ReadingEffect] = [.cancelAutoContinueTimer, .stopSpeech]
         self.plan = plan
@@ -129,8 +130,9 @@ struct ReadingMachine: Equatable {
             return effects
         }
 
+        let startIndex = plan.segments.indices.contains(index) ? index : 0
         state = .reading
-        effects += beginSegment(at: 0)
+        effects += beginSegment(at: startIndex)
         return effects
     }
 
@@ -289,9 +291,15 @@ struct ReadingMachine: Equatable {
     }
 
     /// Jumps to a numbered MCQ question, essay line, or problem (for voice "đọc lại câu 3" / "dòng 5").
+    /// When `scope` is specified (e.g. `.line`), matches that segment kind first so "dòng 1" on a MIXED
+    /// answer jumps to L1 instead of Q1.
     @discardableResult
-    mutating func jump(toNumber number: Int) -> [ReadingEffect] {
+    mutating func jump(toNumber number: Int, scope: ReadingCommand.JumpScope = .any) -> [ReadingEffect] {
         guard let plan else { return [] }
+        if scope != .any,
+           let idx = plan.segments.firstIndex(where: { Self.matchesScope($0.kind, scope: scope, number: number) }) {
+            return jump(to: idx)
+        }
         if let idx = plan.segments.firstIndex(where: { $0.kind.number == number }) {
             return jump(to: idx)
         }
@@ -301,6 +309,25 @@ struct ReadingMachine: Equatable {
             return jump(to: oneBased)
         }
         return []
+    }
+
+    private static func matchesScope(_ kind: ReadingSegment.Kind, scope: ReadingCommand.JumpScope, number: Int) -> Bool {
+        switch (scope, kind) {
+        case (.question, .mcq(let n)): return n == number
+        case (.line, .line(let n)): return n == number
+        case (.problem, .problem(let n)): return n == number
+        case (.any, _): return kind.number == number
+        default: return false
+        }
+    }
+
+    /// Keeps machine state aligned when AVSpeechSynthesizer is paused/continued externally (e.g. audio interruption).
+    mutating func syncExternalPause(_ paused: Bool) {
+        if paused && state == .reading {
+            state = .paused
+        } else if !paused && state == .paused {
+            state = .reading
+        }
     }
 
     /// Stops playback while KEEPING `plan` intact so "đọc lại" works afterwards (PLAN.md §4.4).
@@ -394,7 +421,18 @@ struct ReadingMachine: Equatable {
 
     private mutating func buildPieces(for segment: ReadingSegment, languageCode: String) -> [PieceItem] {
         let vietnamese = languageCode.lowercased().hasPrefix("vi")
-        let rendered = VietMathSpeech.renderWithDiagnostics(segment.speechText, vietnamese: vietnamese, style: config.mathStyle)
+        let effectiveSpeechText: String
+        if case .line(let n) = segment.kind {
+            effectiveSpeechText = Self.applyLineNumberPreference(
+                segment.speechText,
+                lineNumber: n,
+                vietnamese: vietnamese,
+                readLineNumbers: config.readLineNumbers
+            )
+        } else {
+            effectiveSpeechText = segment.speechText
+        }
+        let rendered = VietMathSpeech.renderWithDiagnostics(effectiveSpeechText, vietnamese: vietnamese, style: config.mathStyle)
         if !rendered.warnings.isEmpty {
             lastWarnings.append(contentsOf: rendered.warnings)
         }
@@ -427,6 +465,30 @@ struct ReadingMachine: Equatable {
             }
         }
         return items
+    }
+
+    /// Dynamically honors `config.readLineNumbers` at playback time so toggling "Đọc số dòng"
+    /// takes effect immediately even when repeating the previous answer or replaying History records.
+    static func applyLineNumberPreference(
+        _ speechText: String,
+        lineNumber: Int,
+        vietnamese: Bool,
+        readLineNumbers: Bool
+    ) -> String {
+        let trimmed = speechText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        let pattern = #"^(?:Dòng|Line)\s+"# + "\(lineNumber)" + #"\s*[\.:]?\s*"#
+        if readLineNumbers {
+            if trimmed.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
+                return trimmed
+            }
+            let prefix = vietnamese ? "Dòng \(lineNumber). " : "Line \(lineNumber). "
+            return prefix + trimmed
+        } else {
+            let stripped = trimmed.replacingOccurrences(of: pattern, with: "", options: [.regularExpression, .caseInsensitive])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stripped.isEmpty ? trimmed : stripped
+        }
     }
 
     private mutating func makeSpeakEffect() -> ReadingEffect {

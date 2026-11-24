@@ -34,7 +34,7 @@ enum MathPrettyText {
         ("\\notin", "∉"), ("\\in", "∈"), ("\\subseteq", "⊆"), ("\\subset", "⊂"),
         ("\\supseteq", "⊇"), ("\\supset", "⊃"), ("\\cup", "∪"), ("\\cap", "∩"),
         ("\\setminus", "∖"), ("\\forall", "∀"), ("\\exists", "∃"), ("\\nexists", "∄"),
-        ("\\perp", "⊥"), ("\\parallel", "∥"), ("\\angle", "∠"), ("\\triangle", "△"),
+        ("\\perp", "⊥"), ("\\nparallel", "∦"), ("\\parallel", "∥"), ("\\angle", "∠"), ("\\triangle", "△"),
         ("\\iint", "∬"), ("\\iiint", "∭"), ("\\oint", "∮"), ("\\int", "∫"),
         ("\\sum", "∑"), ("\\prod", "∏"), ("\\partial", "∂"), ("\\nabla", "∇"),
         ("\\therefore", "∴"), ("\\because", "∵"), ("\\ldots", "…"), ("\\cdots", "⋯"), ("\\dots", "…"),
@@ -92,8 +92,9 @@ enum MathPrettyText {
         // Convert cases / matrix environments to compact inline text
         s = replaceEnvironments(in: s)
 
-        // Unwrap formatting commands: \text{...}, \mathrm{...}, \boxed{...}, \mathbf{...}
-        for cmd in ["\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\operatorname", "\\boxed"] {
+        // Unwrap formatting commands: \textbf{...}, \textit{...}, \text{...}, \mathrm{...}, \boxed{...}, \mathbf{...}
+        for cmd in ["\\textbf", "\\textit", "\\textrm", "\\textsf", "\\texttt", "\\textnormal",
+                    "\\text", "\\mathrm", "\\mathbf", "\\mathit", "\\operatorname", "\\boxed"] {
             s = replaceUnaryCommand(cmd, in: s) { $0 }
         }
 
@@ -157,7 +158,16 @@ enum MathPrettyText {
 
     private static func needsParensInFraction(_ part: String) -> Bool {
         let trimmed = part.trimmingCharacters(in: .whitespaces)
-        return trimmed.contains(" + ") || trimmed.contains(" - ") || trimmed.contains(" ")
+        if trimmed.contains(" ") { return true }
+        var depth = 0
+        for (idx, ch) in trimmed.enumerated() {
+            if ch == "(" { depth += 1 }
+            else if ch == ")" { depth = max(0, depth - 1) }
+            else if depth == 0 && idx > 0 && (ch == "+" || ch == "-") {
+                return true
+            }
+        }
+        return false
     }
 
     private static func replaceEnvironments(in text: String) -> String {
@@ -197,13 +207,22 @@ enum MathPrettyText {
 
     private static func replaceUnaryCommand(_ command: String, in text: String, transform: (String) -> String) -> String {
         var s = text
-        while let range = s.range(of: command) {
+        var searchStart = s.startIndex
+        while searchStart < s.endIndex,
+              let range = s.range(of: command, range: searchStart..<s.endIndex) {
+            // Respect command word boundary so "\text" never matches inside "\textbf" or "\vec" inside "\vector".
+            if range.upperBound < s.endIndex, s[range.upperBound].isLetter {
+                searchStart = range.upperBound
+                continue
+            }
             let afterCmd = skipSpaces(in: s, from: range.upperBound)
             guard let (arg, end) = readBraceGroup(in: s, from: afterCmd) else {
                 s.replaceSubrange(range, with: "")
+                searchStart = range.lowerBound
                 continue
             }
             s.replaceSubrange(range.lowerBound..<end, with: transform(arg))
+            searchStart = s.startIndex
         }
         return s
     }

@@ -6,6 +6,7 @@
 // - Toggles for Live debugOverlay and verboseLogging.
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct DebugSettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
@@ -108,6 +109,37 @@ struct DebugSettingsView: View {
 
 // MARK: - Log Viewer Screen
 
+/// Lazy Transferable so ShareLink only generates export text (and fetches OSLogStore off-main)
+/// when the user actually taps "Xuất log", never during SwiftUI body evaluation.
+private struct LazyLogExport: Transferable, Sendable {
+    let category: LogCategory?
+    let minLevel: LogLevel
+    let query: String
+    let includeSDKLogs: Bool
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .plainText) { item in
+            let baseText = await MainActor.run {
+                AppLogStore.shared.exportText(
+                    category: item.category,
+                    minLevel: item.minLevel,
+                    query: item.query,
+                    includeSDKLogs: false
+                )
+            }
+            if item.includeSDKLogs {
+                let sdkLines = await Task.detached(priority: .userInitiated) {
+                    AppLogStore.fetchSDKLogs(since: 600)
+                }.value
+                let combined = baseText + "\n\n===== Meta Wearables SDK Logs (last 10m) =====\n" + sdkLines.joined(separator: "\n")
+                return Data(combined.utf8)
+            }
+            return Data(baseText.utf8)
+        }
+        .suggestedFileName("OpenVision-logs.txt")
+    }
+}
+
 struct LogViewerScreen: View {
     @ObservedObject private var logStore = AppLogStore.shared
     @State private var selectedCategory: LogCategory? = nil
@@ -122,13 +154,14 @@ struct LogViewerScreen: View {
     }
 
     var body: some View {
+        let entries = visibleEntries
         VStack(spacing: 0) {
             // Filters bar
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     categoryButton(title: "Tất cả", category: nil)
                     ForEach(LogCategory.allCases) { cat in
-                        categoryButton(title: cat.rawValue, category: cat)
+                        categoryButton(title: cat.displayName, category: cat)
                     }
                 }
                 .padding(.horizontal)
@@ -155,7 +188,7 @@ struct LogViewerScreen: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
-                        ForEach(visibleEntries) { entry in
+                        ForEach(entries) { entry in
                             Text(entry.formattedLine)
                                 .font(.caption2.monospaced())
                                 .foregroundColor(color(for: entry.level))
@@ -166,9 +199,9 @@ struct LogViewerScreen: View {
                     }
                     .padding(10)
                 }
-                .onChange(of: visibleEntries.count) { _, _ in
-                    if !pauseAutoScroll, let last = visibleEntries.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
+                .onChange(of: entries.last?.id) { _, lastID in
+                    if !pauseAutoScroll, let lastID {
+                        proxy.scrollTo(lastID, anchor: .bottom)
                     }
                 }
             }
@@ -180,14 +213,27 @@ struct LogViewerScreen: View {
                     .font(.caption)
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = logStore.exportText(
-                        category: selectedCategory,
-                        minLevel: minLevel,
-                        query: searchText,
-                        includeSDKLogs: includeSDKLogs
-                    )
-                    copiedToast = true
-                    HapticFeedback.success()
+                    let cat = selectedCategory
+                    let lvl = minLevel
+                    let q = searchText
+                    let sdk = includeSDKLogs
+                    Task {
+                        let baseText = logStore.exportText(category: cat, minLevel: lvl, query: q, includeSDKLogs: false)
+                        let fullText: String
+                        if sdk {
+                            let sdkLines = await Task.detached(priority: .userInitiated) {
+                                AppLogStore.fetchSDKLogs(since: 600)
+                            }.value
+                            fullText = baseText + "\n\n===== Meta Wearables SDK Logs (last 10m) =====\n" + sdkLines.joined(separator: "\n")
+                        } else {
+                            fullText = baseText
+                        }
+                        UIPasteboard.general.string = fullText
+                        copiedToast = true
+                        HapticFeedback.success()
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        copiedToast = false
+                    }
                 } label: {
                     Label(copiedToast ? "Đã chép" : "Sao chép", systemImage: "doc.on.doc")
                         .font(.caption.weight(.semibold))
@@ -195,7 +241,7 @@ struct LogViewerScreen: View {
                 .buttonStyle(.bordered)
 
                 ShareLink(
-                    item: logStore.exportText(
+                    item: LazyLogExport(
                         category: selectedCategory,
                         minLevel: minLevel,
                         query: searchText,
@@ -212,7 +258,7 @@ struct LogViewerScreen: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
         }
-        .navigationTitle("Log (\(visibleEntries.count))")
+        .navigationTitle("Log (\(entries.count))")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Tìm trong log")
         .toolbar {

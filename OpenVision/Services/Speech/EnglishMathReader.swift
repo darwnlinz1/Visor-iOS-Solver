@@ -43,6 +43,7 @@ struct EnglishMathReader {
         case .setMinus: return "minus"
         case .perpendicular: return "is perpendicular to"
         case .parallel: return "is parallel to"
+        case .notParallel: return "is not parallel to"
         case .similar: return "is similar to"
         case .congruent: return "is congruent to"
         case .equivalent: return "is equivalent to"

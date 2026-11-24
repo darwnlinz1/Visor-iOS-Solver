@@ -3,6 +3,7 @@
 
 import AVFoundation
 import Foundation
+import UIKit
 
 /// Abstraction over `AVSpeechSynthesizer` so `ReadingEngine` can be tested deterministically
 /// without hardware audio output (PLAN.md §4.4, T5.2).
@@ -62,6 +63,10 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
     var pendingUtterances: Int { activeUtterances.count }
 
     private var activeUtterances = Set<ObjectIdentifier>()
+    /// FIFO queue of enqueued utterances so only the head utterance arms a `didStart` watchdog
+    /// (prevents queued sentences 2..N from timing out while sentence 1 is still being spoken).
+    private var queuedUtterances: [(id: ObjectIdentifier, preDelay: TimeInterval)] = []
+    private var startedUtterances = Set<ObjectIdentifier>()
     /// Utterances driven by `ReadingEngine` (each reports completion via `onUtteranceFinished`).
     private var pieceUtterances = Set<ObjectIdentifier>()
     /// Watchdog tasks that recover if `didStart` never fires (e.g. AudioQueue `-66680` / speechd stall).
@@ -184,6 +189,11 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
 
     private static var bestVoiceCache: [String: AVSpeechSynthesisVoice] = [:]
 
+    /// Clears cached system voice selection so newly downloaded Enhanced/Premium voices take effect.
+    static func invalidateVoiceCache() {
+        bestVoiceCache.removeAll()
+    }
+
     /// Get all available voices for a language
     static func availableVoices(for languageCode: String = "en") -> [AVSpeechSynthesisVoice] {
         return AVSpeechSynthesisVoice.speechVoices()
@@ -211,6 +221,15 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
     private override init() {
         super.init()
         synthesizer.delegate = self
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                Self.invalidateVoiceCache()
+            }
+        }
     }
 
     // MARK: - Speak (single-shot for notices, errors, short replies)
@@ -282,12 +301,16 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
 
         let id = ObjectIdentifier(utterance)
         let wasIdle = !isSpeaking
+        let shouldArmWatchdog = queuedUtterances.isEmpty
         activeUtterances.insert(id)
+        queuedUtterances.append((id: id, preDelay: utterance.preUtteranceDelay))
         pieceUtterances.insert(id)
         isSpeaking = true
         isPaused = false
         if wasIdle { onSpeechStarted?() }
-        armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
+        if shouldArmWatchdog {
+            armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
+        }
         synthesizer.speak(utterance)
     }
 
@@ -325,10 +348,14 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
                 utterance.postUtteranceDelay = piece.delayAfter
             }
             let id = ObjectIdentifier(utterance)
+            let shouldArmWatchdog = queuedUtterances.isEmpty
             activeUtterances.insert(id)
+            queuedUtterances.append((id: id, preDelay: utterance.preUtteranceDelay))
             isSpeaking = true
             isPaused = false
-            armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
+            if shouldArmWatchdog {
+                armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
+            }
             synthesizer.speak(utterance)
         }
     }
@@ -354,8 +381,16 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
         startWatchdogs.removeAll()
     }
 
+    private func armNextHeadWatchdog() {
+        guard let head = queuedUtterances.first else { return }
+        guard !startedUtterances.contains(head.id), startWatchdogs[head.id] == nil else { return }
+        armStartWatchdog(for: head.id, preDelay: head.preDelay)
+    }
+
     private func recoverStalledUtterance(_ id: ObjectIdentifier) {
         cancelWatchdog(for: id)
+        startedUtterances.remove(id)
+        queuedUtterances.removeAll { $0.id == id }
         let wasPiece = pieceUtterances.remove(id) != nil
         activeUtterances.remove(id)
         if activeUtterances.isEmpty && !streamingActive {
@@ -363,6 +398,8 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
             isSpeaking = false
             isPaused = false
             onSpeechEnded?()
+        } else {
+            armNextHeadWatchdog()
         }
         if wasPiece {
             onUtteranceFinished?()
@@ -376,6 +413,8 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
         let wasSpeaking = isSpeaking || !activeUtterances.isEmpty
         cancelAllWatchdogs()
         activeUtterances.removeAll()
+        queuedUtterances.removeAll()
+        startedUtterances.removeAll()
         pieceUtterances.removeAll()
         replyIsVietnamese = nil
         streamingActive = false
@@ -411,6 +450,7 @@ extension TTSService: AVSpeechSynthesizerDelegate {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
             self.cancelWatchdog(for: id)
+            self.startedUtterances.insert(id)
             MetricsCollector.shared.markFirstAudio()
             if !self.isSpeaking {
                 self.isSpeaking = true
@@ -444,6 +484,8 @@ extension TTSService: AVSpeechSynthesizerDelegate {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
             self.cancelWatchdog(for: id)
+            self.startedUtterances.remove(id)
+            self.queuedUtterances.removeAll { $0.id == id }
             guard self.activeUtterances.remove(id) != nil else { return }
             let wasPiece = self.pieceUtterances.remove(id) != nil
             if wasPiece {
@@ -453,6 +495,8 @@ extension TTSService: AVSpeechSynthesizerDelegate {
                 self.isSpeaking = false
                 self.isPaused = false
                 self.onSpeechEnded?()
+            } else {
+                self.armNextHeadWatchdog()
             }
         }
     }
@@ -461,6 +505,8 @@ extension TTSService: AVSpeechSynthesizerDelegate {
         let id = ObjectIdentifier(utterance)
         Task { @MainActor in
             self.cancelWatchdog(for: id)
+            self.startedUtterances.remove(id)
+            self.queuedUtterances.removeAll { $0.id == id }
             guard self.activeUtterances.remove(id) != nil else { return }
             self.pieceUtterances.remove(id)
             if self.activeUtterances.isEmpty {
@@ -468,6 +514,8 @@ extension TTSService: AVSpeechSynthesizerDelegate {
                 self.isSpeaking = false
                 self.isPaused = false
                 self.onSpeechEnded?()
+            } else {
+                self.armNextHeadWatchdog()
             }
         }
     }

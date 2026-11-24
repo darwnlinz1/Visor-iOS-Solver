@@ -307,6 +307,7 @@ struct MathParser {
             case "supset": return .superset
             case "perp": return .perpendicular
             case "parallel": return .parallel
+            case "nparallel": return .notParallel
             case "sim": return .similar
             case "cong": return .congruent
             case "equiv": return .equivalent
@@ -448,7 +449,7 @@ struct MathParser {
             if n.hasPrefix("end:") { return false }
             if ["rbrace", "rightdot", "choose", "mid", "times", "div", "circ", "pm", "mp", "cup", "cap",
                 "setminus", "neq", "le", "ge", "approx", "in", "notin", "subset", "supset", "perp", "parallel",
-                "sim", "cong", "equiv", "to", "Rightarrow", "Leftrightarrow", "land", "lor"].contains(n) {
+                "nparallel", "sim", "cong", "equiv", "to", "Rightarrow", "Leftrightarrow", "land", "lor"].contains(n) {
                 return false
             }
             return true
@@ -527,7 +528,7 @@ struct MathParser {
     }
 
     private let relationCommands: Set<String> = [
-        "neq", "le", "ge", "approx", "in", "notin", "subset", "supset", "perp", "parallel", "sim", "cong",
+        "neq", "le", "ge", "approx", "in", "notin", "subset", "supset", "perp", "parallel", "nparallel", "sim", "cong",
         "equiv", "to", "Rightarrow", "Leftrightarrow", "pm", "mp",
     ]
 

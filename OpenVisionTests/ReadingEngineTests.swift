@@ -168,4 +168,49 @@ final class ReadingEngineTests: XCTestCase {
         XCTAssertEqual(machine.state, .finished)
         XCTAssertTrue(finishEffects.contains(.didFinish))
     }
+
+    func testScopedJumpOnMixedPlanAndStartingAtIndex() {
+        let plan = makePlan("TYPE: MIXED\nQ1: A\nQ2: B\nP1: Bài 1\nL1: $x = 2$.\nL2: $y = 3$.")
+        var machine = ReadingMachine()
+        let startEffects = machine.start(plan: plan, startingAt: 3)
+        XCTAssertEqual(machine.currentSegmentIndex, 3)
+        XCTAssertEqual(spokenUtterances(in: startEffects).first?.segmentIndex, 3)
+
+        // "dòng 1" on MIXED must jump to L1 (index 3), NOT Q1 (index 0).
+        _ = machine.jump(toNumber: 1, scope: .question)
+        XCTAssertEqual(machine.currentSegmentIndex, 0)
+        _ = machine.jump(toNumber: 1, scope: .line)
+        XCTAssertEqual(machine.currentSegmentIndex, 3)
+        _ = machine.jump(toNumber: 1, scope: .problem)
+        XCTAssertEqual(machine.currentSegmentIndex, 2)
+    }
+
+    func testReadLineNumbersConfigAppliesDynamicallyOnReplay() {
+        // Assembled WITH "Dòng 1." baked in, then replayed with readLineNumbers = false.
+        let planWithNumbers = makePlan("TYPE: ESSAY\nL1: Ta có $x = 2$.")
+        var config = ReadingConfig.default
+        config.readLineNumbers = false
+        var machine = ReadingMachine(config: config)
+        let withoutNum = spokenUtterances(in: machine.start(plan: planWithNumbers))
+        XCTAssertFalse(withoutNum.first?.text.hasPrefix("Dòng 1") ?? true)
+
+        // Now toggle readLineNumbers = true on a plan assembled WITHOUT line numbers.
+        let parsed = AnswerFormat.parse("TYPE: ESSAY\nL1: Ta có $x = 2$.")
+        let planWithoutNumbers = ReplyAssembler(languageCode: "vi", readLineNumbers: false).plan(turnID: UUID(), parsed: parsed)
+        config.readLineNumbers = true
+        machine.updateConfig(config)
+        let withNum = spokenUtterances(in: machine.start(plan: planWithoutNumbers))
+        XCTAssertTrue(withNum.first?.text.hasPrefix("Dòng 1") ?? false)
+    }
+
+    func testSlowRatePresetIncludesHalfSpeed() {
+        XCTAssertEqual(ReadingMachine.ratePresets.first, 0.5)
+        let plan = makePlan("TYPE: ESSAY\nL1: Xin chào.")
+        var machine = ReadingMachine()
+        _ = machine.start(plan: plan)
+        _ = machine.stepRate(faster: false)
+        XCTAssertEqual(machine.liveRateMultiplier, 0.75)
+        _ = machine.stepRate(faster: false)
+        XCTAssertEqual(machine.liveRateMultiplier, 0.5)
+    }
 }

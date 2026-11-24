@@ -53,6 +53,7 @@ struct GlassesSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: settingsManager.settings.captureButtonEnabled) { _, _ in applyButtonLink() }
         .onChange(of: settingsManager.settings.captureButtonIncludeTouchpad) { _, _ in applyButtonLink() }
+        .onChange(of: settingsManager.settings.fullResolutionPhotos) { _, _ in glassesManager.resetPhotoFailures() }
         .confirmationDialog(
             "Huỷ đăng ký kính",
             isPresented: $showingUnregisterConfirmation,
@@ -65,7 +66,13 @@ struct GlassesSettingsView: View {
         } message: {
             Text("OpenVision sẽ ngắt khỏi kính. Bạn cần đăng ký lại qua app Meta AI để dùng tiếp.")
         }
-        .alert("Lỗi", isPresented: .constant(glassesManager.errorMessage != nil)) {
+        .alert(
+            "Lỗi",
+            isPresented: Binding(
+                get: { glassesManager.errorMessage != nil },
+                set: { if !$0 { glassesManager.errorMessage = nil } }
+            )
+        ) {
             Button("OK") { glassesManager.errorMessage = nil }
         } message: {
             if let error = glassesManager.errorMessage {
@@ -153,7 +160,7 @@ struct GlassesSettingsView: View {
     private var captureButtonSection: some View {
         Section {
             Toggle(isOn: $settingsManager.settings.captureButtonEnabled) {
-                Label("Nút chụp gửi thẳng vào app", systemImage: "camera.shutter.button")
+                Label("Nút chụp & Action gửi thẳng vào app", systemImage: "camera.shutter.button")
             }
 
             if settingsManager.settings.captureButtonEnabled {
@@ -163,30 +170,89 @@ struct GlassesSettingsView: View {
                     Circle()
                         .fill(glassesManager.isButtonLinkActive ? Theme.success : Theme.inactive)
                         .frame(width: 8, height: 8)
-                    Text(glassesManager.buttonLinkStatus)
+                    Text(glassesManager.connectionPhase.displayText)
                         .font(.footnote)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.trailing)
                 }
 
-                Picker("Bấm 1 lần", selection: $settingsManager.settings.shortPressAction) {
-                    ForEach(GlassesButtonAction.allCases) { Text($0.displayName).tag($0) }
+                if glassesManager.connectedDevice != nil {
+                    Button {
+                        HapticFeedback.light()
+                        Task { await glassesManager.reconnectButtonLink() }
+                    } label: {
+                        Label("Kết nối lại nút kính", systemImage: "arrow.clockwise")
+                    }
                 }
-                Picker("Giữ nút", selection: $settingsManager.settings.holdAction) {
-                    ForEach(GlassesButtonAction.allCases) { Text($0.displayName).tag($0) }
+
+                NavigationLink {
+                    WorkflowModeSettingsView()
+                } label: {
+                    HStack {
+                        Label("Chế độ sử dụng", systemImage: settingsManager.settings.usageMode.systemImage)
+                        Spacer()
+                        Text(settingsManager.settings.usageMode.displayName)
+                            .font(.footnote)
+                            .foregroundColor(Theme.accent)
+                    }
                 }
-                Picker("Bấm 2 lần", selection: $settingsManager.settings.doublePressAction) {
-                    ForEach(GlassesButtonAction.allCases) { Text($0.displayName).tag($0) }
+
+                Toggle(isOn: $settingsManager.settings.useCustomButtonMapping) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Tùy chỉnh riêng từng thao tác nút")
+                        Text("Tắt để tự động theo chế độ Giải bài / Bình thường")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if settingsManager.settings.useCustomButtonMapping {
+                    Picker("Bấm 1 lần", selection: $settingsManager.settings.shortPressAction) {
+                        ForEach(GlassesButtonAction.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    Picker("Bấm 2 lần", selection: $settingsManager.settings.doublePressAction) {
+                        ForEach(GlassesButtonAction.allCases) { Text($0.displayName).tag($0) }
+                    }
+                    Picker("Giữ nút", selection: $settingsManager.settings.holdAction) {
+                        ForEach(GlassesButtonAction.allCases) { Text($0.displayName).tag($0) }
+                    }
+                } else {
+                    HStack {
+                        Text("Bấm 1 lần")
+                        Spacer()
+                        Text(GlassesWorkflowPolicy.action(for: .shortPress, settings: settingsManager.settings).displayName)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text("Bấm 2 lần")
+                        Spacer()
+                        Text(GlassesWorkflowPolicy.action(for: .doublePress, settings: settingsManager.settings).displayName)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    HStack {
+                        Text("Giữ nút")
+                        Spacer()
+                        Text(GlassesWorkflowPolicy.action(for: .hold, settings: settingsManager.settings).displayName)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Toggle(isOn: $settingsManager.settings.captureButtonIncludeTouchpad) {
-                    Text("Nhận cả bàn chạm (nếu nút không phản hồi)")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Nhận cả bàn chạm (chỉ bật khi nút không phản hồi)")
+                        Text("Cảnh báo: bật mục này sẽ can thiệp thao tác chạm dừng/phát nhạc trên gọng kính")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
         } header: {
-            Text("Nút chụp trên kính")
+            Text("Nút chụp & Action trên kính")
         } footer: {
-            Text("Ảnh đi thẳng từ kính vào app rồi gửi Gemini, không cần chờ Meta AI nhập vào Thư viện ảnh. Tính năng thử nghiệm của Meta (cần Developer Mode). Nếu không dùng được, app tự quay về cách cũ: chụp bằng kính rồi đọc ảnh mới nhất trong Thư viện. Khi bật \"bàn chạm\", vuốt/chạm gọng kính sẽ không điều khiển nhạc.")
+            Text("Hỗ trợ cả nút chụp (Capture) và nút Action mà không chiếm bàn chạm nghe nhạc. Nếu kính đang tắt Developer Mode hoặc mất kết nối nút, app tự dự phòng bằng ảnh mới nhất trong album Meta của Thư viện.")
         }
     }
 

@@ -155,10 +155,6 @@ final class VoiceCommandService: ObservableObject {
     private var vadCommitPending = false
     private var hasSpokenThisTurn: Bool = false
 
-    // MARK: - Audio Feedback
-
-    private var activationSound: AVAudioPlayer?
-
     // MARK: - Route change and stabilization tracking
 
     nonisolated func markRouteChange() {
@@ -211,14 +207,13 @@ final class VoiceCommandService: ObservableObject {
 
     static func stripWakeWord(from text: String, defaultWakeWord: String) -> String {
         var variations = wakeWordVariations
-        let def = defaultWakeWord.lowercased()
-        if !variations.contains(def) { variations.append(def) }
+        let def = defaultWakeWord.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !def.isEmpty && !variations.contains(def) { variations.append(def) }
         variations.sort { $0.count > $1.count }
 
-        let lower = text.lowercased()
         for v in variations {
-            if let r = lower.range(of: v) {
-                if lower.distance(from: lower.startIndex, to: r.lowerBound) <= 15 {
+            if let r = text.range(of: v, options: .caseInsensitive) {
+                if text.distance(from: text.startIndex, to: r.lowerBound) <= 15 {
                     return String(text[r.upperBound...]).trimmingCharacters(in: .whitespaces)
                 }
             }
@@ -229,7 +224,6 @@ final class VoiceCommandService: ObservableObject {
     // MARK: - Initialization
 
     private init() {
-        setupActivationSound()
         setupSpeechDetector()
     }
 
@@ -386,8 +380,26 @@ final class VoiceCommandService: ObservableObject {
             "câu tiếp", "câu trước", "chậm lại", "nhanh lên", "dừng lại", "thôi", "dừng",
             "chụp ảnh", "giải bài này", "giải tiếp", "tính cái này", "bài toán"
         ]
-        if !wakeWord.isEmpty { phrases.insert(wakeWord, at: 0) }
+        let trimmedWake = wakeWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedWake.isEmpty { phrases.insert(trimmedWake, at: 0) }
         request.contextualStrings = phrases
+    }
+
+    /// Re-applies live voice settings (language, wake word, wake-word toggle) without requiring app restart.
+    func refreshSettings(isSessionActive: Bool) {
+        if !isWakeWordEnabled && !isSessionActive && state == .idle {
+            if isListening { stopListening() }
+            return
+        }
+        if isWakeWordEnabled && !isListening && authorizationStatus == .authorized {
+            try? startListening()
+            return
+        }
+        guard isListening else { return }
+        if !isWakeWordEnabled && state == .idle {
+            state = .listening
+        }
+        restartRecognition()
     }
 
     /// Clears accumulated echo buffer at the start of each new ReadingEngine segment so wake-word
@@ -653,9 +665,8 @@ final class VoiceCommandService: ObservableObject {
             let allowInterrupt = shouldAllowInterrupt?() ?? false
 
             // 2. Wake word + reading command or new question during active reading / thinking.
-            if allowInterrupt && detectWakeWord(in: transcription, bypassCooldown: true)
-                && (wakeWordAtStart(transcription) || !isBargeInPaused) {
-                let command = extractCommandAfterWakeWord(transcription)
+            if allowInterrupt && detectWakeWord(in: transcription, bypassCooldown: true) {
+                let command = extractCommandAfterWakeWord(transcription, allowAnywhere: true)
                 guard !command.isEmpty else { return }
 
                 // Check reading commands first ("Ok Vision tạm dừng", "Ok Vision đọc lại câu 3", "Ok Vision dừng lại")
@@ -682,13 +693,15 @@ final class VoiceCommandService: ObservableObject {
                 }
 
                 // Genuine new question mid-reading (N9): stop TTS + cancel Gemini and capture verbatim.
+                // Set `.listening` + `isBargeInPaused = false` BEFORE calling `onWakeWordDetected` so
+                // subsequent partials and `isFinal` are not dropped during TTS echo-settle teardown.
                 AppLog.info(.voice, "Wake word + new question during TTS — interrupting")
                 AppLog.debug(.voice, "Interrupt question: '\(command)'", sensitive: true)
-                onWakeWordDetected?()
-
                 state = .listening
+                isBargeInPaused = false
                 currentTranscription = command
                 hasSpokenThisTurn = true
+                onWakeWordDetected?()
                 resetSilenceTimer()
 
                 if result.isFinal {
@@ -710,28 +723,13 @@ final class VoiceCommandService: ObservableObject {
         return stopWords.contains { lower.contains($0) }
     }
 
-    private func wakeWordAtStart(_ text: String) -> Bool {
-        let lower = text.lowercased()
-        var variations = Self.wakeWordVariations
-        let wakeWordLower = wakeWord.lowercased()
-        if !variations.contains(wakeWordLower) {
-            variations.insert(wakeWordLower, at: 0)
-        }
-        for v in variations {
-            if let r = lower.range(of: v) {
-                if lower.distance(from: lower.startIndex, to: r.lowerBound) <= 15 { return true }
-            }
-        }
-        return false
-    }
-
     private func detectWakeWord(in text: String, bypassCooldown: Bool = false) -> Bool {
         guard bypassCooldown || !wakeWordCooldownActive else { return false }
 
         let lowercased = text.lowercased()
         var variations = Self.wakeWordVariations
-        let wakeWordLower = wakeWord.lowercased()
-        if !variations.contains(wakeWordLower) {
+        let wakeWordLower = wakeWord.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !wakeWordLower.isEmpty && !variations.contains(wakeWordLower) {
             variations.insert(wakeWordLower, at: 0)
         }
 
@@ -742,8 +740,27 @@ final class VoiceCommandService: ObservableObject {
         return detected
     }
 
-    private func extractCommandAfterWakeWord(_ text: String) -> String {
-        Self.stripWakeWord(from: text, defaultWakeWord: wakeWord)
+    private func extractCommandAfterWakeWord(_ text: String, allowAnywhere: Bool = false) -> String {
+        guard allowAnywhere else {
+            return Self.stripWakeWord(from: text, defaultWakeWord: wakeWord)
+        }
+        var variations = Self.wakeWordVariations
+        let def = wakeWord.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !def.isEmpty && !variations.contains(def) { variations.append(def) }
+        variations.sort { $0.count > $1.count }
+
+        var bestUpper: String.Index?
+        for v in variations {
+            if let r = text.range(of: v, options: [.caseInsensitive, .backwards]) {
+                if bestUpper == nil || r.upperBound > bestUpper! {
+                    bestUpper = r.upperBound
+                }
+            }
+        }
+        if let bestUpper {
+            return String(text[bestUpper...]).trimmingCharacters(in: .whitespaces)
+        }
+        return Self.stripWakeWord(from: text, defaultWakeWord: wakeWord)
     }
 
     private func handleWakeWordDetected() {
@@ -753,10 +770,6 @@ final class VoiceCommandService: ObservableObject {
         wakeWordCooldownActive = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Constants.Voice.wakeWordCooldown) { [weak self] in
             self?.wakeWordCooldownActive = false
-        }
-
-        if playActivationSound {
-            playActivation()
         }
 
         state = .listening
@@ -832,20 +845,6 @@ final class VoiceCommandService: ObservableObject {
             state = .idle
             currentTranscription = ""
         }
-    }
-
-    // MARK: - Audio Feedback
-
-    private func setupActivationSound() {
-        if let soundURL = Bundle.main.url(forResource: "activation_chime", withExtension: "wav") {
-            activationSound = try? AVAudioPlayer(contentsOf: soundURL)
-            activationSound?.prepareToPlay()
-        }
-    }
-
-    private func playActivation() {
-        activationSound?.currentTime = 0
-        activationSound?.play()
     }
 }
 

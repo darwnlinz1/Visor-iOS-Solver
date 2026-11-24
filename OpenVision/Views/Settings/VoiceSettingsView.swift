@@ -23,6 +23,7 @@ struct VoiceSettingsView: View {
                 if settingsManager.settings.wakeWordEnabled {
                     TextField("Ok Vision", text: $settingsManager.settings.wakeWord)
                         .autocorrectionDisabled()
+                        .onSubmit { sanitizeWakeWord() }
                 }
             } header: {
                 Text("Gọi trợ lý")
@@ -36,6 +37,15 @@ struct VoiceSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Dùng mic của kính")
                         Text("Tự chuyển về mic & loa ngoài iPhone khi không đeo kính")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Toggle(isOn: $settingsManager.settings.pauseWakeWordDuringMusic) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Nhả mic kính khi đang nghe nhạc")
+                        Text("Tránh tiếng bíp và giữ nhạc A2DP khi bấm dừng/phát nhạc trên kính")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -70,6 +80,16 @@ struct VoiceSettingsView: View {
         }
         .navigationTitle("Nghe & Từ đánh thức")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear { sanitizeWakeWord() }
+    }
+
+    private func sanitizeWakeWord() {
+        let trimmed = settingsManager.settings.wakeWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            settingsManager.settings.wakeWord = Constants.Voice.defaultWakeWord
+        } else if trimmed != settingsManager.settings.wakeWord {
+            settingsManager.settings.wakeWord = trimmed
+        }
     }
 }
 

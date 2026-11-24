@@ -7,6 +7,8 @@ import SwiftUI
 
 struct SegmentCardView: View {
     let record: ReadingRecord
+    /// Optional card identifier to scope `ScrollViewReader` segment IDs across multi-turn feeds.
+    var cardID: String = ""
     /// Index of the currently reading segment (nil if this card is not the active playback target).
     var activeSegmentIndex: Int? = nil
     /// Current spoken piece text and highlighted word range (from ReadingEngine).
@@ -47,7 +49,7 @@ struct SegmentCardView: View {
                         ) {
                             onSelectSegment?(item.index)
                         }
-                        .id("seg-\(item.segment.id)")
+                        .id("\(cardID)seg-\(item.segment.id)")
                     }
                 }
             }
@@ -154,7 +156,7 @@ struct SegmentCardView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .id("seg-\(item.segment.id)")
+                .id("\(cardID)seg-\(item.segment.id)")
                 .accessibilityLabel(item.segment.displayText)
                 .accessibilityHint("Chạm để đọc từ mục này")
             }

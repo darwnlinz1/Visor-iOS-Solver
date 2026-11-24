@@ -42,12 +42,15 @@ final class ReadingCommandTests: XCTestCase {
     }
 
     func testJumpCommandsWithDigitsAndWords() {
-        XCTAssertEqual(ReadingCommand.parse("đọc lại câu 3"), .jump(3))
-        XCTAssertEqual(ReadingCommand.parse("đọc lại dòng 5"), .jump(5))
-        XCTAssertEqual(ReadingCommand.parse("câu 12"), .jump(12))
-        XCTAssertEqual(ReadingCommand.parse("dòng ba"), .jump(3))
-        XCTAssertEqual(ReadingCommand.parse("question 4"), .jump(4))
-        XCTAssertEqual(ReadingCommand.parse("line 2"), .jump(2))
+        XCTAssertEqual(ReadingCommand.parse("đọc lại câu 3"), .jump(3, scope: .question))
+        XCTAssertEqual(ReadingCommand.parse("đọc lại dòng 5"), .jump(5, scope: .line))
+        XCTAssertEqual(ReadingCommand.parse("câu 12"), .jump(12, scope: .question))
+        XCTAssertEqual(ReadingCommand.parse("dòng ba"), .jump(3, scope: .line))
+        XCTAssertEqual(ReadingCommand.parse("câu mười lăm"), .jump(15, scope: .question))
+        XCTAssertEqual(ReadingCommand.parse("câu hai mươi mốt"), .jump(21, scope: .question))
+        XCTAssertEqual(ReadingCommand.parse("đọc lại bài hai"), .jump(2, scope: .problem))
+        XCTAssertEqual(ReadingCommand.parse("question 4"), .jump(4, scope: .question))
+        XCTAssertEqual(ReadingCommand.parse("line 2"), .jump(2, scope: .line))
     }
 
     func testRealQuestionsAreNeverMisclassifiedAsReadingCommands() {

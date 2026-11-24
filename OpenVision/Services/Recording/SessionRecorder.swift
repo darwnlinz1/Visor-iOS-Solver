@@ -770,12 +770,15 @@ final class SessionRecorder: ObservableObject {
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else {
                 NSLog("[Recorder] Photos permission denied")
+                try? FileManager.default.removeItem(at: url)
                 self.finish(url: nil)
                 return
             }
             PHPhotoLibrary.shared().performChanges({
                 PHAssetCreationRequest.creationRequestForAssetFromVideo(atFileURL: url)
             }) { success, error in
+                // Always clean up the temporary .mp4 after Photos copies it (or on failure).
+                try? FileManager.default.removeItem(at: url)
                 if success {
                     NSLog("[Recorder] Saved to Photos")
                     self.finish(url: url)

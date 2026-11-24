@@ -8,14 +8,16 @@
 
 import Foundation
 
-/// What a press of the glasses' capture button does (Meta DAT Inputs, experimental).
-enum GlassesButtonAction: String, Codable, CaseIterable, Identifiable {
-    /// Take a full-resolution photo; it becomes the context for the next question.
-    case capture
-    /// Take a photo and solve it right away — no need to speak.
+/// What a press of the glasses' capture / action button does (Meta DAT Inputs, experimental).
+enum GlassesButtonAction: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// Take a photo and solve it right away with the short Study prompt — no need to speak.
     case captureAndSolve
-    /// Read the last answer again.
+    /// Take a photo and immediately open the mic so the wearer can speak any free-form command.
+    case captureAndListen
+    /// Read the last answer again from the beginning.
     case repeatAnswer
+    /// Take a photo silently and cache it for the next question.
+    case capture
     /// Do nothing.
     case none
 
@@ -23,9 +25,10 @@ enum GlassesButtonAction: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .capture: return "Chụp ảnh (chờ câu hỏi)"
-        case .captureAndSolve: return "Chụp và giải ngay"
-        case .repeatAnswer: return "Đọc lại câu trả lời"
+        case .captureAndSolve: return "Chụp và gửi prompt giải bài"
+        case .captureAndListen: return "Chụp ảnh & mở mic nghe lệnh"
+        case .repeatAnswer: return "Đọc lại câu trả lời cũ"
+        case .capture: return "Chỉ chụp ảnh (chờ hỏi sau)"
         case .none: return "Không làm gì"
         }
     }
@@ -61,14 +64,30 @@ struct AppSettings: Codable, Equatable {
     /// the audio route. Turn off to always use the phone. (Glasses mic uses more battery.)
     var preferGlassesMic: Bool = true
 
-    // MARK: - Glasses (Meta DAT)
+    /// Avoid holding the glasses' Bluetooth HFP mic channel open while idle if another app is
+    /// playing music, so pausing/playing music on Ray-Ban Meta never triggers HFP chimes or drops stereo A2DP.
+    var pauseWakeWordDuringMusic: Bool = true
 
-    /// Receive the glasses' capture-button presses in the app (photos go straight to Gemini at full
-    /// resolution, no Camera Roll import). Experimental in the Meta SDK: needs the glasses in
+    // MARK: - Operating Mode & Glasses (Meta DAT)
+
+    /// High-level workflow mode: `.study` (button sends short solve prompt) or `.general` (button
+    /// captures photo + opens mic for any free-form command).
+    var usageMode: UsageMode = .study
+
+    /// Custom short prompt sent automatically when pressing the glasses button in Study mode.
+    /// Empty string falls back to `"Giải bài trong ảnh này."` / `"Solve the problem in this photo."`.
+    var studySolvePrompt: String = ""
+
+    /// When false (default), button gestures follow `usageMode` presets automatically.
+    /// Turn on in Glasses Settings to override each gesture individually.
+    var useCustomButtonMapping: Bool = false
+
+    /// Receive the glasses' capture / action button presses in the app (photos go straight to Gemini,
+    /// no Camera Roll import). Experimental in the Meta SDK: needs the glasses in
     /// Developer Mode; falls back to the Camera Roll workflow when unavailable.
     var captureButtonEnabled: Bool = true
-    var shortPressAction: GlassesButtonAction = .capture
-    var holdAction: GlassesButtonAction = .captureAndSolve
+    var shortPressAction: GlassesButtonAction = .captureAndSolve
+    var holdAction: GlassesButtonAction = .captureAndListen
     var doublePressAction: GlassesButtonAction = .repeatAnswer
     /// Also route the touchpad to the app — only if button presses never arrive (a known SDK
     /// quirk); while on, the temple touchpad no longer controls music/volume.
@@ -171,7 +190,7 @@ struct AppSettings: Codable, Equatable {
 
     var clampedSpeechRate: Float { min(max(speechRate, 0.35), 0.6) }
     var clampedMcqRate: Float { min(max(mcqRate, 0.35), 0.6) }
-    var clampedEssayRate: Float { min(max(essayRate, 0.3), 0.6) }
+    var clampedEssayRate: Float { min(max(essayRate, 0.25), 0.6) }
     var clampedPauseBetweenAnswers: Double { min(max(pauseBetweenAnswers, 0), 2.0) }
     var clampedPauseBetweenLines: Double { min(max(pauseBetweenLines, 0), 5.0) }
     var clampedMathRateFactor: Double { min(max(mathRateFactor, 0.6), 1.0) }

@@ -16,6 +16,8 @@ final class MathPrettyTextTests: XCTestCase {
     func testFractionsAndRoots() {
         XCTAssertEqual(MathPrettyText.format(#"$\frac{3}{4}$"#), "3/4")
         XCTAssertEqual(MathPrettyText.format(#"$\frac{x + 1}{x - 1}$"#), "(x + 1)/(x - 1)")
+        XCTAssertEqual(MathPrettyText.format(#"$\frac{x+1}{2}$"#), "(x+1)/2")
+        XCTAssertEqual(MathPrettyText.format(#"$\textbf{Vậy } d_1 \nparallel d_2$"#), "Vậy d₁ ∦ d₂")
         XCTAssertEqual(MathPrettyText.format(#"$\sqrt{2}$"#), "√2")
         XCTAssertEqual(MathPrettyText.format(#"$\sqrt{x^2 + 1}$"#), "√(x² + 1)")
         XCTAssertEqual(MathPrettyText.format(#"$\sqrt[3]{8}$"#), "∛8")

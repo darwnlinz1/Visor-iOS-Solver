@@ -93,7 +93,6 @@ enum MathLexer {
         "degree": "circ",
         "dbinom": "binom", "tbinom": "binom", "Bbb": "mathbb", "bm": "mathbf", "boldsymbol": "mathbf",
         "mathit": "mathbf", "mathcal": "mathbf", "mathscr": "mathbf", "mathsf": "mathbf", "mathtt": "mathbf",
-        "nparallel": "parallel",
     ]
 
     /// Commands that only change spacing or size: skipped.
@@ -126,7 +125,7 @@ enum MathLexer {
         "∪": "\\cup ", "∩": "\\cap ", "∅": "\\emptyset ", "∖": "\\setminus ", "°": "^\\circ ",
         "º": "^\\circ ", "·": "\\times ", "⋅": "\\times ", "∙": "\\times ", "∗": "*", "−": "-", "–": "-",
         "′": "'", "″": "''", "‴": "'''", "∠": "\\angle ", "△": "\\triangle ", "⊥": "\\perp ",
-        "∥": "\\parallel ", "∼": "\\sim ", "∽": "\\sim ", "≅": "\\cong ", "≡": "\\equiv ", "∀": "\\forall ",
+        "∥": "\\parallel ", "∦": "\\nparallel ", "∼": "\\sim ", "∽": "\\sim ", "≅": "\\cong ", "≡": "\\equiv ", "∀": "\\forall ",
         "∃": "\\exists ", "∄": "\\nexists ", "¬": "\\neg ", "∧": "\\land ", "∨": "\\lor ", "∘": "\\circ ",
         "…": "\\dots ", "⋯": "\\dots ", "∂": "\\partial ", "ℝ": "\\mathbb{R}", "ℕ": "\\mathbb{N}",
         "ℤ": "\\mathbb{Z}", "ℚ": "\\mathbb{Q}", "ℂ": "\\mathbb{C}", "∣": "\\mid ", "√": "\\sqrt ",

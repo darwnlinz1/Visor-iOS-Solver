@@ -58,6 +58,9 @@ struct MathSpeechSettingsView: View {
         }
         .navigationTitle("Đọc toán tiếng Việt")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: settingsManager.settings) { _, _ in
+            ReadingEngine.shared.refreshConfigFromSettings()
+        }
     }
 }
 
@@ -81,10 +84,11 @@ struct PronunciationDictionaryView: View {
                     .textInputAutocapitalization(.never)
                 TextField("Cách đọc (ví dụ: cốt, ích, đen-ta)", text: $newSpoken)
                 Button {
-                    let key = newToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let key = PronunciationDictionary.normalizedKey(newToken)
                     let val = newSpoken.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !key.isEmpty, !val.isEmpty else { return }
                     settingsManager.settings.pronunciationOverrides[key] = val
+                    ReadingEngine.shared.refreshConfigFromSettings()
                     newToken = ""
                     newSpoken = ""
                     HapticFeedback.success()
@@ -114,10 +118,11 @@ struct PronunciationDictionaryView: View {
                         }
                     }
                     .onDelete { offsets in
-                        for idx in offsets {
-                            let key = sortedOverrideKeys[idx]
+                        let keysToRemove = offsets.map { sortedOverrideKeys[$0] }
+                        for key in keysToRemove {
                             settingsManager.settings.pronunciationOverrides.removeValue(forKey: key)
                         }
+                        ReadingEngine.shared.refreshConfigFromSettings()
                     }
                 }
             } header: {
@@ -249,6 +254,11 @@ struct MathSpeechTesterView: View {
         }
         .navigationTitle("Thử đọc công thức")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            if ttsService.isSpeaking && !ReadingEngine.shared.isActive {
+                ttsService.stop()
+            }
+        }
     }
 
     private func speakCurrentFormula() {

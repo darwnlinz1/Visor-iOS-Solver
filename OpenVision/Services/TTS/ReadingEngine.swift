@@ -34,6 +34,9 @@ final class ReadingEngine: ObservableObject {
     /// Fired right before a new segment begins (VoiceAgentViewModel clears recognizer buffer here, N6).
     var onSegmentStarted: ((Int) -> Void)?
 
+    /// Fired when dictation mode pauses after an essay line waiting for "tiếp" or Next.
+    var onWaitingForNext: (() -> Void)?
+
     /// Fired when the active plan finishes reading or is stopped.
     var onReadingFinished: (() -> Void)?
 
@@ -62,11 +65,8 @@ final class ReadingEngine: ObservableObject {
         }
         synthesizer.onPauseChanged = { [weak self] paused in
             guard let self else { return }
-            if paused && self.state == .reading {
-                self.state = .paused
-            } else if !paused && self.state == .paused {
-                self.state = .reading
-            }
+            self.machine.syncExternalPause(paused)
+            self.state = self.machine.state
         }
     }
 
@@ -85,9 +85,14 @@ final class ReadingEngine: ObservableObject {
     }
 
     var rateBadgeText: String {
-        if abs(liveRateMultiplier - 1.0) < 0.01 { return "1×" }
-        if abs(liveRateMultiplier - 1.5) < 0.01 { return "1,5×" }
-        return String(format: "%.2g×", liveRateMultiplier).replacingOccurrences(of: ".", with: ",")
+        let rounded = (liveRateMultiplier * 100).rounded() / 100
+        if abs(rounded - rounded.rounded()) < 0.005 {
+            return "\(Int(rounded.rounded()))×"
+        }
+        let formatted = String(format: "%.2f", rounded)
+            .replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: ".", with: ",")
+        return "\(formatted)×"
     }
 
     // MARK: - Configuration from Settings
@@ -99,6 +104,7 @@ final class ReadingEngine: ObservableObject {
             essayRate: settings.clampedEssayRate,
             pauseBetweenAnswers: settings.clampedPauseBetweenAnswers,
             pauseBetweenLines: settings.clampedPauseBetweenLines,
+            readLineNumbers: settings.readLineNumbers,
             mathRateFactor: settings.clampedMathRateFactor,
             pauseAfterFormula: settings.clampedPauseAfterFormula,
             dictationMode: settings.dictationMode,
@@ -110,21 +116,26 @@ final class ReadingEngine: ObservableObject {
     }
 
     func refreshConfigFromSettings() {
-        machine.updateConfig(Self.config(from: SettingsManager.shared.settings))
+        let settings = SettingsManager.shared.settings
+        machine.updateConfig(Self.config(from: settings))
+        // If user turns off dictation mode in Settings while waiting on a line, resume right away.
+        if !settings.dictationMode && state == .waitingForNext {
+            resume()
+        }
     }
 
     // MARK: - Plan lifecycle
 
-    func start(plan: ReadingPlan) {
+    func start(plan: ReadingPlan, startingAt index: Int = 0) {
         spokenLog.removeAll()
         currentPieceText = ""
         currentWordRange = nil
         let cfg = Self.config(from: SettingsManager.shared.settings)
-        AppLog.info(.reading, "Start plan type=\(plan.answerType.rawValue) lang=\(plan.languageCode) segments=\(plan.segments.count) complete=\(plan.isComplete)")
+        AppLog.info(.reading, "Start plan type=\(plan.answerType.rawValue) lang=\(plan.languageCode) segments=\(plan.segments.count) complete=\(plan.isComplete) startAt=\(index)")
         if !plan.segments.isEmpty {
             onWillStartSpeaking?()
         }
-        let effects = machine.start(plan: plan, config: cfg)
+        let effects = machine.start(plan: plan, config: cfg, startingAt: index)
         syncAndRun(effects)
     }
 
@@ -142,17 +153,14 @@ final class ReadingEngine: ObservableObject {
     }
 
     /// Replays a stored History answer offline using current math & speed settings (T5.5).
-    /// Optional `startingAt` jumps atomically to a tapped segment after audio routing is ready.
+    /// Optional `startingAt` starts directly at the tapped segment after audio routing is ready.
     func replay(record: ReadingRecord, startingAt index: Int = 0) {
         let plan = ReadingPlan(record: record)
         Task { @MainActor in
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: SettingsManager.shared.settings.preferGlassesMic
             )
-            self.start(plan: plan)
-            if index > 0 && plan.segments.indices.contains(index) {
-                self.jump(to: index)
-            }
+            self.start(plan: plan, startingAt: index)
         }
     }
 
@@ -165,6 +173,7 @@ final class ReadingEngine: ObservableObject {
 
     func resume() {
         AppLog.info(.reading, "Resume")
+        machine.updateConfig(Self.config(from: SettingsManager.shared.settings))
         onWillStartSpeaking?()
         syncAndRun(machine.resume())
     }
@@ -192,12 +201,14 @@ final class ReadingEngine: ObservableObject {
 
     func repeatCurrent() {
         AppLog.info(.reading, "Repeat current segment")
+        machine.updateConfig(Self.config(from: SettingsManager.shared.settings))
         onWillStartSpeaking?()
         syncAndRun(machine.repeatCurrent())
     }
 
     func restartFromBeginning() {
         AppLog.info(.reading, "Restart from beginning")
+        machine.updateConfig(Self.config(from: SettingsManager.shared.settings))
         onWillStartSpeaking?()
         syncAndRun(machine.restartFromBeginning())
     }
@@ -208,10 +219,10 @@ final class ReadingEngine: ObservableObject {
         syncAndRun(machine.jump(to: index))
     }
 
-    func jump(toNumber number: Int) {
-        AppLog.info(.reading, "Jump to item #\(number)")
+    func jump(toNumber number: Int, scope: ReadingCommand.JumpScope = .any) {
+        AppLog.info(.reading, "Jump to item #\(number) (\(scope))")
         onWillStartSpeaking?()
-        syncAndRun(machine.jump(toNumber: number))
+        syncAndRun(machine.jump(toNumber: number, scope: scope))
     }
 
     func stop() {
@@ -241,6 +252,10 @@ final class ReadingEngine: ObservableObject {
     func toggleDictationMode() {
         SettingsManager.shared.settings.dictationMode.toggle()
         refreshConfigFromSettings()
+        // If user turns off dictation mode while waiting for "tiếp", continue reading right away.
+        if !SettingsManager.shared.settings.dictationMode && state == .waitingForNext {
+            resume()
+        }
     }
 
     /// Dispatches a parsed voice command (PLAN.md §4.4, T5.3).
@@ -250,7 +265,7 @@ final class ReadingEngine: ObservableObject {
         case .resume: resume()
         case .next: next()
         case .previous: previous()
-        case .jump(let n): jump(toNumber: n)
+        case .jump(let n, let scope): jump(toNumber: n, scope: scope)
         case .repeatCurrent: repeatCurrent()
         case .restart: restartFromBeginning()
         case .slower: stepRate(faster: false)
@@ -268,11 +283,16 @@ final class ReadingEngine: ObservableObject {
     }
 
     private func syncAndRun(_ effects: [ReadingEffect]) {
+        let previousState = state
         state = machine.state
         plan = machine.plan
         currentSegmentIndex = machine.currentSegmentIndex
         liveRateMultiplier = machine.liveRateMultiplier
         lastWarnings = machine.lastWarnings
+
+        if previousState != .waitingForNext && state == .waitingForNext {
+            onWaitingForNext?()
+        }
 
         for effect in effects {
             switch effect {

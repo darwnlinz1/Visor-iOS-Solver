@@ -112,6 +112,34 @@ final class ConversationManager: ObservableObject {
         addMessage(message)
     }
 
+    /// Attaches a photo captured mid-turn (e.g. via Gemini `[[CAPTURE]]`) to the latest user message
+    /// in the current conversation so History retains it.
+    func attachPhotoToLatestUserMessage(_ photoData: Data) {
+        guard var conversation = currentConversation,
+              let msgIdx = conversation.messages.lastIndex(where: { $0.role == .user }),
+              conversation.messages[msgIdx].photoData == nil else {
+            return
+        }
+        let fp = PhotoPayload.fingerprint(photoData)
+        var seen = storedPhotoFingerprints[conversation.id] ?? []
+        guard seen.insert(fp).inserted else { return }
+        storedPhotoFingerprints[conversation.id] = seen
+
+        let storedPhoto = PhotoPayload.renderJPEG(
+            from: photoData,
+            maxPixelSize: Self.historyThumbnailMaxDimension,
+            quality: 0.75
+        ) ?? photoData
+        conversation.messages[msgIdx].photoData = storedPhoto
+        conversation.lastActivityAt = Date()
+
+        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
+            conversations[index] = conversation
+        }
+        currentConversation = conversation
+        saveConversations()
+    }
+
     /// Add assistant message with optional v2.1 reading record for offline replay.
     func addAssistantMessage(_ text: String, reading: ReadingRecord? = nil) {
         let message = Message.assistant(text, reading: reading)
@@ -157,6 +185,7 @@ final class ConversationManager: ObservableObject {
             conversations.insert(resumed, at: 0)
         }
 
+        saveConversations()
         AppLog.info(.history, "Resumed conversation: \(conversation.id.uuidString.prefix(8))")
     }
 

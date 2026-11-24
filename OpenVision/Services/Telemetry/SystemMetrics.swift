@@ -97,8 +97,11 @@ enum SystemMetricsReader {
         guard task_threads(mach_task_self_, &threadList, &threadCount) == KERN_SUCCESS,
               let threads = threadList else { return 0 }
 
-        // task_threads allocates; we own the memory and must give it back.
+        // task_threads allocates both the array and one Mach send right per thread; release both.
         defer {
+            for index in 0..<Int(threadCount) {
+                mach_port_deallocate(mach_task_self_, threads[index])
+            }
             vm_deallocate(mach_task_self_,
                           vm_address_t(UInt(bitPattern: threads)),
                           vm_size_t(Int(threadCount) * MemoryLayout<thread_t>.stride))

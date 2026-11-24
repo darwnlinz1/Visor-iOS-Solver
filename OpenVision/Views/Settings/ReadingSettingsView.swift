@@ -8,6 +8,7 @@ import AVFoundation
 struct ReadingSettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @ObservedObject private var readingEngine = ReadingEngine.shared
+    @State private var isPlayingDemo = false
 
     private func voiceName(_ identifier: String?, language: String) -> String {
         if let identifier, let voice = AVSpeechSynthesisVoice(identifier: identifier) {
@@ -63,7 +64,7 @@ struct ReadingSettingsView: View {
                             .foregroundColor(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $settingsManager.settings.essayRate, in: 0.3...0.6, step: 0.025)
+                    Slider(value: $settingsManager.settings.essayRate, in: 0.25...0.6, step: 0.025)
                         .tint(Theme.accent)
                 }
 
@@ -195,8 +196,38 @@ struct ReadingSettingsView: View {
 
             // Nghe thử đề mẫu (3 MCQ + 1 bài tự luận 4 dòng, PLAN.md §4.5)
             Section {
+                if readingEngine.state == .waitingForNext {
+                    Button {
+                        HapticFeedback.light()
+                        readingEngine.resume()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "forward.fill")
+                            Text("Dòng tiếp theo")
+                                .fontWeight(.semibold)
+                            Spacer()
+                        }
+                        .foregroundColor(Theme.accent)
+                    }
+
+                    Button {
+                        HapticFeedback.light()
+                        readingEngine.repeatCurrent()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "arrow.counterclockwise")
+                            Text("Đọc lại dòng vừa nghe")
+                            Spacer()
+                        }
+                        .foregroundColor(.primary)
+                    }
+                }
+
                 Button {
                     if readingEngine.isActive {
+                        isPlayingDemo = false
                         readingEngine.stop()
                     } else {
                         playDemoSample()
@@ -220,6 +251,15 @@ struct ReadingSettingsView: View {
         .onChange(of: settingsManager.settings) { _, _ in
             readingEngine.refreshConfigFromSettings()
         }
+        .onChange(of: readingEngine.isActive) { _, active in
+            if !active { isPlayingDemo = false }
+        }
+        .onDisappear {
+            if isPlayingDemo && readingEngine.isActive {
+                isPlayingDemo = false
+                readingEngine.stop()
+            }
+        }
     }
 
     private func playDemoSample() {
@@ -238,6 +278,7 @@ struct ReadingSettingsView: View {
         let parsed = AnswerFormat.parse(sample)
         let assembler = ReplyAssembler(languageCode: "vi", readLineNumbers: settingsManager.settings.readLineNumbers)
         let record = assembler.record(for: parsed)
+        isPlayingDemo = true
         readingEngine.replay(record: record)
     }
 }

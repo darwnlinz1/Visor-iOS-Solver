@@ -123,9 +123,13 @@ final class SettingsManager: ObservableObject {
 
     /// Save settings immediately (use on app background/disappear)
     func saveNow() {
+        let hadPending = saveTask != nil
         saveTask?.cancel()
         saveTask = nil
         performSave()
+        if hadPending {
+            onSettingsChanged?(settings)
+        }
     }
 
     /// Reset settings to defaults
@@ -133,6 +137,7 @@ final class SettingsManager: ObservableObject {
         secretsToClear = unreadableSecrets
         settings = AppSettings()
         saveNow()
+        onSettingsChanged?(settings)
     }
 
     // MARK: - Memory Management

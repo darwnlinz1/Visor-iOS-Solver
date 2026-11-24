@@ -121,6 +121,7 @@ enum BinaryOperator: String, Equatable, CaseIterable {
     case setMinus = "setminus"
     case perpendicular = "perp"
     case parallel = "parallel"
+    case notParallel = "nparallel"
     case similar = "sim"
     case congruent = "cong"
     case equivalent = "equiv"
@@ -136,7 +137,7 @@ enum BinaryOperator: String, Equatable, CaseIterable {
     var isRelation: Bool {
         switch self {
         case .equals, .notEqual, .less, .greater, .lessEqual, .greaterEqual, .approx, .elementOf,
-             .notElementOf, .subset, .superset, .perpendicular, .parallel, .similar, .congruent,
+             .notElementOf, .subset, .superset, .perpendicular, .parallel, .notParallel, .similar, .congruent,
              .equivalent, .tendsTo, .suchThat:
             return true
         default:

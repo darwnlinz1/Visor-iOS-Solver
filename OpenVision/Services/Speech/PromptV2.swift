@@ -68,7 +68,15 @@ enum PromptV2 {
 
     /// The full system instruction. `now` is written in `timeZone` (the user's); `userPrompt` and
     /// `memories` come from Settings (memories in key order, so the prompt is deterministic).
-    static func systemPrompt(now: Date, timeZone: TimeZone, userPrompt: String, memories: [String: String]) -> String {
+    /// `modeHint` is an optional operating-mode directive (nil in Study mode, keeping the default
+    /// homework-solving contract byte-for-byte identical).
+    static func systemPrompt(
+        now: Date,
+        timeZone: TimeZone,
+        userPrompt: String,
+        memories: [String: String],
+        modeHint: String? = nil
+    ) -> String {
         let date = ISO8601DateFormatter.string(from: now, timeZone: timeZone, formatOptions: [.withInternetDateTime])
         let capture = AnswerFormat.captureToken
         let end = AnswerFormat.endToken
@@ -133,6 +141,10 @@ enum PromptV2 {
 
         The current date and time is \#(date) in the user's local time zone. Base any time on this.
         """#
+
+        if let hint = modeHint?.trimmingCharacters(in: .whitespacesAndNewlines), !hint.isEmpty {
+            prompt += "\n\n\(hint)"
+        }
 
         let instructions = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if !instructions.isEmpty {
