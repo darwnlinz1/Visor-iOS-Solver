@@ -230,6 +230,70 @@ def main() -> int:
                     leaks.append(str(path.relative_to(repo)))
     check("security", not leaks, "no Gemini API keys in source" + ("" if not leaks else f" — FOUND in {leaks}"))
 
+    # --- Meta Wearables DAT (MWDAT) configuration & IPA pipeline invariants.
+    xcconfig_text = read("Config.xcconfig.example")
+    xcconfig_kv: dict[str, str] = {}
+    xcconfig_placeholders: list[str] = []
+    for raw_line in xcconfig_text.splitlines():
+        code_line = raw_line.split("//", 1)[0].strip()
+        if not code_line or "=" not in code_line:
+            continue
+        k, v = (part.strip() for part in code_line.split("=", 1))
+        xcconfig_kv[k] = v
+        if re.search(r"YOUR_META_APP_ID|YOUR_CLIENT_TOKEN|YOUR_TEAM_ID|XXXXXXXXXX", v, re.I):
+            xcconfig_placeholders.append(k)
+    check("mwdat", not xcconfig_placeholders,
+          "Config.xcconfig.example has no active placeholder values"
+          + ("" if not xcconfig_placeholders else f" — found in {', '.join(xcconfig_placeholders)}"))
+    check("mwdat", xcconfig_kv.get("META_APP_ID") in ("0", "") and xcconfig_kv.get("CLIENT_TOKEN") == "",
+          "Config.xcconfig.example defaults to safe Developer Mode (META_APP_ID=0 or empty, CLIENT_TOKEN empty)")
+
+    try:
+        info_plist = plistlib.loads((repo / "OpenVision/Resources/Info.plist").read_bytes())
+        mwdat_dict = info_plist.get("MWDAT") if isinstance(info_plist, dict) else None
+        mwdat_keys = {"MetaAppID", "AppLinkURLScheme", "ClientToken", "TeamID"}
+        check("mwdat", isinstance(mwdat_dict, dict) and mwdat_keys.issubset(mwdat_dict.keys()),
+              "Info.plist MWDAT defines MetaAppID, AppLinkURLScheme, ClientToken, and TeamID")
+        query_schemes = info_plist.get("LSApplicationQueriesSchemes") or []
+        bg_modes = info_plist.get("UIBackgroundModes") or []
+        ea_protocols = info_plist.get("UISupportedExternalAccessoryProtocols") or []
+        check("mwdat", "fb-viewapp" in query_schemes, "Info.plist queries Meta AI scheme (fb-viewapp)")
+        check("mwdat", "bluetooth-central" in bg_modes and "external-accessory" in bg_modes
+              and "com.meta.ar.wearable" in ea_protocols,
+              "Info.plist preserves Bluetooth Classic transport (bluetooth-central, external-accessory, com.meta.ar.wearable)")
+    except Exception as exc:  # pragma: no cover - malformed plist
+        fail("mwdat", f"Info.plist unreadable for MWDAT checks: {exc}")
+
+    entitlements_text = read("OpenVision/OpenVision.entitlements")
+    try:
+        entitlements_dict = plistlib.loads((repo / "OpenVision/OpenVision.entitlements").read_bytes())
+        ent_keys = set(entitlements_dict.keys()) if isinstance(entitlements_dict, dict) else set()
+        no_paid_wifi = (
+            not any("HotspotConfiguration" in k or "wifi-info" in k for k in ent_keys)
+            and "HotspotConfiguration" not in entitlements_text
+            and "wifi-info" not in entitlements_text
+        )
+        check("mwdat", no_paid_wifi,
+              "OpenVision.entitlements omits paid Wi-Fi entitlements (HotspotConfiguration / wifi-info, PLAN.md D2)")
+    except Exception as exc:  # pragma: no cover - malformed entitlements
+        fail("mwdat", f"OpenVision.entitlements unreadable: {exc}")
+
+    build_ipa_text = read(".github/workflows/build-ipa.yml")
+    verify_lines = [ln for ln in build_ipa_text.splitlines() if "verify_ipa_symbols.sh" in ln and "chmod" not in ln]
+    verify_unmasked = bool(verify_lines) and all("|| echo" not in ln and "|| true" not in ln for ln in verify_lines)
+    no_secret_dump = (
+        not re.search(r"\bcat\s+[^\n]*Config\.xcconfig\b", build_ipa_text)
+        and not re.search(r"\b(echo|printf)\b[^\n]*CLIENT_TOKEN", build_ipa_text)
+    )
+    check("mwdat", "patch_ipa_mwdat.py" in build_ipa_text and verify_unmasked and no_secret_dump,
+          "build-ipa.yml patches MWDAT via patch_ipa_mwdat.py, enforces verify_ipa_symbols.sh strictly, and never dumps secrets")
+
+    app_swift = strip_comments(read("OpenVision/App/OpenVisionApp.swift"))
+    mwdat_swift = strip_comments(read("OpenVision/Managers/MWDATConfiguration.swift"))
+    check("mwdat", "isMetaWearablesCallbackURL" in app_swift and "metaWearablesAction" in mwdat_swift
+          and "handleURLCallbackError" in app_swift,
+          "OpenVisionApp filters metaWearablesAction callbacks and forwards handleUrl errors to GlassesManager")
+
     # --- Warnings (never fail the run).
     build_ipa = (repo / ".github/workflows/build-ipa.yml")
     if build_ipa.exists() and "push:" not in build_ipa.read_text(encoding="utf-8"):
