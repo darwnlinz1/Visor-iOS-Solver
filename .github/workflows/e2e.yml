@@ -1,9 +1,9 @@
 name: E2E (Blueprint)
 
-# End-to-end checks for the OpenVision v2 voice-first solver workflow (see PLAN.md).
+# End-to-end checks for the Reybain v2 voice-first solver workflow (see PLAN.md).
 #   1. blueprint-guard  — seconds, on Linux: source-level guards for Lessons 1-7, logging, camera-on-demand,
 #                         v2 UI integrity, secret leaks, and pbxproj round-trip self-test.
-#   2. simulator-e2e    — every OpenVisionTests suite on an iOS 18+ iPhone simulator (a manual
+#   2. simulator-e2e    — every ReybainTests suite on an iOS 18+ iPhone simulator (a manual
 #                         run can tick blueprint_only for the Blueprint suites alone), including
 #                         GeminiLiveService v2.1 streaming, VietMathSpeech, ReadingEngine, TTS,
 #                         and the real Photo Library (Meta album filter).
@@ -55,7 +55,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .spm
-          key: spm-${{ runner.os }}-${{ hashFiles('OpenVision.xcodeproj/project.pbxproj', 'project.yml') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('Reybain.xcodeproj/project.pbxproj', 'project.yml') }}
           restore-keys: spm-${{ runner.os }}-
 
       - name: Show toolchain and simulators
@@ -67,8 +67,8 @@ jobs:
         env:
           SUITE: ${{ inputs.blueprint_only && 'blueprint' || 'all' }}
           XCBEAUTIFY_ARGS: --renderer github-actions
-          TEST_RUNNER_OPENVISION_LIVE_GEMINI: ${{ inputs.live_gemini && '1' || '' }}
-          TEST_RUNNER_OPENVISION_GEMINI_API_KEYS: ${{ inputs.live_gemini && secrets.GEMINI_API_KEYS || '' }}
+          TEST_RUNNER_REYBAIN_LIVE_GEMINI: ${{ inputs.live_gemini && '1' || '' }}
+          TEST_RUNNER_REYBAIN_GEMINI_API_KEYS: ${{ inputs.live_gemini && secrets.GEMINI_API_KEYS || '' }}
         run: scripts/e2e/run-simulator-tests.sh
 
       - name: Upload test results

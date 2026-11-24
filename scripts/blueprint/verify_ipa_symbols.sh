@@ -3,10 +3,10 @@
 # workflow depends on. Looks in the Mach-O symbol table, Swift reflection metadata and string
 # literals, so it works on an unstripped Release build.
 #
-# Usage: scripts/blueprint/verify_ipa_symbols.sh path/to/OpenVision.ipa
+# Usage: scripts/blueprint/verify_ipa_symbols.sh path/to/Reybain.ipa
 set -euo pipefail
 
-IPA="${1:?usage: $0 path/to/OpenVision.ipa}"
+IPA="${1:?usage: $0 path/to/Reybain.ipa}"
 REQUIRED=(
   RecentPhotoScanner      # lesson 6: temple-shutter photos from Camera Roll
   cleanSpokenAudio        # lesson 5: LaTeX-free speech
@@ -19,9 +19,12 @@ REQUIRED=(
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 unzip -q "$IPA" -d "$work"
-binary="$(find "$work/Payload" -maxdepth 2 -type f -name OpenVision | head -n 1)"
-if [ -z "$binary" ]; then
-  echo "::error::OpenVision binary not found inside $IPA"
+binary="$work/Payload/Reybain.app/Reybain"
+if [ ! -f "$binary" ]; then
+  binary="$(find "$work/Payload" -maxdepth 2 -type f -name Reybain | head -n 1)"
+fi
+if [ -z "$binary" ] || [ ! -f "$binary" ]; then
+  echo "::error::Payload/Reybain.app/Reybain binary not found inside $IPA"
   exit 1
 fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static guard for the OpenVision v2 voice-first workflow (see PLAN.md).
+"""Static guard for the Reybain v2 voice-first workflow (see PLAN.md).
 
 Fails fast (seconds, any OS, no Xcode) when a change re-introduces one of the seven "lessons"
 (audio deadlock, volume flapping, deaf glasses mic, TTS echo cut-off, raw LaTeX speech, missing
@@ -78,16 +78,16 @@ def main() -> int:
             return ""
         return path.read_text(encoding="utf-8")
 
-    vm = read("OpenVision/Views/VoiceAgent/VoiceAgentViewModel.swift")
-    gemini = read("OpenVision/Services/GeminiLive/GeminiLiveService.swift")
-    prompt_v2 = read("OpenVision/Services/Speech/PromptV2.swift")
-    tts = read("OpenVision/Services/TTS/TTSService.swift")
-    audio = read("OpenVision/Services/Audio/AudioSessionManager.swift")
-    voice = read("OpenVision/Services/Voice/VoiceCommandService.swift")
-    pbxproj = read("OpenVision.xcodeproj/project.pbxproj")
+    vm = read("Reybain/Views/VoiceAgent/VoiceAgentViewModel.swift")
+    gemini = read("Reybain/Services/GeminiLive/GeminiLiveService.swift")
+    prompt_v2 = read("Reybain/Services/Speech/PromptV2.swift")
+    tts = read("Reybain/Services/TTS/TTSService.swift")
+    audio = read("Reybain/Services/Audio/AudioSessionManager.swift")
+    voice = read("Reybain/Services/Voice/VoiceCommandService.swift")
+    pbxproj = read("Reybain.xcodeproj/project.pbxproj")
 
     # --- Project integrity: two-way sync between filesystem and project.pbxproj.
-    for folder in ("OpenVision", "OpenVisionTests"):
+    for folder in ("Reybain", "ReybainTests"):
         for path in sorted((repo / folder).rglob("*.swift")):
             if f"path = {path.name};" not in pbxproj and f"/* {path.name} */" not in pbxproj:
                 rel = path.relative_to(repo).as_posix()
@@ -117,13 +117,13 @@ def main() -> int:
         "AudioCaptureService.swift": "live-video capture, runs with the recognizer stopped",
     }
     offenders = []
-    for path in (repo / "OpenVision").rglob("*.swift"):
+    for path in (repo / "Reybain").rglob("*.swift"):
         code = strip_comments(path.read_text(encoding="utf-8"))
         if re.search(r"(inputNode|input)\s*\.\s*installTap\s*\(\s*onBus", code) and path.name not in allowed_taps:
             offenders.append(str(path.relative_to(repo)))
     check("lesson1", not offenders,
           "mic input taps only in " + ", ".join(allowed_taps) + ("" if not offenders else f" — NEW TAP in {offenders}"))
-    recorder = strip_comments(read("OpenVision/Services/Recording/SessionRecorder.swift"))
+    recorder = strip_comments(read("Reybain/Services/Recording/SessionRecorder.swift"))
     check("lesson1", "appendMicAudio" in recorder and "isSharingVoiceCommandTap" in recorder,
           "SessionRecorder reuses VoiceCommandService's tap (appendMicAudio / isSharingVoiceCommandTap)")
 
@@ -178,7 +178,7 @@ def main() -> int:
     check("lesson6", "recentPhotoWindow: TimeInterval = 120" in vm, "120 s recent-photo window")
     check("lesson6", "requestImageDataAndOrientation" in vm, "the ORIGINAL full-resolution photo is loaded")
     try:
-        plist = plistlib.loads((repo / "OpenVision/Resources/Info.plist").read_bytes())
+        plist = plistlib.loads((repo / "Reybain/Resources/Info.plist").read_bytes())
         for key in ("NSPhotoLibraryUsageDescription", "NSMicrophoneUsageDescription",
                     "NSCameraUsageDescription", "NSBluetoothAlwaysUsageDescription",
                     "NSSpeechRecognitionUsageDescription"):
@@ -208,8 +208,8 @@ def main() -> int:
           "API key sent in the x-goog-api-key header, never in the URL")
     check("workflow", "captureToken" in gemini and "onCaptureRequested" in vm,
           "agent loop: the model can ask the app to take a photo")
-    glasses = read("OpenVision/Managers/GlassesManager.swift")
-    plist_text = read("OpenVision/Resources/Info.plist")
+    glasses = read("Reybain/Managers/GlassesManager.swift")
+    plist_text = read("Reybain/Resources/Info.plist")
     project_text = read("project.yml")
     check("workflow", ".photo.capturePhoto(resolution:" in glasses
           and "addInputs(configuration:" in glasses and "MWDATInputs" in project_text
@@ -225,13 +225,13 @@ def main() -> int:
 
     # --- Logging & secret hygiene (T2.4).
     logged_files = [
-        "OpenVision/App/OpenVisionApp.swift",
-        "OpenVision/Managers/GlassesManager.swift",
-        "OpenVision/Views/VoiceAgent/VoiceAgentViewModel.swift",
-        "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
-        "OpenVision/Services/Voice/VoiceCommandService.swift",
-        "OpenVision/Services/Audio/AudioSessionManager.swift",
-        "OpenVision/Services/TTS/TTSService.swift",
+        "Reybain/App/ReybainApp.swift",
+        "Reybain/Managers/GlassesManager.swift",
+        "Reybain/Views/VoiceAgent/VoiceAgentViewModel.swift",
+        "Reybain/Services/GeminiLive/GeminiLiveService.swift",
+        "Reybain/Services/Voice/VoiceCommandService.swift",
+        "Reybain/Services/Audio/AudioSessionManager.swift",
+        "Reybain/Services/TTS/TTSService.swift",
     ]
     print_offenders = []
     for rel in logged_files:
@@ -246,7 +246,7 @@ def main() -> int:
 
     # --- v2 UI: no active app references to legacy KaTeX DISPLAY / SpokenMath.
     legacy_refs = []
-    for path in (repo / "OpenVision").rglob("*.swift"):
+    for path in (repo / "Reybain").rglob("*.swift"):
         if path.name == "SolutionView.swift":
             continue
         code = strip_comments(path.read_text(encoding="utf-8"))
@@ -260,7 +260,7 @@ def main() -> int:
     # --- Security: no API keys in source.
     key_patterns = re.compile(r"AIza[0-9A-Za-z_-]{30,}|AQ\.Ab[0-9A-Za-z_-]{20,}|QVEuQWI[A-Za-z0-9+/=]{20,}|QUl6YV[A-Za-z0-9+/=]{20,}")
     leaks = []
-    for folder in ("OpenVision", "OpenVisionTests", "scripts", ".github"):
+    for folder in ("Reybain", "ReybainTests", "scripts", ".github"):
         for path in (repo / folder).rglob("*"):
             if path.is_file() and path.suffix in {".swift", ".py", ".sh", ".yml", ".yaml", ".plist", ".xcconfig", ".json", ".md"}:
                 if key_patterns.search(path.read_text(encoding="utf-8", errors="ignore")):
@@ -271,7 +271,7 @@ def main() -> int:
     build_ipa = (repo / ".github/workflows/build-ipa.yml")
     if build_ipa.exists() and "push:" not in build_ipa.read_text(encoding="utf-8"):
         warn("ci", "build-ipa.yml only runs on workflow_dispatch; manual trigger saves macOS runner quota.")
-    if (repo / "OpenVision/Resources/SolutionRenderer").exists() or (repo / "OpenVision/Views/Components/SolutionView.swift").exists():
+    if (repo / "Reybain/Resources/SolutionRenderer").exists() or (repo / "Reybain/Views/Components/SolutionView.swift").exists():
         warn("cleanup", "Unused legacy KaTeX files (SolutionView.swift / SolutionRenderer) can be removed via scripts/pbxproj_files.py to shrink IPA size.")
 
     width = max(len(r[1]) for r in RESULTS)

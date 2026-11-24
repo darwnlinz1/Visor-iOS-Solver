@@ -1,10 +1,10 @@
-# OpenVision Makefile
+# Reybain Makefile
 
 .PHONY: setup generate clean open help blueprint-check e2e e2e-all e2e-blueprint e2e-live verify-ipa
 
 # Default target
 help:
-	@echo "OpenVision Build Commands:"
+	@echo "Reybain Build Commands:"
 	@echo ""
 	@echo "  make setup     - Install dependencies and generate Xcode project"
 	@echo "  make generate  - Generate Xcode project from project.yml"
@@ -52,15 +52,15 @@ check-config:
 
 # Open in Xcode
 open:
-	@if [ -d "OpenVision.xcodeproj" ]; then \
-		open OpenVision.xcodeproj; \
+	@if [ -d "Reybain.xcodeproj" ]; then \
+		open Reybain.xcodeproj; \
 	else \
 		echo "❌ Project not found. Run 'make setup' first."; \
 	fi
 
 # Clean generated files
 clean:
-	@rm -rf OpenVision.xcodeproj
+	@rm -rf Reybain.xcodeproj
 	@rm -rf .build
 	@rm -rf DerivedData
 	@echo "✅ Cleaned!"
@@ -68,12 +68,12 @@ clean:
 # Format code (requires swiftformat)
 format:
 	@which swiftformat > /dev/null || (echo "Installing swiftformat..." && brew install swiftformat)
-	@swiftformat OpenVision --indent 4 --swiftversion 5.9
+	@swiftformat Reybain --indent 4 --swiftversion 5.9
 
 # Lint code (requires swiftlint)
 lint:
 	@which swiftlint > /dev/null || (echo "Installing swiftlint..." && brew install swiftlint)
-	@swiftlint OpenVision
+	@swiftlint Reybain
 
 # --- Testing (see PLAN.md) ---
 
@@ -90,7 +90,7 @@ e2e-blueprint: blueprint-check
 	@SUITE=blueprint scripts/e2e/run-simulator-tests.sh
 
 e2e-live: blueprint-check
-	@TEST_RUNNER_OPENVISION_LIVE_GEMINI=1 scripts/e2e/run-simulator-tests.sh
+	@TEST_RUNNER_REYBAIN_LIVE_GEMINI=1 scripts/e2e/run-simulator-tests.sh
 
 verify-ipa:
 	@scripts/blueprint/verify_ipa_symbols.sh "$(IPA)"

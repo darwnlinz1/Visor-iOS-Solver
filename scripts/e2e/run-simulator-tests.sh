@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Run the OpenVisionTests suites (see PLAN.md) on an iOS 18+ iPhone simulator.
+# Run the ReybainTests suites (see PLAN.md) on an iOS 18+ iPhone simulator.
 # Works the same on a Mac and in CI (.github/workflows/e2e.yml).
 #
-#   scripts/e2e/run-simulator-tests.sh                   # every suite in OpenVisionTests (default)
+#   scripts/e2e/run-simulator-tests.sh                   # every suite in ReybainTests (default)
 #   SUITE=blueprint scripts/e2e/run-simulator-tests.sh   # only the Blueprint suites
-#   TEST_RUNNER_OPENVISION_LIVE_GEMINI=1 scripts/e2e/run-simulator-tests.sh   # + real Gemini API
+#   TEST_RUNNER_REYBAIN_LIVE_GEMINI=1 scripts/e2e/run-simulator-tests.sh   # + real Gemini API
 #   SIMULATOR_UDID=<udid> ...                            # pick the simulator yourself
 #
 # A new test file runs as soon as it is in the test target (scripts/pbxproj_files.py add ...);
-# GeminiLiveSmokeTests skips itself unless TEST_RUNNER_OPENVISION_LIVE_GEMINI=1.
+# GeminiLiveSmokeTests skips itself unless TEST_RUNNER_REYBAIN_LIVE_GEMINI=1.
 # With CI=true (GitHub Actions sets it) a skipped BlueprintPhotoLibraryE2ETests test fails the
 # run, because the script grants Photos access and those tests must run (PLAN.md N1).
 #
@@ -26,7 +26,7 @@ DERIVED="${DERIVED_DATA:-DerivedData-sim}"
 RESULT="${RESULT_BUNDLE:-build/E2E.xcresult}"
 
 [ -f Config.xcconfig ] || cp Config.xcconfig.example Config.xcconfig
-[ -f OpenVision/Config/Config.swift ] || cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
+[ -f Reybain/Config/Config.swift ] || cp Reybain/Config/Config.swift.example Reybain/Config/Config.swift
 BUNDLE_ID="$(awk -F= '/^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER/ { gsub(/[[:space:]]/, "", $2); print $2 }' Config.xcconfig)"
 case "$BUNDLE_ID" in  # it goes into simctl arguments and an SQL statement below
   ""|*[!A-Za-z0-9.-]*) echo "error: unexpected PRODUCT_BUNDLE_IDENTIFIER '$BUNDLE_ID' in Config.xcconfig" >&2; exit 1 ;;
@@ -65,8 +65,8 @@ pretty() { if command -v xcbeautify >/dev/null 2>&1; then xcbeautify "$@"; else 
 # launch ("Call configure() before attempting to access Wearables!") before any test runs.
 # Ad-hoc signing needs no certificate, account or provisioning profile on a simulator.
 COMMON=(
-  -project OpenVision.xcodeproj
-  -scheme OpenVision
+  -project Reybain.xcodeproj
+  -scheme Reybain
   -destination "id=$UDID"
   -derivedDataPath "$DERIVED"
   -clonedSourcePackagesDirPath .spm
@@ -99,14 +99,14 @@ launch_console() {
 }
 
 # 1. Normal launch. Informational (never fails the job): it shows the app's own startup
-#    messages, e.g. "[OpenVisionApp] Failed to configure Wearables SDK: ...", which xcodebuild
+#    messages, e.g. "[ReybainApp] Failed to configure Wearables SDK: ...", which xcodebuild
 #    does not forward when the test host dies at launch.
 # 2. Launch with the glasses SDK left unconfigured (Debug builds honour the variable): the app
 #    must not trap and must say why the glasses are off (PLAN.md N2 / T2.5). This one fails the job.
 launch_smoke() {
   launch_console "normal" build/launch-console.log
   local log=build/launch-console-no-dat.log
-  launch_console "OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1" "$log" SIMCTL_CHILD_OPENVISION_SIMULATE_DAT_CONFIG_FAILURE=1
+  launch_console "REYBAIN_SIMULATE_DAT_CONFIG_FAILURE=1" "$log" SIMCTL_CHILD_REYBAIN_SIMULATE_DAT_CONFIG_FAILURE=1
   if grep -q "Fatal error" "$log" || [ "$LAUNCH_ALIVE" != 1 ]; then
     echo "::error::the app did not survive a launch without a configured glasses SDK (console above)"
     return 1
@@ -120,10 +120,10 @@ launch_smoke() {
 
 # When the test host dies at launch there is no test output at all; print what crashed.
 dump_crash_reports() {
-  echo "::group::OpenVision crash reports"
+  echo "::group::Reybain crash reports"
   sleep 10   # ReportCrash writes the file a few seconds after the process dies
   ls -t "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | head -5 || true
-  xcrun simctl spawn "$UDID" log show --last 3m --style compact --predicate 'process == "OpenVision"' 2>/dev/null | tail -40 || true
+  xcrun simctl spawn "$UDID" log show --last 3m --style compact --predicate 'process == "Reybain"' 2>/dev/null | tail -40 || true
   local found=0 report
   while IFS= read -r report; do
     [ -n "$report" ] || continue
@@ -148,8 +148,8 @@ except Exception as e:
     print("(could not parse: %s)" % e)
     print(raw[:4000])
 PY
-  done < <(find "$HOME/Library/Logs/DiagnosticReports" -name 'OpenVision*' -mmin -30 2>/dev/null | head -3)
-  [ "$found" = 1 ] || echo "no OpenVision crash report found"
+  done < <(find "$HOME/Library/Logs/DiagnosticReports" -name 'Reybain*' -mmin -30 2>/dev/null | head -3)
+  [ "$found" = 1 ] || echo "no Reybain crash report found"
   echo "::endgroup::"
 }
 
@@ -189,8 +189,8 @@ grant_photos_access() {
 # with the Photos TCC row as the tests left it (does test-without-building reinstall reset it?).
 # With CI=true, returns 1 after the report when a BlueprintPhotoLibraryE2ETests test skipped
 # (PLAN.md N1); skips in other suites never fail. xcodebuild prints two raw lines per skip:
-#   .../BlueprintPhotoLibraryE2ETests.swift:20: -[OpenVisionTests.BlueprintPhotoLibraryE2ETests testX] : Test skipped - ...
-#   Test Case '-[OpenVisionTests.BlueprintPhotoLibraryE2ETests testX]' skipped (0.062 seconds).
+#   .../BlueprintPhotoLibraryE2ETests.swift:20: -[ReybainTests.BlueprintPhotoLibraryE2ETests testX] : Test skipped - ...
+#   Test Case '-[ReybainTests.BlueprintPhotoLibraryE2ETests testX]' skipped (0.062 seconds).
 report_skips() {
   echo "::group::Skipped tests and why"
   grep -h -E "Test skipped|\[BlueprintPhotoLibraryE2ETests\]" build/test-output.log 2>/dev/null || echo "no skipped tests"
@@ -218,16 +218,16 @@ report_skips() {
 xcodebuild build-for-testing "${COMMON[@]}" | pretty ${XCBEAUTIFY_ARGS:-}
 
 # Install once and grant Photos access, so the real-photo-library tests run instead of skipping.
-APP="$(find "$DERIVED/Build/Products" -maxdepth 2 -type d -path '*-iphonesimulator/OpenVision.app' | head -n 1)"
+APP="$(find "$DERIVED/Build/Products" -maxdepth 2 -type d -path '*-iphonesimulator/Reybain.app' | head -n 1)"
 xcrun simctl install "$UDID" "$APP"
 grant_photos_access
 launch_smoke
 
-# SUITE=all runs the whole OpenVisionTests target (no -only-testing list to keep in step).
+# SUITE=all runs the whole ReybainTests target (no -only-testing list to keep in step).
 ONLY=()
 if [ "$SUITE" = "blueprint" ]; then
   for suite in BlueprintSolverTests BlueprintGeminiE2ETests BlueprintPhotoLibraryE2ETests GeminiLiveSmokeTests; do
-    ONLY+=("-only-testing:OpenVisionTests/$suite")
+    ONLY+=("-only-testing:ReybainTests/$suite")
   done
 fi
 echo "Test suites: $SUITE"

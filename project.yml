@@ -1,6 +1,6 @@
-name: OpenVision
+name: Reybain
 options:
-  bundleIdPrefix: com.openvision
+  bundleIdPrefix: com.reybain
   # iOS 18+: the target devices (iPhone 15 Pro / Pro Max) and Meta DAT (needs 17.2+).
   deploymentTarget:
     iOS: "18.0"
@@ -15,7 +15,7 @@ settings:
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
-    INFOPLIST_FILE: OpenVision/Resources/Info.plist
+    INFOPLIST_FILE: Reybain/Resources/Info.plist
     PRODUCT_BUNDLE_IDENTIFIER: ${PRODUCT_BUNDLE_IDENTIFIER}
     META_APP_ID: ${META_APP_ID}
     CLIENT_TOKEN: ${CLIENT_TOKEN}
@@ -34,43 +34,45 @@ configFiles:
   Release: Config.xcconfig
 
 targets:
-  OpenVisionTests:
+  ReybainTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: OpenVisionTests
+      - path: ReybainTests
     dependencies:
-      - target: OpenVision
+      - target: Reybain
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.reybain.app.tests
 
-  OpenVision:
+  Reybain:
     type: application
     platform: iOS
     sources:
-      - path: OpenVision
+      - path: Reybain
         excludes:
           - "**/*.example"
     resources:
-      - path: OpenVision/Resources
+      - path: Reybain/Resources
         excludes:
           - "**/*.plist"
           - "SolutionRenderer/**"
       # Offline KaTeX + marked for the DISPLAY channel. A FOLDER reference keeps fonts/ next to
       # katex.min.css (a flattened copy would break the relative font URLs).
-      - path: OpenVision/Resources/SolutionRenderer
+      - path: Reybain/Resources/SolutionRenderer
         type: folder
     settings:
       base:
-        INFOPLIST_FILE: OpenVision/Resources/Info.plist
+        INFOPLIST_FILE: Reybain/Resources/Info.plist
+        PRODUCT_NAME: Reybain
         PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: false
         ENABLE_PREVIEWS: true
-        CODE_SIGN_ENTITLEMENTS: OpenVision/OpenVision.entitlements
-        SWIFT_OBJC_BRIDGING_HEADER: OpenVision/OpenVision-Bridging-Header.h
+        CODE_SIGN_ENTITLEMENTS: Reybain/Reybain.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: Reybain/Reybain-Bridging-Header.h
     dependencies:
       - package: meta-wearables-dat-ios
         products:
@@ -114,10 +116,10 @@ packages:
     from: "0.15.5"
 
 schemes:
-  OpenVision:
+  Reybain:
     build:
       targets:
-        OpenVision: all
+        Reybain: all
     run:
       config: Debug
       commandLineArguments:
@@ -126,7 +128,7 @@ schemes:
       config: Debug
       gatherCoverageData: true
       targets:
-        - OpenVisionTests
+        - ReybainTests
     profile:
       config: Release
     analyze:

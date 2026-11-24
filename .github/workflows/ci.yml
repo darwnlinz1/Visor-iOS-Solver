@@ -36,13 +36,13 @@ jobs:
       - name: Provide the gitignored config files
         run: |
           cp Config.xcconfig.example Config.xcconfig
-          cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
+          cp Reybain/Config/Config.swift.example Reybain/Config/Config.swift
 
       - name: Cache Swift packages
         uses: actions/cache@v6
         with:
           path: .spm
-          key: spm-${{ runner.os }}-${{ hashFiles('OpenVision.xcodeproj/project.pbxproj', 'project.yml') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('Reybain.xcodeproj/project.pbxproj', 'project.yml') }}
           restore-keys: spm-${{ runner.os }}-
 
       - name: Show toolchain
@@ -54,8 +54,8 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild build-for-testing \
-            -project OpenVision.xcodeproj \
-            -scheme OpenVision \
+            -project Reybain.xcodeproj \
+            -scheme Reybain \
             -destination 'generic/platform=iOS' \
             -clonedSourcePackagesDirPath .spm \
             -derivedDataPath DerivedData \

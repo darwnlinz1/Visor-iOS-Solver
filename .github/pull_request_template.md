@@ -6,7 +6,7 @@
 
 <!-- On-device? Which iPhone / iOS / glasses firmware? Which model? Steps you ran. -->
 - [ ] `make blueprint-check` (static guard) reports 0 failed
-- [ ] Touched `OpenVision/Services/Speech/` → `scripts/swift-local/run.sh` passes
+- [ ] Touched `Reybain/Services/Speech/` → `scripts/swift-local/run.sh` passes
 - [ ] CI and E2E are green on the last commit; every new suite shows an "Executed" line in the E2E log
 - [ ] Verified the specific behavior this PR changes (exact-output tests)
 - [ ] Touched the solver / voice / photo / reading flow → hardware steps run or listed for the owner

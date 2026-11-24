@@ -12,7 +12,7 @@ env:
 
 jobs:
   build:
-    name: Build OpenVision IPA
+    name: Build Reybain IPA
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -24,8 +24,8 @@ jobs:
           if [ ! -f Config.xcconfig ]; then
             cp Config.xcconfig.example Config.xcconfig
           fi
-          if [ ! -f OpenVision/Config/Config.swift ]; then
-            cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
+          if [ ! -f Reybain/Config/Config.swift ]; then
+            cp Reybain/Config/Config.swift.example Reybain/Config/Config.swift
           fi
           echo "Configuration files verified"
 
@@ -38,15 +38,15 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .spm
-          key: spm-${{ runner.os }}-${{ hashFiles('OpenVision.xcodeproj/project.pbxproj', 'project.yml') }}
+          key: spm-${{ runner.os }}-${{ hashFiles('Reybain.xcodeproj/project.pbxproj', 'project.yml') }}
           restore-keys: spm-${{ runner.os }}-
 
-      - name: Build OpenVision Release App
+      - name: Build Reybain Release App
         run: |
           set -o pipefail
           xcodebuild build \
-            -project OpenVision.xcodeproj \
-            -scheme OpenVision \
+            -project Reybain.xcodeproj \
+            -scheme Reybain \
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -clonedSourcePackagesDirPath .spm \
@@ -62,23 +62,27 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p Payload
-          APP_PATH=$(find DerivedData/Build/Products -name "OpenVision.app" -type d | head -n 1)
+          APP_PATH=$(find DerivedData/Build/Products -name "Reybain.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "::error::OpenVision.app not found in DerivedData/Build/Products"
+            echo "::error::Reybain.app not found in DerivedData/Build/Products"
             exit 1
           fi
           echo "Found app at: $APP_PATH"
           cp -r "$APP_PATH" Payload/
-          zip -r -y OpenVision.ipa Payload
-          ls -lh OpenVision.ipa
+          if [ ! -f "Payload/Reybain.app/Reybain" ]; then
+            echo "::error::Payload/Reybain.app/Reybain binary missing"
+            exit 1
+          fi
+          zip -r -y Reybain.ipa Payload
+          ls -lh Reybain.ipa
 
       - name: Verify IPA contents (strict — fails on missing required symbols)
         run: |
           chmod +x scripts/blueprint/verify_ipa_symbols.sh
-          bash scripts/blueprint/verify_ipa_symbols.sh OpenVision.ipa
+          bash scripts/blueprint/verify_ipa_symbols.sh Reybain.ipa
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: OpenVision-unsigned
-          path: OpenVision.ipa
+          name: Reybain-unsigned
+          path: Reybain.ipa

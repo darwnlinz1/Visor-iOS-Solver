@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Register or unregister Swift files in OpenVision.xcodeproj/project.pbxproj (PLAN.md T2.1).
+"""Register or unregister Swift files in Reybain.xcodeproj/project.pbxproj (PLAN.md T2.1).
 
 The .xcodeproj is committed and CI never runs xcodegen, so a Swift file only compiles once it is
 listed in project.pbxproj. PLAN.md §0 rule 5: change that file only through this script.
 
-  python3 scripts/pbxproj_files.py add OpenVision/Services/Speech/VietMathSpeech.swift [...]
-  python3 scripts/pbxproj_files.py remove OpenVision/Views/Components/SolutionView.swift [...]
-  python3 scripts/pbxproj_files.py remove-folder-ref OpenVision/Resources/SolutionRenderer
+  python3 scripts/pbxproj_files.py add Reybain/Services/Speech/VietMathSpeech.swift [...]
+  python3 scripts/pbxproj_files.py remove Reybain/Views/Components/SolutionView.swift [...]
+  python3 scripts/pbxproj_files.py remove-folder-ref Reybain/Resources/SolutionRenderer
   python3 scripts/pbxproj_files.py --self-test
   Add --dry-run to print the diff instead of writing project.pbxproj.
 
-add                Files under OpenVision/ join the app target (Sources phase
-                   5B369180DFE2DD0B99684491), files under OpenVisionTests/ the test target
+add                Files under Reybain/ join the app target (Sources phase
+                   5B369180DFE2DD0B99684491), files under ReybainTests/ the test target
                    (4082EAA7B9C9E911E29F7B44). Writes the PBXFileReference, the PBXBuildFile, the
                    child entry of the folder's PBXGroup and the Sources entry, and creates the
                    PBXGroup chain for a folder the project does not have yet. Object IDs are 24
@@ -19,7 +19,7 @@ add                Files under OpenVision/ join the app target (Sources phase
                    file), so a file always gets the same IDs. Running it again changes nothing.
 remove             The reverse: drops every entry of the file, then the groups it left empty.
 remove-folder-ref  Drops a folder reference (lastKnownFileType = folder, e.g. the KaTeX bundle
-                   OpenVision/Resources/SolutionRenderer) with its build file and Resources entry.
+                   Reybain/Resources/SolutionRenderer) with its build file and Resources entry.
 --self-test        Runs every command on a temporary copy of project.pbxproj (never the real one):
                    add + remove of fake files (one in a new nested folder) must give back the
                    original bytes, and so must a folder reference round trip.
@@ -38,12 +38,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PBXPROJ = "OpenVision.xcodeproj/project.pbxproj"
+PBXPROJ = "Reybain.xcodeproj/project.pbxproj"
 
 # Top-level source folder -> Sources build phase of the target that compiles it.
 TARGET_PHASES = {
-    "OpenVision": "5B369180DFE2DD0B99684491",       # app target
-    "OpenVisionTests": "4082EAA7B9C9E911E29F7B44",  # unit-test target
+    "Reybain": "5B369180DFE2DD0B99684491",       # app target
+    "ReybainTests": "4082EAA7B9C9E911E29F7B44",  # unit-test target
 }
 
 SECTION = re.compile(r"^/\* (Begin|End) (\w+) section \*/$")
@@ -387,7 +387,7 @@ class Project:
 
     def add_folder_ref(self, path: str) -> list[str]:
         """Self-test helper: a folder reference copied into the app's Resources phase."""
-        phase = self.resources_phase_of(TARGET_PHASES["OpenVision"])
+        phase = self.resources_phase_of(TARGET_PHASES["Reybain"])
         changes: list[str] = []
         ref = self._add_ref(path, "folder", changes)
         self._add_to_phase(path, ref, phase, "Resources", changes)
@@ -498,14 +498,14 @@ def self_test(root: Path) -> int:
             apply(command, list(paths), work, quiet=True)
             return copy.read_bytes().decode("utf-8")
 
-        fake_app = "OpenVision/Services/PbxprojSelfTest/Nested/PbxprojSelfTestFake.swift"
-        fake_existing = "OpenVision/Managers/PbxprojSelfTestManager.swift"
-        fake_test = "OpenVisionTests/PbxprojSelfTest/PbxprojSelfTestFakeTests.swift"
+        fake_app = "Reybain/Services/PbxprojSelfTest/Nested/PbxprojSelfTestFake.swift"
+        fake_existing = "Reybain/Managers/PbxprojSelfTestManager.swift"
+        fake_test = "ReybainTests/PbxprojSelfTest/PbxprojSelfTestFakeTests.swift"
         for fake in (fake_app, fake_existing, fake_test):
             (work / fake).parent.mkdir(parents=True, exist_ok=True)
             (work / fake).write_text("// pbxproj self-test\n", encoding="utf-8")
         before = Project(original)
-        expect(before.group_for_dir("OpenVision/Services/PbxprojSelfTest") is None, "the fake folder must be new")
+        expect(before.group_for_dir("Reybain/Services/PbxprojSelfTest") is None, "the fake folder must be new")
 
         added = run("add", fake_app, fake_existing, fake_test)
         project = Project(added)
@@ -513,7 +513,7 @@ def self_test(root: Path) -> int:
         inserted_only = all(op == "equal" or op == "insert" for op, *_ in
                             difflib.SequenceMatcher(None, original.split("\n"), added.split("\n")).get_opcodes())
         expect(inserted_only, "add must only insert lines")
-        app_phase, test_phase = TARGET_PHASES["OpenVision"], TARGET_PHASES["OpenVisionTests"]
+        app_phase, test_phase = TARGET_PHASES["Reybain"], TARGET_PHASES["ReybainTests"]
         for fake, phase, other in ((fake_app, app_phase, test_phase), (fake_existing, app_phase, test_phase),
                                    (fake_test, test_phase, app_phase)):
             refs = project.refs_at(fake)
@@ -529,12 +529,12 @@ def self_test(root: Path) -> int:
             expect(len(project.build_files_of(ref)) == 1, f"{fake}: one build file")
         nested = project.parent[project.refs_at(fake_app)[0]]
         middle = project.parent[nested]
-        expect(project.group_dir[middle] == "OpenVision/Services/PbxprojSelfTest", "new parent group created")
-        expect(project.parent[middle] == before.group_for_dir("OpenVision/Services"),
+        expect(project.group_dir[middle] == "Reybain/Services/PbxprojSelfTest", "new parent group created")
+        expect(project.parent[middle] == before.group_for_dir("Reybain/Services"),
                "the new folder hangs under the existing Services group")
-        expect(project.parent[project.parent[project.refs_at(fake_test)[0]]] == before.group_for_dir("OpenVisionTests"),
-               "the new test folder hangs under the OpenVisionTests group")
-        expect(project.parent[project.refs_at(fake_existing)[0]] == before.group_for_dir("OpenVision/Managers"),
+        expect(project.parent[project.parent[project.refs_at(fake_test)[0]]] == before.group_for_dir("ReybainTests"),
+               "the new test folder hangs under the ReybainTests group")
+        expect(project.parent[project.refs_at(fake_existing)[0]] == before.group_for_dir("Reybain/Managers"),
                "a file in an existing folder joins that folder's group")
 
         expect(run("add", fake_app, fake_existing, fake_test) == added, "add is idempotent")
@@ -542,8 +542,8 @@ def self_test(root: Path) -> int:
         expect(removed == original, "add + remove gives back the original bytes")
         expect(run("remove", fake_app, fake_existing, fake_test) == original, "remove is idempotent")
 
-        for bad in ("README.md", "scripts/pbxproj_files.py", "OpenVision/Missing/NotThere.swift",
-                    "../OpenVision/App/OpenVisionApp.swift"):
+        for bad in ("README.md", "scripts/pbxproj_files.py", "Reybain/Missing/NotThere.swift",
+                    "../Reybain/App/ReybainApp.swift"):
             try:
                 run("add", bad)
             except PbxprojError:
@@ -552,7 +552,7 @@ def self_test(root: Path) -> int:
                 raise AssertionError(f"add {bad} must be refused")
         expect(copy.read_bytes() == real_before, "refused requests leave the file alone")
 
-        folder = "OpenVision/Resources/PbxprojSelfTestFolder"
+        folder = "Reybain/Resources/PbxprojSelfTestFolder"
         project = Project(original)
         project.add_folder_ref(folder)
         copy.write_bytes(project.text.encode("utf-8"))
@@ -562,13 +562,13 @@ def self_test(root: Path) -> int:
         expect(len(project.build_files_of(ref)) == 1, "folder reference copied by the Resources phase")
         expect(run("remove-folder-ref", folder) == original, "folder reference round trip gives back the original bytes")
         try:
-            run("remove-folder-ref", "OpenVision/Resources/Info.plist")
+            run("remove-folder-ref", "Reybain/Resources/Info.plist")
         except PbxprojError:
             checks += 1
         else:
             raise AssertionError("remove-folder-ref must refuse a plain file reference")
 
-        katex = "OpenVision/Resources/SolutionRenderer"
+        katex = "Reybain/Resources/SolutionRenderer"
         if before.refs_at(katex):  # T4.4 removes it for real; until then, prove the command on a copy.
             ref = before.refs_at(katex)[0]
             doomed = {ref} | {bf.id for bf in before.build_files_of(ref)}
@@ -581,10 +581,10 @@ def self_test(root: Path) -> int:
             expect(run("remove-folder-ref", katex) == stripped, "remove-folder-ref is idempotent")
 
         probe = Project(original)
-        taken = probe.new_id("PBXFileReference", "OpenVision/Collision.swift")
+        taken = probe.new_id("PBXFileReference", "Reybain/Collision.swift")
         probe.lines.insert(probe.sections["PBXFileReference"][1], f"\t\t{taken} /* taken */ = {{isa = PBXFileReference; }};")
         probe.parse()
-        expect(probe.new_id("PBXFileReference", "OpenVision/Collision.swift") != taken, "an ID already in use is never reused")
+        expect(probe.new_id("PBXFileReference", "Reybain/Collision.swift") != taken, "an ID already in use is never reused")
 
     expect(real.read_bytes() == real_before, "the real project.pbxproj was not touched")
     print(f"pbxproj self-test passed ({checks} checks, real project.pbxproj untouched)")

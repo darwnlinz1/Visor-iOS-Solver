@@ -4,16 +4,16 @@
 #   scripts/swift-local/run.sh                  # every pure suite
 #   scripts/swift-local/run.sh VietMathSpeech   # only test files whose name contains this text
 #
-# Sources: every *.swift in OpenVision/Services/Speech (that folder must stay pure: Foundation only).
-# Tests:   OpenVisionTests/<Prefix>*Tests.swift for the prefixes below. Test files keep
-#          `@testable import OpenVision`, so the same files also run in the iOS target on CI.
+# Sources: every *.swift in Reybain/Services/Speech (that folder must stay pure: Foundation only).
+# Tests:   ReybainTests/<Prefix>*Tests.swift for the prefixes below. Test files keep
+#          `@testable import Reybain`, so the same files also run in the iOS target on CI.
 # The package lives OUTSIDE the repo (one per checkout/worktree) and keeps .build for fast reruns.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
 WORK="${SWIFT_LOCAL_DIR:-$ROOT/../.swift-local/$(basename "$ROOT")}"
 FILTER="${1:-}"
-SRC_DIR="$ROOT/OpenVision/Services/Speech"
+SRC_DIR="$ROOT/Reybain/Services/Speech"
 PREFIXES=(VietMath AnswerFormat ReplyAssembler PromptV2 ReadingEngine ReadingCommand ReadingModel MathPretty)
 
 command -v swift >/dev/null || { echo "error: swift toolchain not found" >&2; exit 1; }
@@ -22,15 +22,15 @@ sources=("$SRC_DIR"/*.swift)
 [ ${#sources[@]} -gt 0 ] || { echo "error: no Swift files in $SRC_DIR" >&2; exit 1; }
 
 rm -rf "$WORK/Sources" "$WORK/Tests"
-mkdir -p "$WORK/Sources/OpenVision" "$WORK/Tests/OpenVisionTests"
-for f in "${sources[@]}"; do ln -s "$f" "$WORK/Sources/OpenVision/"; done
+mkdir -p "$WORK/Sources/Reybain" "$WORK/Tests/ReybainTests"
+for f in "${sources[@]}"; do ln -s "$f" "$WORK/Sources/Reybain/"; done
 
 tests=0
 for prefix in "${PREFIXES[@]}"; do
-  for f in "$ROOT"/OpenVisionTests/"$prefix"*Tests.swift; do
+  for f in "$ROOT"/ReybainTests/"$prefix"*Tests.swift; do
     name="$(basename "$f")"
     if [ -n "$FILTER" ] && [[ "$name" != *"$FILTER"* ]]; then continue; fi
-    ln -s "$f" "$WORK/Tests/OpenVisionTests/$name"
+    ln -s "$f" "$WORK/Tests/ReybainTests/$name"
     tests=$((tests + 1))
   done
 done
@@ -39,10 +39,10 @@ cat > "$WORK/Package.swift" <<'EOF'
 // swift-tools-version: 5.9
 import PackageDescription
 let package = Package(
-    name: "OpenVisionLocal",
+    name: "ReybainLocal",
     targets: [
-        .target(name: "OpenVision"),
-        .testTarget(name: "OpenVisionTests", dependencies: ["OpenVision"]),
+        .target(name: "Reybain"),
+        .testTarget(name: "ReybainTests", dependencies: ["Reybain"]),
     ]
 )
 EOF

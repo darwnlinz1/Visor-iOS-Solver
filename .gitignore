@@ -18,7 +18,7 @@ DerivedData-sim/
 
 # Config files with secrets (use .example versions)
 Config.xcconfig
-OpenVision/Config/Config.swift
+Reybain/Config/Config.swift
 
 # CocoaPods
 Pods/

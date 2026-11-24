@@ -1,4 +1,4 @@
-# CodeRabbit configuration for OpenVision
+# CodeRabbit configuration for Reybain
 # Docs: https://docs.coderabbit.ai/reference/configuration
 
 language: "en-US"
@@ -23,12 +23,12 @@ reviews:
     - "!**/*.xcodeproj/**"
 
   path_instructions:
-    - path: "OpenVision/**/*.swift"
+    - path: "Reybain/**/*.swift"
       instructions: |
         This is an iOS 18+ SwiftUI voice-first math/exam solver for Meta Ray-Ban glasses using
         Gemini REST SSE (v2.1 structured format), Apple Speech + Silero VAD (FluidAudio),
         VietMathSpeech + ReadingEngine, and Meta Wearables DAT SDK. Pay special attention to:
-        - Pure Foundation boundary: OpenVision/Services/Speech/ must compile on Linux (no UIKit,
+        - Pure Foundation boundary: Reybain/Services/Speech/ must compile on Linux (no UIKit,
           SwiftUI, Combine, AVFoundation, OSLog, or `as NSString`).
         - Concurrency & Hang Risk: @MainActor isolation, keeping blocking AVAudioSession calls
           off the main thread, and avoiding state races between VoiceCommandService, ReadingEngine,
