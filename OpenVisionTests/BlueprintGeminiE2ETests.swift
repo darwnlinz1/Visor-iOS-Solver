@@ -17,6 +17,7 @@ final class BlueprintGeminiE2ETests: XCTestCase {
     private var savedOutput: ((String) -> Void)?
     private var savedProcessing: ((Bool) -> Void)?
     private var savedCapture: ((String) async -> Data?)?
+    private var savedStatus: ((GeminiLiveStatus) -> Void)?
 
     private let answer = #"""
     TYPE: ESSAY
@@ -33,7 +34,9 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         savedOutput = service.onOutputTranscription
         savedProcessing = service.processingChangedCallback
         savedCapture = service.onCaptureRequested
+        savedStatus = service.onStatusUpdate
         service.onCaptureRequested = nil
+        service.onStatusUpdate = nil
         service.apiKeysOverride = ["AQ.test-key-A", "AQ.test-key-B", "AQ.test-key-C"]
         service.onTextReceived = nil
         service.onPartialAnswer = nil
@@ -51,6 +54,7 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         service.urlProtocolClasses = []
         service.apiKeysOverride = nil
         service.onCaptureRequested = savedCapture
+        service.onStatusUpdate = savedStatus
         service.clearConversationHistory()
         service.resetNetworkState()
         service.onTextReceived = savedText
@@ -287,12 +291,18 @@ final class BlueprintGeminiE2ETests: XCTestCase {
     }
 
     func testServerOverloadBacksOffAndRetries() async throws {
-        GeminiStub.enqueue(.status(503, body: #"{"error":{"code":503,"status":"UNAVAILABLE"}}"#))
+        GeminiStub.enqueue(.status(503, body: #"{"error":{"code":503,"status":"UNAVAILABLE","message":"This model is currently experiencing high demand."}}"#))
         GeminiStub.enqueue(.stream(answer))
         var finalText: String?
+        var statuses: [GeminiLiveStatus] = []
         service.onTextReceived = { finalText = $0 }
+        service.onStatusUpdate = { statuses.append($0) }
         try await service.sendRESTMessage("giải câu này", imageData: nil)
         XCTAssertEqual(finalText, answer)
+        XCTAssertEqual(GeminiStub.captured.count, 2)
+        XCTAssertTrue(GeminiStub.captured[1].url.path.contains("/\(GeminiLiveService.modelChain[1]):"),
+                      "HTTP 503 high-demand should fail over immediately to the fallback model")
+        XCTAssertTrue(statuses.contains { if case .retrying = $0 { return true }; return false })
     }
 
     func testABadRequestFailsFastInsteadOfLooping() async throws {

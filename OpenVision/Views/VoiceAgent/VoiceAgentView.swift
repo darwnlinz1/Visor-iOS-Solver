@@ -80,6 +80,7 @@ struct VoiceAgentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.agentState)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.liveActivity)
         .animation(.easeInOut(duration: 0.25), value: readingEngine.plan == nil)
         .sheet(item: $previewPhoto) { item in
             FullScreenPhotoSheet(data: item.data)
@@ -106,6 +107,14 @@ struct VoiceAgentView: View {
     // MARK: - Header Bar
 
     private var orbMode: SwirlOrb.Mode {
+        if let kind = viewModel.liveActivity?.kind {
+            switch kind {
+            case .capturing, .uploading, .thinking, .retrying: return .thinking
+            case .listening: return .listening
+            case .reading, .repeating: return .speaking
+            case .notice, .error: break
+            }
+        }
         switch viewModel.agentState {
         case .listening: return .listening
         case .speaking: return .speaking
@@ -179,6 +188,9 @@ struct VoiceAgentView: View {
     }
 
     private var headerSubtitle: String {
+        if let activity = viewModel.liveActivity {
+            return activity.title
+        }
         if readingEngine.state == .reading, let progress = readingEngine.progressLabel {
             return "Đang đọc mục \(progress)"
         }
@@ -346,8 +358,8 @@ struct VoiceAgentView: View {
     private var currentTurns: [LiveTurn] {
         LiveTurnGrouper.turns(
             from: conversationManager.currentConversation?.messages ?? [],
-            pendingUserText: viewModel.userTranscript,
-            pendingPhotoData: viewModel.currentTranscriptPhotoData,
+            pendingUserText: viewModel.isCapturingFromButton ? "" : viewModel.userTranscript,
+            pendingPhotoData: viewModel.isCapturingFromButton ? nil : viewModel.currentTranscriptPhotoData,
             activePlan: viewModel.activePlan,
             isThinking: viewModel.agentState == .thinking
         )
@@ -357,7 +369,10 @@ struct VoiceAgentView: View {
     private var mainContent: some View {
         if settingsManager.settings.hideTextSpeakOnly {
             speakOnlyModeView
-        } else if currentTurns.isEmpty && viewModel.currentTranscriptPhotoData == nil && voiceCommandService.currentTranscription.isEmpty {
+        } else if currentTurns.isEmpty
+                    && viewModel.liveActivity == nil
+                    && viewModel.currentTranscriptPhotoData == nil
+                    && voiceCommandService.currentTranscription.isEmpty {
             emptyStateAndChecklist
         } else {
             liveFeedView
@@ -562,7 +577,7 @@ struct VoiceAgentView: View {
                                 )
                             } else if let text = turn.assistantText, !text.isEmpty {
                                 TranscriptBubble(text: text, isUser: false, isStreaming: false)
-                            } else if turn.isActiveTurn && viewModel.agentState == .thinking {
+                            } else if turn.isActiveTurn && viewModel.agentState == .thinking && viewModel.liveActivity == nil {
                                 HStack(spacing: 10) {
                                     TypingIndicator()
                                     Text("Gemini đang giải bài…")
@@ -586,6 +601,13 @@ struct VoiceAgentView: View {
                         .id("live-speech")
                     }
 
+                    // Real-time glasses & AI activity card (capture %, upload %, retry 429/503, reading, double-press repeat)
+                    if let activity = viewModel.liveActivity {
+                        liveActivityCard(activity)
+                            .id("live-activity")
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
+
                     Color.clear
                         .frame(height: 8)
                         .id("feed-bottom")
@@ -595,6 +617,11 @@ struct VoiceAgentView: View {
                 .padding(.bottom, Theme.Spacing.md)
             }
             .onChange(of: currentTurns.count) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo("feed-bottom", anchor: .bottom)
+                }
+            }
+            .onChange(of: viewModel.liveActivity?.kind) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo("feed-bottom", anchor: .bottom)
                 }
@@ -626,6 +653,90 @@ struct VoiceAgentView: View {
             return true
         }
         return active.record == record
+    }
+
+    private func liveActivityCard(_ activity: LiveActivity) -> some View {
+        let tint = activityTint(for: activity.kind)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: activityIcon(for: activity.kind))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(tint)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(tint.opacity(0.16)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(activity.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    if let detail = activity.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(Theme.Typography.caption)
+                            .foregroundColor(Theme.textSecondary)
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                switch activity.kind {
+                case .capturing, .uploading, .retrying:
+                    ProgressView()
+                        .tint(tint)
+                        .scaleEffect(0.85)
+                case .thinking:
+                    TypingIndicator()
+                case .repeating:
+                    Text("2× KÍNH")
+                        .font(.caption2.weight(.bold))
+                        .foregroundColor(tint)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(tint.opacity(0.16)))
+                case .reading, .listening, .notice, .error:
+                    EmptyView()
+                }
+            }
+
+            if let progress = activity.progress {
+                ProgressView(value: min(1.0, max(0.0, progress)))
+                    .tint(tint)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.bgCard.opacity(0.95))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                        .stroke(tint.opacity(0.45), lineWidth: 1)
+                )
+        )
+    }
+
+    private func activityIcon(for kind: LiveActivity.Kind) -> String {
+        switch kind {
+        case .capturing: return "eyeglasses"
+        case .uploading: return "icloud.and.arrow.up.fill"
+        case .thinking: return "sparkles"
+        case .retrying: return "arrow.triangle.2.circlepath"
+        case .listening: return "waveform"
+        case .reading: return "speaker.wave.2.fill"
+        case .repeating: return "repeat.circle.fill"
+        case .notice: return "info.circle.fill"
+        case .error: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func activityTint(for kind: LiveActivity.Kind) -> Color {
+        switch kind {
+        case .capturing, .listening: return Theme.info
+        case .uploading, .thinking, .repeating: return Theme.accent
+        case .retrying: return Theme.warning
+        case .reading: return Theme.success
+        case .notice: return Theme.textSecondary
+        case .error: return Theme.danger
+        }
     }
 
     private func attachedPhotoCard(uiImage: UIImage, data: Data) -> some View {

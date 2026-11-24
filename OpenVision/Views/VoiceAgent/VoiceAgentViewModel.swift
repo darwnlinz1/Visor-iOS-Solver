@@ -150,6 +150,7 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
     var onPhotoArrived: ((Data) -> Void)?
 
     private var cache: (assetID: String, created: Date, data: Data)?
+    private var consumedAssetIDs: Set<String> = []
     private var prefetchTask: Task<Void, Never>?
     private var inFlight: (assetID: String, task: Task<Data?, Never>)?
 
@@ -175,7 +176,12 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         return status == .authorized || status == .limited
     }
 
-    func fetchMostRecentPhoto(withinSeconds seconds: TimeInterval = SolverIntent.recentPhotoWindow) async -> Data? {
+    func fetchMostRecentPhoto(
+        withinSeconds seconds: TimeInterval = SolverIntent.recentPhotoWindow,
+        minCreationDate: Date? = nil,
+        ignoreConsumed: Bool = false,
+        markConsumed: Bool = false
+    ) async -> Data? {
         var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         if status == .notDetermined {
             _ = await requestAuthorizationIfNeeded()
@@ -186,12 +192,18 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
             return nil
         }
 
-        let cutoffDate = Date().addingTimeInterval(-seconds)
+        let windowCutoff = Date().addingTimeInterval(-seconds)
+        let cutoffDate = minCreationDate.map { max(windowCutoff, $0) } ?? windowCutoff
         guard let newest = await Self.newestImageAsset(since: cutoffDate) else {
+            return nil
+        }
+        if ignoreConsumed && consumedAssetIDs.contains(newest.id) {
+            AppLog.info(.photo, "Skipping already-consumed Meta album photo (\(newest.id))")
             return nil
         }
 
         if let cached = cache, cached.assetID == newest.id {
+            if markConsumed { consumedAssetIDs.insert(newest.id) }
             return cached.data
         }
 
@@ -211,6 +223,9 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         }
 
         cache = (assetID: newest.id, created: newest.created, data: data)
+        if markConsumed {
+            consumedAssetIDs.insert(newest.id)
+        }
         lastScannedPhotoData = data
         lastScannedTimestamp = Date()
         latestPhotoDate = newest.created
@@ -220,7 +235,9 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
         if cache?.assetID == newest.id {
             latestThumbnail = thumbnail.flatMap { UIImage(data: $0) }
         }
-        onPhotoArrived?(data)
+        if !markConsumed && !consumedAssetIDs.contains(newest.id) && newest.created >= Date().addingTimeInterval(-20) {
+            onPhotoArrived?(data)
+        }
         return data
     }
 
@@ -523,6 +540,36 @@ enum LiveTurnGrouper {
     }
 }
 
+/// Real-time status card model shown in the Live chat feed so the phone screen mirrors
+/// every glasses & AI action (capturing, 12 MP transfer %, upload %, 429/503 retries, reading, double-press repeat).
+struct LiveActivity: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case capturing
+        case uploading
+        case thinking
+        case retrying
+        case listening
+        case reading
+        case repeating
+        case notice
+        case error
+    }
+
+    let kind: Kind
+    let title: String
+    let detail: String?
+    let progress: Double?
+    let updatedAt: Date
+
+    init(kind: Kind, title: String, detail: String? = nil, progress: Double? = nil, updatedAt: Date = Date()) {
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.progress = progress
+        self.updatedAt = updatedAt
+    }
+}
+
 // MARK: - ViewModel
 
 @MainActor
@@ -547,6 +594,7 @@ final class VoiceAgentViewModel: ObservableObject {
     @Published var aiTranscript = ""
     @Published var errorMessage: String?
     @Published var statusMessage: String?
+    @Published private(set) var liveActivity: LiveActivity? = nil
     @Published var isVoiceReady = false
     @Published var isRecording = false
     @Published var recordingStatus: String?
@@ -571,6 +619,10 @@ final class VoiceAgentViewModel: ObservableObject {
     private var streamingPlan: ReadingPlan?
     private var didStartStreamingReading = false
     private var echoSettleTask: Task<Void, Never>?
+    private var activityClearTask: Task<Void, Never>?
+    private var statusClearTask: Task<Void, Never>?
+    private var isRepeatingViaGlasses = false
+    private var activeBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private var historyAwaitingReply = false
     private var lastSpokenAnswer = ""
@@ -596,6 +648,63 @@ final class VoiceAgentViewModel: ObservableObject {
             case .speaking: return "Đang đọc…"
             }
         }
+    }
+
+    // MARK: - Live activity & background execution helpers
+
+    private func setLiveActivity(_ activity: LiveActivity?, autoClearAfter seconds: TimeInterval? = nil) {
+        activityClearTask?.cancel()
+        activityClearTask = nil
+        liveActivity = activity
+        guard let activity, let seconds else { return }
+        activityClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.liveActivity == activity else { return }
+            self.liveActivity = nil
+        }
+    }
+
+    private func flashStatusMessage(_ text: String, duration: TimeInterval = 2.5) {
+        statusClearTask?.cancel()
+        statusMessage = text
+        statusClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.statusMessage == text else { return }
+            self.statusMessage = nil
+        }
+    }
+
+    private func updateReadingLiveActivity() {
+        let progressText = readingEngine.progressLabel.map { "Mục \($0)" }
+        if isRepeatingViaGlasses {
+            let detail = progressText.map { "Bấm 2 lần trên kính · \($0)" } ?? "Bấm 2 lần trên kính"
+            setLiveActivity(LiveActivity(kind: .repeating, title: "Đang đọc lại câu trả lời trước", detail: detail))
+        } else {
+            setLiveActivity(LiveActivity(kind: .reading, title: "AI đang đọc bài giải", detail: progressText))
+        }
+    }
+
+    private func beginBackgroundWork(name: String) {
+        endBackgroundWork()
+        let taskID = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            Task { @MainActor in
+                AppLog.warning(.app, "iOS background task '\(name)' reached expiration limit")
+                self?.endBackgroundWork()
+            }
+        }
+        activeBackgroundTaskID = taskID
+        if taskID != .invalid {
+            let remaining = UIApplication.shared.backgroundTimeRemaining
+            let remainingText = remaining.isFinite && remaining < 3600 ? "\(Int(remaining))s" : "unlimited"
+            AppLog.info(.app, "Started background task '\(name)' (remaining=\(remainingText))")
+        }
+    }
+
+    private func endBackgroundWork() {
+        guard activeBackgroundTaskID != .invalid else { return }
+        let id = activeBackgroundTaskID
+        activeBackgroundTaskID = .invalid
+        UIApplication.shared.endBackgroundTask(id)
     }
 
     // MARK: - View lifecycle
@@ -705,10 +814,18 @@ final class VoiceAgentViewModel: ObservableObject {
                 // Keep recognizer in `.processing` mode so bare commands ("tiếp", "tiếp tục") work without wake word.
                 self.agentState = .idle
             } else if self.isSessionActive {
+                self.isRepeatingViaGlasses = false
                 self.agentState = .listening
+                self.setLiveActivity(LiveActivity(kind: .listening, title: "Đang nghe lệnh tiếp theo…", detail: "Hãy nói câu hỏi của bạn"))
                 self.resumeListeningAfterSpeaking()
             } else {
+                self.isRepeatingViaGlasses = false
                 self.agentState = .idle
+                if let kind = self.liveActivity?.kind,
+                   kind == .reading || kind == .repeating || kind == .thinking || kind == .uploading || kind == .listening {
+                    self.setLiveActivity(nil)
+                }
+                self.endBackgroundWork()
                 if !self.voiceCommandService.isListening || self.shouldDeferWakeWordForMusic {
                     if self.voiceCommandService.isListening && self.shouldDeferWakeWordForMusic {
                         self.voiceCommandService.stopListening()
@@ -851,8 +968,11 @@ final class VoiceAgentViewModel: ObservableObject {
         streamingPlan = nil
         activeReplyAssembler = nil
         didStartStreamingReading = false
+        isRepeatingViaGlasses = false
         isSessionActive = false
         agentState = .idle
+        setLiveActivity(nil)
+        endBackgroundWork()
 
         if settingsManager.settings.wakeWordEnabled && !shouldDeferWakeWordForMusic {
             voiceCommandService.exitConversationMode()
@@ -872,10 +992,13 @@ final class VoiceAgentViewModel: ObservableObject {
         streamingPlan = nil
         activeReplyAssembler = nil
         didStartStreamingReading = false
+        isRepeatingViaGlasses = false
         Task { await gemini.interrupt() }
 
         isSessionActive = false
         agentState = .idle
+        setLiveActivity(nil)
+        endBackgroundWork()
         if !settingsManager.settings.wakeWordEnabled || shouldDeferWakeWordForMusic {
             voiceCommandService.stopListening()
             Task { await AudioSessionManager.shared.deactivateSessionAsync() }
@@ -892,6 +1015,11 @@ final class VoiceAgentViewModel: ObservableObject {
         aiTranscript = ""
         activePhotoContext = nil
         currentTranscriptPhotoData = nil
+        isRepeatingViaGlasses = false
+        errorMessage = nil
+        statusMessage = nil
+        setLiveActivity(nil)
+        endBackgroundWork()
         ConversationManager.shared.startNewConversation()
         gemini.clearConversationHistory()
     }
@@ -904,19 +1032,31 @@ final class VoiceAgentViewModel: ObservableObject {
             // Lesson 4: .speaking + isBargeInPaused BEFORE audio starts.
             self.agentState = .speaking
             self.voiceCommandService.isBargeInPaused = true
+            self.updateReadingLiveActivity()
         }
         readingEngine.onSegmentStarted = { [weak self] _ in
+            guard let self else { return }
             // N6: clear recognizer echo buffer on each new segment so wake-word commands work.
-            self?.voiceCommandService.resetBufferForNewSegment()
+            self.voiceCommandService.resetBufferForNewSegment()
+            self.updateReadingLiveActivity()
         }
         readingEngine.onWaitingForNext = { [weak self] in
             guard let self else { return }
             self.agentState = .idle
             self.voiceCommandService.isBargeInPaused = false
             self.voiceCommandService.resetBufferForNewSegment()
+            self.setLiveActivity(LiveActivity(
+                kind: .reading,
+                title: "Đang chờ lệnh \"tiếp\"",
+                detail: self.readingEngine.progressLabel.map { "Mục \($0)" }
+            ))
         }
         readingEngine.onReadingFinished = { [weak self] in
             guard let self else { return }
+            self.isRepeatingViaGlasses = false
+            if self.liveActivity?.kind == .reading || self.liveActivity?.kind == .repeating {
+                self.setLiveActivity(nil)
+            }
             MetricsCollector.shared.markSpokeDone()
             self.scheduleEchoSettleAndResume()
         }
@@ -926,15 +1066,27 @@ final class VoiceAgentViewModel: ObservableObject {
         HapticFeedback.light()
         if command == .stop {
             readingEngine.stop()
+            isRepeatingViaGlasses = false
+            setLiveActivity(nil)
             Task { await gemini.interrupt() }
             scheduleEchoSettleAndResume()
             return
         }
         readingEngine.apply(command)
-        if readingEngine.state == .paused || readingEngine.state == .waitingForNext {
+        if readingEngine.state == .paused {
             // App is now silent: allow bare voice commands ("tiếp", "tiếp tục") without wake word.
             voiceCommandService.isBargeInPaused = false
             agentState = .idle
+            setLiveActivity(LiveActivity(
+                kind: .reading,
+                title: "Đã tạm dừng đọc",
+                detail: readingEngine.progressLabel.map { "Mục \($0)" }
+            ))
+        } else if readingEngine.state == .waitingForNext {
+            voiceCommandService.isBargeInPaused = false
+            agentState = .idle
+        } else if readingEngine.state == .reading {
+            updateReadingLiveActivity()
         }
     }
 
@@ -1030,6 +1182,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 return
             }
 
+            self.isRepeatingViaGlasses = false
             self.userTranscript = command
             self.endSessionAfterSpeaking = false
             self.activeTurnID = UUID()
@@ -1230,6 +1383,47 @@ final class VoiceAgentViewModel: ObservableObject {
             guard let self else { return nil }
             return await self.captureForAgent()
         }
+
+        gemini.onStatusUpdate = { [weak self] status in
+            guard let self else { return }
+            guard self.isSessionActive || self.activeTurnID != nil else { return }
+            switch status {
+            case .preparingImage:
+                self.setLiveActivity(LiveActivity(
+                    kind: .uploading,
+                    title: "Đang tối ưu ảnh…",
+                    detail: "Chuẩn bị dữ liệu gửi lên Gemini"
+                ))
+            case .uploading(let progress, let kilobytes):
+                let pct = Int((progress * 100).rounded())
+                self.setLiveActivity(LiveActivity(
+                    kind: .uploading,
+                    title: "Đang tải ảnh lên Gemini (\(pct)%)",
+                    detail: "\(kilobytes) KB",
+                    progress: progress
+                ))
+            case .waitingForModel(let model, let keyLabel):
+                self.setLiveActivity(LiveActivity(
+                    kind: .thinking,
+                    title: "Gemini đang giải bài…",
+                    detail: "\(model) · \(keyLabel)"
+                ))
+            case .retrying(let reason):
+                self.setLiveActivity(LiveActivity(
+                    kind: .retrying,
+                    title: "Đang tự động thử lại…",
+                    detail: reason
+                ))
+            case .streaming(let model):
+                if !self.didStartStreamingReading {
+                    self.setLiveActivity(LiveActivity(
+                        kind: .thinking,
+                        title: "Đang nhận kết quả từ AI…",
+                        detail: model
+                    ))
+                }
+            }
+        }
     }
 
     private func detectReplyLanguage(sections: [AnswerSection], fallbackQuestion: String) -> String {
@@ -1278,12 +1472,14 @@ final class VoiceAgentViewModel: ObservableObject {
             voiceCommandService.enterProcessingState()
         }
         errorMessage = nil
+        isRepeatingViaGlasses = false
         userTranscript = trimmed
         aiTranscript = ""
         endSessionAfterSpeaking = false
         activeTurnID = UUID()
         activeTurnCommand = trimmed
         historyAwaitingReply = true
+        setLiveActivity(LiveActivity(kind: .thinking, title: "Đang gửi câu hỏi lên Gemini…", detail: nil))
 
         MetricsCollector.shared.markCommit(backend: "gemini", model: GeminiLiveService.modelName, ttsEngine: "apple")
 
@@ -1299,6 +1495,7 @@ final class VoiceAgentViewModel: ObservableObject {
     /// Replays a stored History answer offline using current math & speed settings (T5.5).
     func replayFromHistory(_ record: ReadingRecord) {
         let plan = ReadingPlan(record: record)
+        isRepeatingViaGlasses = false
         activePlan = plan
         aiTranscript = plan.segments.map(\.displayText).joined(separator: "\n")
         if voiceCommandService.isListening && (voiceCommandService.state == .conversationMode || voiceCommandService.state == .listening) {
@@ -1363,11 +1560,11 @@ final class VoiceAgentViewModel: ObservableObject {
     private func handleSendFailure(_ error: Error, command: String) {
         if error is CancellationError {
             MetricsCollector.shared.abandonTurn()
+            endBackgroundWork()
             return
         }
         AppLog.error(.gemini, "Send failed: \(error.localizedDescription)")
         MetricsCollector.shared.abandonTurn()
-        historyAwaitingReply = false
 
         let spokenError: String
         if case AIBackendError.notConfigured = error {
@@ -1375,8 +1572,19 @@ final class VoiceAgentViewModel: ObservableObject {
         } else {
             spokenError = SolverIntent.networkFailureMessage(for: command)
         }
+        // Close the open user turn in ConversationManager so a failed turn never stays open
+        // and mis-attaches a future turn's thinking spinner onto an old photo!
+        if historyAwaitingReply {
+            ConversationManager.shared.addAssistantMessage("⚠️ \(spokenError)", reading: nil)
+            historyAwaitingReply = false
+        }
         errorMessage = spokenError
         aiTranscript = spokenError
+        setLiveActivity(LiveActivity(
+            kind: .error,
+            title: "Chưa nhận được phản hồi từ Gemini",
+            detail: error.localizedDescription
+        ), autoClearAfter: 8.0)
 
         let shouldSpeak = (isSessionActive || activeTurnID != nil) && !ttsService.isSpeaking
         activeTurnID = nil
@@ -1389,6 +1597,7 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         } else {
             agentState = isSessionActive ? .listening : .idle
+            endBackgroundWork()
         }
     }
 
@@ -1451,7 +1660,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
     // MARK: - Photo capture (simplified T7.5 + T7.7 audio restoration)
 
-    private func acquireGlassesPhoto() async -> Data? {
+    private func acquireGlassesPhoto(freshSince: Date? = nil) async -> Data? {
         defer {
             // T7.7: log audio route + isOtherAudioPlaying and gently restore audio route only when mic is active.
             AppLog.info(.audio, "Post-capture route: \(AudioSessionManager.shared.currentRouteDescription), otherAudio=\(AudioSessionManager.shared.isOtherAudioPlaying)")
@@ -1468,12 +1677,35 @@ final class VoiceAgentViewModel: ObservableObject {
                fullResolution: settingsManager.settings.fullResolutionPhotos) {
             return direct
         }
-        return await RecentPhotoScanner.shared.fetchMostRecentPhoto()
+        if let freshSince {
+            // Strict freshness gate for explicit button/manual captures: NEVER reuse an old photo from a prior turn.
+            let minDate = freshSince.addingTimeInterval(-3.0)
+            let synced = await RecentPhotoScanner.shared.fetchMostRecentPhoto(
+                withinSeconds: 20.0,
+                minCreationDate: minDate,
+                ignoreConsumed: true,
+                markConsumed: true
+            )
+            if synced == nil {
+                AppLog.warning(.photo, "Direct glasses capture failed and no new Meta album photo arrived since \(minDate)")
+            }
+            return synced
+        }
+        return await RecentPhotoScanner.shared.fetchMostRecentPhoto(
+            withinSeconds: SolverIntent.recentPhotoWindow,
+            ignoreConsumed: false,
+            markConsumed: true
+        )
     }
 
     private func captureForAgent() async -> Data? {
         HapticFeedback.light()
-        let data = await acquireGlassesPhoto()
+        setLiveActivity(LiveActivity(
+            kind: .capturing,
+            title: "AI yêu cầu chụp ảnh từ kính…",
+            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP" : "Chế độ nhanh"
+        ))
+        let data = await acquireGlassesPhoto(freshSince: nil)
         if let data {
             let source = glassesManager.lastPhotoSource ?? "camera-roll"
             activePhotoContext = CapturedPhotoContext(data: data, source: source)
@@ -1483,6 +1715,11 @@ final class VoiceAgentViewModel: ObservableObject {
             AppLog.info(.photo, "Agent capture: got photo (\(data.count) bytes, source=\(source))")
         } else {
             HapticFeedback.error()
+            setLiveActivity(LiveActivity(
+                kind: .error,
+                title: "Không lấy được ảnh từ kính",
+                detail: "Hãy bấm nút chụp trên kính rồi thử lại"
+            ), autoClearAfter: 5.0)
             AppLog.warning(.photo, "Agent capture: no photo available")
         }
         return data
@@ -1491,20 +1728,37 @@ final class VoiceAgentViewModel: ObservableObject {
     func snapPhotoFromGlasses() async {
         HapticFeedback.light()
         AppLog.info(.photo, "Manual photo snap requested from glasses")
-        statusMessage = "Đang chụp ảnh từ kính…"
-        let data = await acquireGlassesPhoto()
-        statusMessage = nil
+        let captureRequestedAt = Date()
+        errorMessage = nil
+        activePhotoContext = nil
+        currentTranscriptPhotoData = nil
+        setLiveActivity(LiveActivity(
+            kind: .capturing,
+            title: "Kính đang chụp ảnh…",
+            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP" : "Chế độ nhanh"
+        ))
+        let data = await acquireGlassesPhoto(freshSince: captureRequestedAt)
 
         if let data {
             let source = glassesManager.lastPhotoSource ?? "camera-roll"
             activePhotoContext = CapturedPhotoContext(data: data, source: source)
             currentTranscriptPhotoData = data
             HapticFeedback.success()
+            setLiveActivity(LiveActivity(
+                kind: .notice,
+                title: "Đã nhận ảnh từ kính",
+                detail: "Nguồn: \(source) · \(max(1, data.count / 1024)) KB"
+            ), autoClearAfter: 3.0)
             AppLog.info(.photo, "Manual photo context cached (\(data.count) bytes, source=\(source))")
         } else {
             HapticFeedback.error()
-            let message = SolverIntent.missingPhotoMessage(for: lastProcessedCommand.isEmpty ? "chụp ảnh" : lastProcessedCommand)
+            let message = SolverIntent.photoFailedMessage
             errorMessage = message
+            setLiveActivity(LiveActivity(
+                kind: .error,
+                title: "Chưa nhận được ảnh từ kính",
+                detail: "Kiểm tra kết nối kính và thử chụp lại"
+            ), autoClearAfter: 6.0)
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: settingsManager.settings.preferGlassesMic
             )
@@ -1517,16 +1771,39 @@ final class VoiceAgentViewModel: ObservableObject {
     private func setupGlassesCallbacks() {
         glassesManager.onPhotoCaptured = { [weak self] data in
             Task { @MainActor in
-                let source = self?.glassesManager.lastPhotoSource ?? "stream-still"
-                self?.activePhotoContext = CapturedPhotoContext(data: data, source: source)
-                self?.currentTranscriptPhotoData = data
+                guard let self else { return }
+                let source = self.glassesManager.lastPhotoSource ?? "stream-still"
+                self.activePhotoContext = CapturedPhotoContext(data: data, source: source)
+                self.currentTranscriptPhotoData = data
                 AppLog.info(.photo, "Active photo context cached (\(data.count) bytes)")
+            }
+        }
+        glassesManager.onPhotoProgress = { [weak self] received, total in
+            guard let self, self.isCapturingFromButton || self.liveActivity?.kind == .capturing else { return }
+            let receivedKB = max(1, received / 1024)
+            if total > 0 {
+                let fraction = min(1.0, max(0.0, Double(received) / Double(total)))
+                let pct = Int((fraction * 100).rounded())
+                let totalKB = max(1, total / 1024)
+                self.setLiveActivity(LiveActivity(
+                    kind: .capturing,
+                    title: "Đang tải ảnh từ kính (\(pct)%)",
+                    detail: "\(receivedKB) / \(totalKB) KB",
+                    progress: fraction
+                ))
+            } else {
+                self.setLiveActivity(LiveActivity(
+                    kind: .capturing,
+                    title: "Đang tải ảnh từ kính…",
+                    detail: "\(receivedKB) KB"
+                ))
             }
         }
         RecentPhotoScanner.shared.onPhotoArrived = { [weak self] data in
             Task { @MainActor in
-                self?.activePhotoContext = CapturedPhotoContext(data: data, source: "camera-roll")
-                self?.currentTranscriptPhotoData = data
+                guard let self, !self.isCapturingFromButton else { return }
+                self.activePhotoContext = CapturedPhotoContext(data: data, source: "camera-roll")
+                self.currentTranscriptPhotoData = data
                 AppLog.info(.photo, "RecentPhotoScanner synced Meta album photo (\(data.count) bytes)")
             }
         }
@@ -1561,20 +1838,33 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func performButtonCapture(action: GlassesButtonAction) async {
-        guard !isCapturingFromButton else { return }
+        guard !isCapturingFromButton else {
+            AppLog.info(.glasses, "Ignoring overlapping button capture while another capture is running")
+            return
+        }
         if action == .captureAndSolve && !settingsManager.settings.isGeminiConfigured {
             HapticFeedback.error()
             let msg = SolverIntent.missingKeyMessage(for: SolverIntent.solvePhotoQuestion)
             errorMessage = msg
+            setLiveActivity(LiveActivity(kind: .error, title: "Chưa cấu hình Gemini API key", detail: "Mở Cài đặt → Gemini để dán key"), autoClearAfter: 6.0)
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: settingsManager.settings.preferGlassesMic
             )
             speakNotice(msg)
             return
         }
+
+        let captureRequestedAt = Date()
+        beginBackgroundWork(name: "OpenVision.Button.\(action.rawValue)")
         isCapturingFromButton = true
+        isRepeatingViaGlasses = false
         defer { isCapturingFromButton = false }
         HapticFeedback.light()
+
+        // Clear any stale photo context immediately so a failed capture can NEVER display or send an old photo!
+        errorMessage = nil
+        activePhotoContext = nil
+        currentTranscriptPhotoData = nil
 
         if action == .captureAndSolve || action == .captureAndListen {
             if ttsService.isSpeaking || readingEngine.isActive {
@@ -1587,13 +1877,21 @@ final class VoiceAgentViewModel: ObservableObject {
             await gemini.interrupt()
         }
 
-        statusMessage = "Đang chụp ảnh từ kính…"
-        let data = await acquireGlassesPhoto()
-        statusMessage = nil
+        setLiveActivity(LiveActivity(
+            kind: .capturing,
+            title: "Kính đang chụp ảnh…",
+            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP" : "Chế độ nhanh"
+        ))
+        let data = await acquireGlassesPhoto(freshSince: captureRequestedAt)
 
         guard let data else {
             HapticFeedback.error()
             errorMessage = SolverIntent.photoFailedMessage
+            setLiveActivity(LiveActivity(
+                kind: .error,
+                title: "Chưa nhận được ảnh từ kính",
+                detail: "Kiểm tra kết nối kính và bấm nút chụp lại"
+            ), autoClearAfter: 6.0)
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: settingsManager.settings.preferGlassesMic
             )
@@ -1619,6 +1917,11 @@ final class VoiceAgentViewModel: ObservableObject {
             activeTurnID = UUID()
             activeTurnCommand = question
             historyAwaitingReply = true
+            setLiveActivity(LiveActivity(
+                kind: .uploading,
+                title: "Đã nhận ảnh từ kính",
+                detail: "Nguồn: \(source) · \(max(1, data.count / 1024)) KB — đang gửi Gemini…"
+            ))
             MetricsCollector.shared.markCommit(backend: "gemini", model: GeminiLiveService.modelName, ttsEngine: "apple")
 
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
@@ -1630,6 +1933,11 @@ final class VoiceAgentViewModel: ObservableObject {
             // General mode: photo is cached; route audio and play the chime BEFORE entering `.conversationMode`
             // so the chime never leaks into Silero VAD or SFSpeechRecognizer.
             errorMessage = nil
+            setLiveActivity(LiveActivity(
+                kind: .listening,
+                title: "Đã nhận ảnh — Đang nghe lệnh…",
+                detail: "Hãy nói yêu cầu của bạn với ảnh vừa chụp"
+            ))
             await configureAudioForGlassesAsync()
             if settingsManager.settings.playActivationSound {
                 soundService.playWakeWordSound()
@@ -1638,16 +1946,25 @@ final class VoiceAgentViewModel: ObservableObject {
             await startSessionAsync()
 
         case .capture:
+            setLiveActivity(LiveActivity(
+                kind: .notice,
+                title: "Đã lưu ảnh vào bộ nhớ tạm",
+                detail: "Nguồn: \(source) · \(max(1, data.count / 1024)) KB"
+            ), autoClearAfter: 3.0)
+            endBackgroundWork()
             AppLog.info(.photo, "Photo cached in RAM silently for upcoming agent call")
 
         case .repeatAnswer, .none:
+            endBackgroundWork()
             break
         }
     }
 
     private func repeatLastAnswer() {
+        AppLog.info(.reading, "Double-press repeat requested (isProcessing=\(gemini.isProcessing), hasPlan=\(readingEngine.plan != nil), lastSpokenLen=\(lastSpokenAnswer.count))")
         // If AI is still working on a response, never cancel it — inform the wearer cleanly instead.
         if gemini.isProcessing || activeTurnID != nil {
+            flashStatusMessage("Bấm 2 lần trên kính: AI chưa phản hồi xong…", duration: 2.5)
             Task { @MainActor in
                 await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                     preferGlasses: settingsManager.settings.preferGlassesMic
@@ -1660,6 +1977,13 @@ final class VoiceAgentViewModel: ObservableObject {
             voiceCommandService.enterProcessingState()
         }
         if readingEngine.plan != nil {
+            beginBackgroundWork(name: "OpenVision.RepeatAnswer")
+            isRepeatingViaGlasses = true
+            setLiveActivity(LiveActivity(
+                kind: .repeating,
+                title: "Đang đọc lại câu trả lời trước",
+                detail: "Kích hoạt từ bấm 2 lần trên kính"
+            ))
             Task { @MainActor in
                 await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                     preferGlasses: settingsManager.settings.preferGlassesMic
@@ -1669,11 +1993,32 @@ final class VoiceAgentViewModel: ObservableObject {
             return
         }
         if ttsService.isSpeaking { ttsService.stop() }
-        Task { @MainActor in
-            await AudioSessionManager.shared.ensurePlaybackRouteAsync(
-                preferGlasses: settingsManager.settings.preferGlassesMic
-            )
-            self.speakNotice(self.lastSpokenAnswer.isEmpty ? SolverIntent.nothingToRepeatMessage : self.lastSpokenAnswer)
+        if !lastSpokenAnswer.isEmpty {
+            beginBackgroundWork(name: "OpenVision.RepeatAnswer")
+            isRepeatingViaGlasses = true
+            setLiveActivity(LiveActivity(
+                kind: .repeating,
+                title: "Đang đọc lại câu trả lời trước",
+                detail: "Kích hoạt từ bấm 2 lần trên kính"
+            ))
+            Task { @MainActor in
+                await AudioSessionManager.shared.ensurePlaybackRouteAsync(
+                    preferGlasses: settingsManager.settings.preferGlassesMic
+                )
+                self.speakNotice(self.lastSpokenAnswer)
+            }
+        } else {
+            setLiveActivity(LiveActivity(
+                kind: .notice,
+                title: "AI chưa có câu trả lời để đọc lại",
+                detail: "Hãy chụp ảnh hoặc đặt câu hỏi trước"
+            ), autoClearAfter: 3.5)
+            Task { @MainActor in
+                await AudioSessionManager.shared.ensurePlaybackRouteAsync(
+                    preferGlasses: settingsManager.settings.preferGlassesMic
+                )
+                self.speakNotice(SolverIntent.nothingToRepeatMessage)
+            }
         }
     }
 

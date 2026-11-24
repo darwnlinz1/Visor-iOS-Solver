@@ -129,6 +129,7 @@ final class GlassesManager: ObservableObject {
     var onVideoFrame: ((UIImage) -> Void)?
     var onVideoSampleBuffer: ((CMSampleBuffer) -> Void)?
     var onPhotoCaptured: ((Data) -> Void)?
+    var onPhotoProgress: ((_ bytesReceived: Int, _ totalBytes: Int) -> Void)?
     var onCaptureButton: ((GlassesButtonPress) -> Void)?
 
     // MARK: - Initialization
@@ -443,13 +444,36 @@ final class GlassesManager: ObservableObject {
         reviveInputsIfNeeded()
     }
 
+    private func acquireCamera(reason: String) async -> Camera? {
+        for attempt in 1...2 {
+            guard let session = await ensureSession() else { return nil }
+            if let cam = cameraForSession(session) {
+                return cam
+            }
+            AppLog.warning(.glasses, "Could not attach camera (reason: \(reason), attempt \(attempt)) — rebuilding session")
+            endSession()
+        }
+        errorMessage = "Không gắn được camera kính"
+        return nil
+    }
+
     private func wakeCamera(reason: String) async -> Camera? {
         for attempt in 1...2 {
-            guard let session = await ensureSession(), let cam = cameraForSession(session) else { return nil }
+            guard let session = await ensureSession(), let cam = cameraForSession(session) else {
+                if attempt == 1 {
+                    AppLog.warning(.glasses, "Camera attach failed before stream (attempt 1) — rebuilding session")
+                    endSession()
+                    continue
+                }
+                return nil
+            }
+            if cam.stream.state == .streaming {
+                return cam
+            }
             setupStreamListeners(stream: cam.stream)
             recordCameraStarted(reason: reason)
             cam.stream.start()
-            if await waitUntil(seconds: 8, { cam.stream.state == .streaming }) { return cam }
+            if await waitUntil(seconds: 5, { cam.stream.state == .streaming }) { return cam }
             AppLog.warning(.glasses, "Camera stream did not start (attempt \(attempt)) — rebuilding session")
             endSession()
         }
@@ -470,18 +494,28 @@ final class GlassesManager: ObservableObject {
         AppLog.info(.glasses, "Streaming stopped")
     }
 
-    private func stopCameraKeepingSession() {
-        recordCameraStopped(reason: "stopCameraKeepingSession")
+    private func releaseCameraPreservingSession(reason: String) {
+        recordCameraStopped(reason: reason)
+        resolvePendingPhoto(nil)
         if photoStarted {
             camera?.photo.stop()
             photoStarted = false
         }
         camera?.stream.stop()
+        // MWDATCamera lifecycle rule: `camera.stop()` invalidates the Camera instance permanently.
+        // Drop the reference & photo tokens so the next capture calls `session.addCamera(config:)`
+        // cleanly on the already-started DeviceSession (avoids 8s zombie-camera timeout & session teardown).
         camera?.stop()
+        camera = nil
+        photoTokens = []
         cleanupStreamListeners()
         isStreaming = false
         lastFrame = nil
         lastFrameTime = .distantPast
+    }
+
+    private func stopCameraKeepingSession() {
+        releaseCameraPreservingSession(reason: "stopCameraKeepingSession")
     }
 
     /// Capture a still from the currently running video stream (used during POV recording).
@@ -549,41 +583,51 @@ final class GlassesManager: ObservableObject {
 
     private func performPhotoCapture(fullResolution: Bool, timeout: TimeInterval) async -> Data? {
         guard requireSDK() != nil else { return nil }
-        guard isRegistered, connectedDevice != nil else { return nil }
+        guard isRegistered, connectedDevice != nil else {
+            AppLog.warning(.glasses, "Direct photo skipped: registered=\(isRegistered), connected=\(connectedDevice != nil)")
+            return nil
+        }
         if isStreaming {
             return await capturePhotoFromActiveStream(timeout: 10.0)
         }
 
         isTakingPhoto = true
         let startedAt = Date()
+        AppLog.info(.glasses, "Starting glasses photo capture (fullResolution=\(fullResolution), fullPhotoFailures=\(fullPhotoFailures), sessionStarted=\(sessionStarted))")
         defer {
             isTakingPhoto = false
             reviveInputsIfNeeded()
         }
 
         guard await ensureCameraPermission() else { return nil }
-        guard let cam = await wakeCamera(reason: "photo_capture") else {
-            AppLog.warning(.glasses, "Direct photo: camera never woke")
-            stopCameraAfterPhoto()
-            return nil
-        }
 
+        // MWDATCamera hardware rule: `Camera.photo` and `Camera.stream` are mutually exclusive.
+        // In 12 MP mode, start `Camera.photo` directly WITHOUT starting `cam.stream` first!
         if fullResolution && fullPhotoFailures < 2 {
-            // T7.3: 12 MP mode tries standalone Camera.photo first (75s cap, 15s transfer stall cap).
-            if let full = await captureStandalonePhoto(cam: cam, fullResolution: true, maxDuration: timeout, stallTimeout: 15.0) {
+            if let cam = await acquireCamera(reason: "photo_capture_12mp") {
+                recordCameraStarted(reason: "photo_capture_12mp")
+                if let full = await captureStandalonePhoto(cam: cam, fullResolution: true, maxDuration: timeout, stallTimeout: 15.0) {
+                    stopCameraAfterPhoto()
+                    recordCapturedPhoto(full, source: "camera-photo-12mp", startedAt: startedAt)
+                    return full
+                }
+                noteFullPhotoFailure()
+                AppLog.warning(.glasses, "12 MP standalone capture failed — falling back to fast stream still")
+                releaseCameraPreservingSession(reason: "photo_capture_12mp_fallback")
+            } else {
+                AppLog.warning(.glasses, "Direct 12 MP photo: could not acquire camera")
                 stopCameraAfterPhoto()
-                recordCapturedPhoto(full, source: "camera-photo-12mp", startedAt: startedAt)
-                return full
-            }
-            noteFullPhotoFailure()
-            // Re-wake stream for fallback if standalone stopped it.
-            if cam.stream.state != .streaming {
-                cam.stream.start()
-                _ = await waitUntil(seconds: 5, { cam.stream.state == .streaming })
+                return nil
             }
         }
 
         // Fast stream still (~1-2 s, 10 s timeout).
+        guard let cam = await wakeCamera(reason: fullResolution ? "photo_capture_fallback" : "photo_capture") else {
+            AppLog.warning(.glasses, "Direct photo: camera stream never woke")
+            stopCameraAfterPhoto()
+            return nil
+        }
+
         lastPhotoData = nil
         if cam.stream.capturePhoto(format: .jpeg) {
             let streamDeadline = Date().addingTimeInterval(10.0)
@@ -605,7 +649,7 @@ final class GlassesManager: ObservableObject {
             return liveFrame
         }
 
-        // Secondary fallback for non-fullResolution mode: Camera.photo .large
+        // Secondary fallback for non-fullResolution mode: Camera.photo .large (after stopping stream cleanly).
         if !fullResolution && fullPhotoFailures < 2 {
             if let large = await captureStandalonePhoto(cam: cam, fullResolution: false, maxDuration: 30.0, stallTimeout: 15.0) {
                 stopCameraAfterPhoto()
@@ -625,12 +669,27 @@ final class GlassesManager: ObservableObject {
         maxDuration: TimeInterval,
         stallTimeout: TimeInterval
     ) async -> Data? {
-        if !photoStarted { cam.photo.start() }
-        guard await waitUntil(seconds: 2.0, { [weak self] in self?.photoStarted == true }) else {
+        // Mutual exclusion: ensure `cam.stream` is completely stopped BEFORE starting `cam.photo`.
+        if cam.stream.state != .stopped {
+            AppLog.info(.glasses, "Stopping active stream before starting Camera.photo")
+            cam.stream.stop()
+            let stopped = await waitUntil(seconds: 2.0, { cam.stream.state == .stopped })
+            if !stopped {
+                AppLog.warning(.glasses, "Stream did not report .stopped before Camera.photo start (state=\(cam.stream.state))")
+            }
+        }
+
+        let startRequestedAt = Date()
+        if !photoStarted {
+            AppLog.info(.glasses, "Starting Camera.photo (resolution=\(fullResolution ? "full" : "large"))")
+            cam.photo.start()
+        }
+        guard await waitUntil(seconds: 5.0, { [weak self] in self?.photoStarted == true }) else {
+            AppLog.warning(.glasses, "Camera.photo did not reach .started within 5s")
             return nil
         }
-        cam.stream.stop()
-        _ = await waitUntil(seconds: 1.5, { cam.stream.state == .stopped })
+        let startMs = Int(Date().timeIntervalSince(startRequestedAt) * 1000)
+        AppLog.info(.glasses, "Camera.photo started in \(startMs)ms — triggering shutter")
 
         let captureID = UUID()
         pendingPhotoID = captureID
@@ -676,17 +735,7 @@ final class GlassesManager: ObservableObject {
     }
 
     private func stopCameraAfterPhoto() {
-        recordCameraStopped(reason: "stopCameraAfterPhoto")
-        if photoStarted {
-            camera?.photo.stop()
-            photoStarted = false
-        }
-        camera?.stream.stop()
-        camera?.stop()
-        cleanupStreamListeners()
-        isStreaming = false
-        lastFrame = nil
-        lastFrameTime = .distantPast
+        releaseCameraPreservingSession(reason: "stopCameraAfterPhoto")
         if !wantsButtonLink { endSession() }
     }
 
@@ -705,7 +754,7 @@ final class GlassesManager: ObservableObject {
         photoTokens.append(photo.statePublisher.listen { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
-                AppLog.debug(.glasses, "Photo state: \(state)")
+                AppLog.info(.glasses, "Photo state: \(state)")
                 if case .started = state {
                     self.photoStarted = true
                 } else if case .stopped = state {
@@ -728,10 +777,14 @@ final class GlassesManager: ObservableObject {
             }
         })
         photoTokens.append(photo.transferProgressPublisher.listen { [weak self] progress in
+            let received = Int(clamping: progress.bytesReceived)
+            let total = Int(clamping: progress.totalBytes)
             Task { @MainActor in
-                self?.lastTransferProgressAt = Date()
+                guard let self else { return }
+                self.lastTransferProgressAt = Date()
+                self.onPhotoProgress?(received, total)
             }
-            AppLog.debug(.glasses, "Photo transfer: \(progress.bytesReceived)/\(progress.totalBytes) bytes")
+            AppLog.debug(.glasses, "Photo transfer: \(received)/\(total) bytes")
         })
     }
 
@@ -803,6 +856,11 @@ final class GlassesManager: ObservableObject {
             return
         }
         guard connectedDevice != nil else {
+            setConnectionPhase(.waitingForGlasses)
+            return
+        }
+        if UIApplication.shared.applicationState == .background {
+            AppLog.info(.glasses, "App in background — deferring glasses button link start until foreground")
             setConnectionPhase(.waitingForGlasses)
             return
         }
@@ -978,6 +1036,11 @@ final class GlassesManager: ObservableObject {
             hasConnectedDevice: connectedDevice != nil,
             permissionDenied: inputsPermissionDenied
         ) else { return }
+        if UIApplication.shared.applicationState == .background {
+            AppLog.info(.glasses, "App in background — pausing glasses link retries until foreground")
+            setConnectionPhase(.waitingForGlasses)
+            return
+        }
         linkRetryTask?.cancel()
         let delay = reconnectPolicy.nextDelaySeconds()
         let attempt = reconnectPolicy.attemptCount

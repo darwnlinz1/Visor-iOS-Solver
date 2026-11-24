@@ -79,6 +79,55 @@ struct LogEntry: Identifiable, Equatable, Sendable {
     }
 }
 
+private enum AppLogFileWriter {
+    private static let queue = DispatchQueue(label: "com.openvision.applog.file", qos: .utility)
+    private static let maxBytes: UInt64 = 512 * 1024
+
+    static var logFileURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return docs.appendingPathComponent("openvision.log")
+    }
+
+    private static var previousLogFileURL: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return docs.appendingPathComponent("openvision.prev.log")
+    }
+
+    static func appendLine(_ line: String) {
+        guard let data = line.data(using: .utf8) else { return }
+        queue.async {
+            let url = logFileURL
+            let fm = FileManager.default
+            if let attrs = try? fm.attributesOfItem(atPath: url.path),
+               let size = attrs[.size] as? UInt64,
+               size >= maxBytes {
+                let prev = previousLogFileURL
+                try? fm.removeItem(at: prev)
+                try? fm.moveItem(at: url, to: prev)
+            }
+            if fm.fileExists(atPath: url.path) {
+                if let handle = try? FileHandle(forWritingTo: url) {
+                    _ = try? handle.seekToEnd()
+                    try? handle.write(contentsOf: data)
+                    try? handle.close()
+                }
+            } else {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    static func clear() {
+        queue.async {
+            let fm = FileManager.default
+            try? fm.removeItem(at: logFileURL)
+            try? fm.removeItem(at: previousLogFileURL)
+        }
+    }
+}
+
 private enum AppLogFormatter {
     private static let lock = NSLock()
     private static let formatter: DateFormatter = {
@@ -114,6 +163,7 @@ final class AppLogStore: ObservableObject {
 
     func clear() {
         entries.removeAll()
+        AppLogFileWriter.clear()
     }
 
     func filtered(category: LogCategory?, minLevel: LogLevel, query: String) -> [LogEntry] {
@@ -236,11 +286,12 @@ enum AppLog {
                 osLogger.error("\(resolvedMessage, privacy: .public)")
             }
         }
-        // Write to stderr so `xcrun simctl launch --console` (CI launch_smoke) sees startup lines immediately.
+        // Write to stderr (for simulator console) and persist to Documents/openvision.log for easy device debugging.
         let line = entry.formattedLine + "\n"
         if let data = line.data(using: .utf8) {
             FileHandle.standardError.write(data)
         }
+        AppLogFileWriter.appendLine(line)
         Task { @MainActor in
             AppLogStore.shared.append(entry)
         }

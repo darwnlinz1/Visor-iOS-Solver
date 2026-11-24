@@ -10,6 +10,44 @@ import Foundation
 import UIKit
 import AVFoundation
 
+/// Real-time transport & model status emitted by `GeminiLiveService` for live UI progress reporting.
+enum GeminiLiveStatus: Equatable, Sendable {
+    case preparingImage
+    case uploading(progress: Double, kilobytes: Int)
+    case waitingForModel(model: String, keyLabel: String)
+    case streaming(model: String)
+    case retrying(reason: String)
+}
+
+private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let onProgress: @Sendable (Double) -> Void
+    private let lock = NSLock()
+    private var lastReportedBucket: Int = -1
+
+    init(onProgress: @escaping @Sendable (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        let fraction = min(1.0, max(0.0, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
+        let bucket = fraction >= 0.999 ? 10 : Int(fraction * 5.0)
+        lock.lock()
+        let shouldEmit = bucket > lastReportedBucket
+        if shouldEmit { lastReportedBucket = bucket }
+        lock.unlock()
+        if shouldEmit {
+            onProgress(fraction)
+        }
+    }
+}
+
 @MainActor
 final class GeminiLiveService: ObservableObject {
     // MARK: - Singleton
@@ -95,6 +133,9 @@ final class GeminiLiveService: ObservableObject {
     /// The model asked to SEE (it replied with `captureToken`) and no photo was attached: take one
     /// (glasses camera, or a photo just synced to Camera Roll) and return it, or nil if none.
     var onCaptureRequested: ((_ question: String) async -> Data?)?
+
+    /// Real-time upload / thinking / retry status updates for the Live screen.
+    var onStatusUpdate: ((GeminiLiveStatus) -> Void)?
 
     // MARK: - Active Request Tracking
 
@@ -224,6 +265,7 @@ final class GeminiLiveService: ObservableObject {
 
         var prepared: Data?
         if let imageData {
+            onStatusUpdate?(.preparingImage)
             prepared = await Task.detached(priority: .userInitiated) { PhotoPayload.uploadJPEG(from: imageData) ?? imageData }.value
         }
         let fullUpload = prepared
@@ -261,7 +303,13 @@ final class GeminiLiveService: ObservableObject {
             let body = try makeRequestBody(contents: contents)
             AppLog.info(.gemini, "Sending request (attempt \(attempt)/\(maxAttempts), \(body.count / 1024) KB) to \(model) with \(keyLabel)")
 
-            let outcome = await performStreamingRequest(body: body, model: model, key: key, generation: generation)
+            let outcome = await performStreamingRequest(
+                body: body,
+                model: model,
+                key: key,
+                keyLabel: keyLabel,
+                generation: generation
+            )
             switch outcome {
             case .success(let rawText, let signature, let finishReason):
                 lastUsedModel = model
@@ -278,6 +326,7 @@ final class GeminiLiveService: ObservableObject {
                 AppLog.warning(.gemini, "\(model) quota exhausted for \(keyLabel) — rotating")
                 coolDown(model: model, key: key, for: retryAfter ?? 60)
                 lastErrorMessage = "Gemini quota exhausted (429)"
+                onStatusUpdate?(.retrying(reason: "Hết hạn mức (429) — đang đổi API key/model khác…"))
                 if allCandidatesCoolingDown(keys: allKeys) {
                     await backoff(attempt: attempt)
                 }
@@ -286,11 +335,13 @@ final class GeminiLiveService: ObservableObject {
                 AppLog.warning(.gemini, "\(keyLabel) rejected (\(message)) — dropping for an hour")
                 coolDown(model: nil, key: key, for: 3600)
                 lastErrorMessage = message
+                onStatusUpdate?(.retrying(reason: "API \(keyLabel) không hợp lệ — đang đổi key khác…"))
 
             case .modelUnavailable(let message):
                 AppLog.warning(.gemini, "\(model) unavailable (\(message)) — falling back to next model")
                 coolDown(model: model, key: nil, for: 3600)
                 lastErrorMessage = message
+                onStatusUpdate?(.retrying(reason: "\(model) không khả dụng — chuyển sang model dự phòng…"))
 
             case .unsupportedField(let capability, let message):
                 guard downgrade(capability) else {
@@ -317,7 +368,23 @@ final class GeminiLiveService: ObservableObject {
             case .serverError(let message):
                 AppLog.warning(.gemini, "Server error from \(model): \(message)")
                 lastErrorMessage = message
-                await backoff(attempt: attempt)
+                let isOverloaded = message.contains("503")
+                    || message.localizedCaseInsensitiveContains("high demand")
+                    || message.localizedCaseInsensitiveContains("unavailable")
+                    || message.localizedCaseInsensitiveContains("overloaded")
+                if isOverloaded {
+                    coolDown(model: model, key: nil, for: 30)
+                    let hasFallback = !allCandidatesCoolingDown(keys: allKeys)
+                    onStatusUpdate?(.retrying(reason: hasFallback
+                        ? "\(model) đang quá tải (503) — chuyển sang model dự phòng…"
+                        : "Máy chủ Gemini quá tải (503) — đang thử lại…"))
+                    if !hasFallback {
+                        await backoff(attempt: attempt)
+                    }
+                } else {
+                    onStatusUpdate?(.retrying(reason: "Lỗi máy chủ Gemini — đang thử lại…"))
+                    await backoff(attempt: attempt)
+                }
 
             case .network(let message, let partial, let signature, let finishReason):
                 if !AnswerFormat.parse(partial).sections.isEmpty {
@@ -329,6 +396,7 @@ final class GeminiLiveService: ObservableObject {
                 lastErrorMessage = message
                 networkFailures += 1
                 if networkFailures > Self.maxNetworkRetries { break retryLoop }
+                onStatusUpdate?(.retrying(reason: "Mạng chập chờn — đang thử kết nối lại (\(networkFailures)/\(Self.maxNetworkRetries))…"))
                 await backoff(attempt: networkFailures)
 
             case .fatal(let message):
@@ -475,7 +543,13 @@ final class GeminiLiveService: ObservableObject {
         return try JSONSerialization.data(withJSONObject: body, options: [])
     }
 
-    private func performStreamingRequest(body: Data, model: String, key: String, generation: Int) async -> AttemptOutcome {
+    private func performStreamingRequest(
+        body: Data,
+        model: String,
+        key: String,
+        keyLabel: String,
+        generation: Int
+    ) async -> AttemptOutcome {
         let endpoint = "https://\(Self.apiHost)/v1beta/models/\(model):streamGenerateContent?alt=sse"
         guard let url = URL(string: endpoint) else { return .fatal("Invalid Gemini URL") }
         var request = URLRequest(url: url)
@@ -486,11 +560,31 @@ final class GeminiLiveService: ObservableObject {
         request.httpBody = body
         request.timeoutInterval = Self.idleTimeout
 
+        let payloadKB = max(1, body.count / 1024)
+        let hasLargePayload = body.count >= 16 * 1024
+        if hasLargePayload {
+            onStatusUpdate?(.uploading(progress: 0.05, kilobytes: payloadKB))
+        } else {
+            onStatusUpdate?(.waitingForModel(model: model, keyLabel: keyLabel))
+        }
+
+        let progressDelegate = UploadProgressDelegate { [weak self] fraction in
+            Task { @MainActor [weak self] in
+                guard let self, self.requestGeneration == generation else { return }
+                if fraction >= 0.999 {
+                    self.onStatusUpdate?(.waitingForModel(model: model, keyLabel: keyLabel))
+                } else if hasLargePayload {
+                    self.onStatusUpdate?(.uploading(progress: fraction, kilobytes: payloadKB))
+                }
+            }
+        }
+
         var accumulated = ""
         var signature: String?
         var finishReason: String?
+        var didNotifyStreaming = false
         do {
-            let (bytes, response) = try await session.bytes(for: request)
+            let (bytes, response) = try await session.bytes(for: request, delegate: progressDelegate)
             guard let http = response as? HTTPURLResponse else {
                 return .network("No HTTP response", partial: "", signature: nil, finishReason: nil)
             }
@@ -504,6 +598,7 @@ final class GeminiLiveService: ObservableObject {
                 return Self.classifyHTTPError(status: http.statusCode, body: errorBody,
                                               retryAfter: http.value(forHTTPHeaderField: "Retry-After"))
             }
+            onStatusUpdate?(.waitingForModel(model: model, keyLabel: keyLabel))
             for try await line in bytes.lines {
                 guard generation == requestGeneration else { return .cancelled }
                 guard let chunk = Self.parseSSELine(line) else { continue }
@@ -514,6 +609,10 @@ final class GeminiLiveService: ObservableObject {
                 // Read finishReason BEFORE skipping empty-text chunks (final SSE chunk often has text == "", N12).
                 if let reason = chunk.finishReason, !reason.isEmpty { finishReason = reason }
                 guard !chunk.text.isEmpty else { continue }
+                if !didNotifyStreaming {
+                    didNotifyStreaming = true
+                    onStatusUpdate?(.streaming(model: model))
+                }
                 accumulated += chunk.text
                 let partial = AnswerFormat.partialAnswer(in: accumulated)
                 if !partial.requestsCapture && (!partial.sections.isEmpty || partial.isTypeKnown) {
