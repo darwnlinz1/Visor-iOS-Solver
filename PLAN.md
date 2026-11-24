@@ -1124,7 +1124,7 @@ Ghi chú / log lỗi (đính kèm file Xuất log):
 3. Meta AI app: bật Developer Mode (Cài đặt → Thiết bị → Kính → Developer Mode, hoặc
    Cài đặt → Giới thiệu → chạm số phiên bản 5 lần, tuỳ phiên bản).
 4. Trong app: Cài đặt → Kính → "Cài/cập nhật thành phần trên kính"
-   (`Wearables.shared.openDATGlassesAppUpdate()`). Cần firmware kính V126+, Meta AI V282+, iOS 17.2+.
+   (`Wearables.shared.openDATGlassesAppUpdate()`). Cần firmware kính V128+, Meta AI V292+, iOS 17.2+ (DAT 1.0.1).
 5. Cài đặt → Gemini: dán API key (nhiều key cách nhau bằng dấu phẩy, nên từ các project khác nhau).
    Key lưu trong Keychain, không bao giờ nằm trong code.
 6. Cài đặt iOS → Trợ năng → Nội dung được đọc → Giọng nói: tải giọng tiếng Việt Enhanced/Premium.
