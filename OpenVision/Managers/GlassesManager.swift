@@ -261,8 +261,9 @@ final class GlassesManager: ObservableObject {
         } catch {
             dumpSDKLogs(since: 15)
             let mapped = localizedRegistrationErrorMessage(for: error)
-            errorMessage = mapped
-            print("[GlassesManager] Registration error: \(error) — \(mapped)")
+            // Caller (GlassesSettingsView) presents the mapped guidance inline; avoid also setting
+            // `errorMessage` here so the user doesn't see a duplicate modal alert simultaneously.
+            NSLog("[GlassesManager] Registration error: %@ — %@", String(describing: error), mapped)
             throw error
         }
     }

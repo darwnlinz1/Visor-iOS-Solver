@@ -153,7 +153,14 @@ struct GlassesSettingsView: View {
 
     private var mwdatConfigSection: some View {
         let report = glassesManager.mwdatConfigReport
-        let modeColor: Color = (report.mode == .developer || report.mode == .production) ? Theme.success : Theme.danger
+        let modeColor: Color
+        if !report.hasBlockingIssues && (report.mode == .developer || report.mode == .production) {
+            modeColor = Theme.success
+        } else if report.mode == .invalidPlaceholder || report.mode == .invalidFormat {
+            modeColor = Theme.danger
+        } else {
+            modeColor = Theme.warning
+        }
         let teamColor: Color = (report.teamIDState == .placeholder || report.teamIDState == .invalid) ? Theme.danger : .secondary
         let issueColor: Color = report.mode == .invalidPlaceholder ? Theme.danger : Theme.warning
 

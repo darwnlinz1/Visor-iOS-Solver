@@ -281,18 +281,40 @@ def main() -> int:
     build_ipa_text = read(".github/workflows/build-ipa.yml")
     verify_lines = [ln for ln in build_ipa_text.splitlines() if "verify_ipa_symbols.sh" in ln and "chmod" not in ln]
     verify_unmasked = bool(verify_lines) and all("|| echo" not in ln and "|| true" not in ln for ln in verify_lines)
+    verify_step_match = re.search(
+        r"-\s+name:\s*Verify IPA contents\b[\s\S]*?(?=\n\s*-\s+name:|\Z)",
+        build_ipa_text,
+    )
+    verify_not_soft = bool(verify_step_match) and not re.search(
+        r"^\s*continue-on-error:\s*true\b",
+        verify_step_match.group(0),
+        re.M,
+    )
+    upload_step_match = re.search(
+        r"-\s+name:\s*Upload IPA Artifact\b[\s\S]*?(?=\n\s*-\s+name:|\Z)",
+        build_ipa_text,
+    )
+    no_always_upload = bool(upload_step_match) and not re.search(
+        r"^\s*if:\s*.*always\s*\(",
+        upload_step_match.group(0),
+        re.M,
+    )
+    preserves_symlinks = bool(re.search(r"\bcp\s+-(Rp|a)\b", build_ipa_text))
     no_secret_dump = (
         not re.search(r"\bcat\s+[^\n]*Config\.xcconfig\b", build_ipa_text)
-        and not re.search(r"\b(echo|printf)\b[^\n]*CLIENT_TOKEN", build_ipa_text)
+        and not re.search(r"\b(echo|printf)\b[^\n]*(CLIENT_TOKEN|APPLE_TEAM_ID)", build_ipa_text)
     )
-    check("mwdat", "patch_ipa_mwdat.py" in build_ipa_text and verify_unmasked and no_secret_dump,
-          "build-ipa.yml patches MWDAT via patch_ipa_mwdat.py, enforces verify_ipa_symbols.sh strictly, and never dumps secrets")
+    check("mwdat", "patch_ipa_mwdat.py" in build_ipa_text and verify_unmasked and verify_not_soft
+          and no_always_upload and preserves_symlinks and no_secret_dump,
+          "build-ipa.yml patches MWDAT via patch_ipa_mwdat.py, preserves symlinks (cp -Rp), enforces verify_ipa_symbols.sh strictly without if: always() upload, and never dumps secrets")
 
     app_swift = strip_comments(read("OpenVision/App/OpenVisionApp.swift"))
     mwdat_swift = strip_comments(read("OpenVision/Managers/MWDATConfiguration.swift"))
-    check("mwdat", "isMetaWearablesCallbackURL" in app_swift and "metaWearablesAction" in mwdat_swift
+    check("mwdat", "shouldForwardToWearablesSDK" in app_swift
+          and "redactedURLSummary" in app_swift
+          and "metaWearablesAction" in mwdat_swift
           and "handleURLCallbackError" in app_swift,
-          "OpenVisionApp filters metaWearablesAction callbacks and forwards handleUrl errors to GlassesManager")
+          "OpenVisionApp routes Meta Wearables callbacks via shouldForwardToWearablesSDK, logs redacted telemetry, and forwards handleUrl errors to GlassesManager")
 
     # --- Warnings (never fail the run).
     build_ipa = (repo / ".github/workflows/build-ipa.yml")

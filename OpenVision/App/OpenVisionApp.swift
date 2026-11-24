@@ -70,16 +70,19 @@ struct OpenVisionApp: App {
     /// Handle URL callback from Meta AI app for glasses registration
     @MainActor
     private func handleURL(_ url: URL) {
-        guard MWDATConfigurationValidator.isMetaWearablesCallbackURL(url) else {
-            #if DEBUG
-            print("[OpenVisionApp] Ignoring non-MWDAT URL (scheme=\(url.scheme ?? "none"))")
-            #endif
+        let summary = MWDATConfigurationValidator.redactedURLSummary(url)
+        let registeredSchemes = glassesManager.mwdatConfigReport.registeredURLSchemes
+        guard MWDATConfigurationValidator.shouldForwardToWearablesSDK(
+            url,
+            registeredSchemes: registeredSchemes
+        ) else {
+            NSLog("[OpenVisionApp] Ignoring non-MWDAT URL (%@)", summary)
             return
         }
 
-        print("[OpenVisionApp] Received Meta Wearables callback URL (scheme=\(url.scheme ?? "none"))")
+        NSLog("[OpenVisionApp] Received Meta Wearables callback URL (%@)", summary)
         guard WearablesBootstrap.isConfigured else {
-            print("[OpenVisionApp] Ignoring the URL: \(GlassesManager.sdkUnavailableMessage)")
+            NSLog("[OpenVisionApp] Ignoring Meta Wearables URL (%@): %@", summary, GlassesManager.sdkUnavailableMessage)
             return
         }
 
@@ -87,9 +90,9 @@ struct OpenVisionApp: App {
         Task { @MainActor in
             do {
                 let handled = try await Wearables.shared.handleUrl(url)
-                print("[OpenVisionApp] Meta Wearables URL handled: \(handled)")
+                NSLog("[OpenVisionApp] Meta Wearables URL handled=%@ (%@)", handled ? "true" : "false", summary)
             } catch {
-                NSLog("[OpenVisionApp] Error handling Meta Wearables URL: %@", String(describing: error))
+                NSLog("[OpenVisionApp] Error handling Meta Wearables URL (%@): %@", summary, String(describing: error))
                 glassesManager.handleURLCallbackError(error)
             }
         }
