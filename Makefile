@@ -45,9 +45,10 @@ check-config:
 		echo "Please copy Config.xcconfig.example to Config.xcconfig and fill in your values"; \
 		exit 1; \
 	fi
-	@if grep -q "XXXXXXXXXX" Config.xcconfig; then \
-		echo "⚠️  Warning: Config.xcconfig still has placeholder values"; \
-		echo "Please edit Config.xcconfig with your Development Team ID and Meta App ID"; \
+	@if grep -Eq '^[[:space:]]*[A-Z_]+[[:space:]]*=.*(YOUR_TEAM_ID|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN|XXXXXXXXXX)' Config.xcconfig; then \
+		echo "❌ Error: Config.xcconfig still has placeholder values"; \
+		echo "Please edit Config.xcconfig (use META_APP_ID = 0 and empty CLIENT_TOKEN for Developer Mode, or real Meta credentials)"; \
+		exit 1; \
 	fi
 
 # Open in Xcode

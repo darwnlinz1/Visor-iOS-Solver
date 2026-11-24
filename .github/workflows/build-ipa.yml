@@ -2,6 +2,34 @@ name: Build Unsigned IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      mwdat_mode:
+        description: "Meta Wearables DAT mode (developer = MetaAppID 0 for Sideloadly; production = Wearables Developer Center credentials)"
+        type: choice
+        options:
+          - developer
+          - production
+        default: developer
+      meta_app_id:
+        description: "Optional Meta App ID (empty/0 in developer mode; numeric ID in production mode, or configure META_APP_ID var/secret)"
+        type: string
+        default: ""
+      apple_team_id:
+        description: "Optional 10-char Apple Team ID for MWDAT.TeamID (or configure APPLE_TEAM_ID secret)"
+        type: string
+        default: ""
+      omit_empty_team_id:
+        description: "Developer mode only: omit MWDAT.TeamID key instead of writing empty string (Spike S5 A/B toggle)"
+        type: boolean
+        default: false
+      bundle_id:
+        description: "Optional CFBundleIdentifier override (defaults to Config.xcconfig or PRODUCT_BUNDLE_IDENTIFIER var)"
+        type: string
+        default: ""
+      url_scheme:
+        description: "Meta AI callback URL scheme (custom scheme like 'openvision' in developer mode, or https:// Universal Link in production)"
+        type: string
+        default: "openvision"
 
 concurrency:
   group: ipa-build-${{ github.ref }}
@@ -55,21 +83,64 @@ jobs:
             CODE_SIGN_IDENTITY= \
             DEVELOPMENT_TEAM=
 
-      - name: Package IPA
+      - name: Patch MWDAT configuration and package IPA
+        env:
+          INPUT_MWDAT_MODE: ${{ inputs.mwdat_mode }}
+          INPUT_META_APP_ID: ${{ inputs.meta_app_id }}
+          VAR_META_APP_ID: ${{ vars.META_APP_ID }}
+          SECRET_META_APP_ID: ${{ secrets.META_APP_ID }}
+          INPUT_APPLE_TEAM_ID: ${{ inputs.apple_team_id }}
+          SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          INPUT_OMIT_EMPTY_TEAM_ID: ${{ inputs.omit_empty_team_id }}
+          INPUT_BUNDLE_ID: ${{ inputs.bundle_id }}
+          VAR_BUNDLE_ID: ${{ vars.PRODUCT_BUNDLE_IDENTIFIER }}
+          INPUT_URL_SCHEME: ${{ inputs.url_scheme }}
+          SECRET_META_CLIENT_TOKEN: ${{ secrets.META_CLIENT_TOKEN }}
         run: |
+          set -euo pipefail
+          rm -rf Payload OpenVision.ipa
           mkdir -p Payload
-          APP_PATH=$(find DerivedData/Build/Products -name "OpenVision.app" -type d | head -n 1)
+          APP_PATH="$(find DerivedData/Build/Products -name "OpenVision.app" -type d | head -n 1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::OpenVision.app not found in DerivedData/Build/Products"
+            exit 1
+          fi
           echo "Found app at: $APP_PATH"
           cp -r "$APP_PATH" Payload/
+
+          MWDAT_MODE="${INPUT_MWDAT_MODE:-developer}"
+          RESOLVED_META_APP_ID="${INPUT_META_APP_ID:-}"
+          if [ -z "$RESOLVED_META_APP_ID" ] && [ "$MWDAT_MODE" = "production" ]; then
+            RESOLVED_META_APP_ID="${VAR_META_APP_ID:-${SECRET_META_APP_ID:-}}"
+          fi
+          RESOLVED_TEAM_ID="${INPUT_APPLE_TEAM_ID:-${SECRET_APPLE_TEAM_ID:-}}"
+          RESOLVED_BUNDLE_ID="${INPUT_BUNDLE_ID:-${VAR_BUNDLE_ID:-}}"
+          RESOLVED_URL_SCHEME="${INPUT_URL_SCHEME:-openvision}"
+          OMIT_EMPTY_TEAM_ID="${INPUT_OMIT_EMPTY_TEAM_ID:-false}"
+
+          export MWDAT_TEAM_ID="$RESOLVED_TEAM_ID"
+          if [ "$MWDAT_MODE" = "production" ]; then
+            export MWDAT_CLIENT_TOKEN="${SECRET_META_CLIENT_TOKEN:-}"
+          else
+            export MWDAT_CLIENT_TOKEN=""
+          fi
+
+          python3 scripts/blueprint/patch_ipa_mwdat.py \
+            --plist Payload/OpenVision.app/Info.plist \
+            --mode "$MWDAT_MODE" \
+            --meta-app-id "$RESOLVED_META_APP_ID" \
+            --bundle-id "$RESOLVED_BUNDLE_ID" \
+            --url-scheme "$RESOLVED_URL_SCHEME" \
+            --omit-empty-team-id "$OMIT_EMPTY_TEAM_ID"
+
           zip -r -y OpenVision.ipa Payload
 
       - name: Verify IPA contents (Blueprint checklist test 6)
         run: |
-          chmod +x scripts/blueprint/verify_ipa_symbols.sh || true
-          bash scripts/blueprint/verify_ipa_symbols.sh OpenVision.ipa || echo "Verification script completed with warnings"
+          chmod +x scripts/blueprint/verify_ipa_symbols.sh
+          bash scripts/blueprint/verify_ipa_symbols.sh OpenVision.ipa
 
       - name: Upload IPA Artifact
-        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: OpenVision-unsigned

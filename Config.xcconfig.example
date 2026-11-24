@@ -1,21 +1,23 @@
 // OpenVision Build Configuration
-// Copy this file to Config.xcconfig and fill in your values
+// Copy this file to Config.xcconfig (gitignored — NEVER commit secrets).
+// Defaults below are valid for Meta Wearables DAT Developer Mode (works with Sideloadly / unsigned CI IPA).
 
-// Your Apple Developer Team ID
-DEVELOPMENT_TEAM = YOUR_TEAM_ID
+// 10-character Apple Developer Team ID for local Xcode signing (e.g. AB12CD34EF).
+// Leave empty for unsigned CI builds / Developer Mode; set your Team ID when signing locally in Xcode.
+DEVELOPMENT_TEAM =
 
-// Bundle identifier for the app
+// Bundle identifier for the app (customize for your own signing profile if needed)
 PRODUCT_BUNDLE_IDENTIFIER = com.yourcompany.openvision
 
-// Meta App ID from https://developer.meta.com
-// Required for glasses registration
-META_APP_ID = YOUR_META_APP_ID
+// Meta App ID for Meta Wearables Device Access Toolkit (Info.plist -> MWDAT.MetaAppID).
+// "0" keeps the SDK in Developer Mode (enable Developer Mode in the Meta AI app).
+// For Production / Release Channels, replace with your numeric Meta App ID from Wearables Developer Center.
+META_APP_ID = 0
 
-// Client Token from Meta Developer Console (FULL FORMAT REQUIRED)
-// Format: AR|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN
-// Example: AR|1234567890|abcdef123456
-CLIENT_TOKEN = AR|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN
+// Client Token from Meta Wearables Developer Center (Info.plist -> MWDAT.ClientToken).
+// Leave EMPTY in Developer Mode. For Production, use full format: AR|<META_APP_ID>|<CLIENT_TOKEN>
+// NEVER commit a real Client Token to this public repository.
+CLIENT_TOKEN =
 
-// URL scheme for Meta AI app callback
-// Must match bundle identifier (replace dots with hyphens if needed)
+// Custom URL scheme for Meta AI app callback (without "://"; Info.plist appends "://")
 APP_LINK_URL_SCHEME = openvision
