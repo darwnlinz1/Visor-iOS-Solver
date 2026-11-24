@@ -23,6 +23,7 @@ struct GlassesSettingsView: View {
     var body: some View {
         Form {
             registrationSection
+            mwdatConfigSection
 
             if glassesManager.isRegistered {
                 captureButtonSection
@@ -135,7 +136,7 @@ struct GlassesSettingsView: View {
             }
 
             if let error = errorMessage {
-                HStack {
+                HStack(alignment: .top) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundColor(Theme.warning)
                     Text(error)
@@ -147,6 +148,68 @@ struct GlassesSettingsView: View {
             Text("Đăng ký")
         } footer: {
             Text("Bật Developer Mode trong app Meta AI (Cài đặt → Thiết bị → Kính → Developer Mode) trước khi đăng ký.")
+        }
+    }
+
+    private var mwdatConfigSection: some View {
+        let report = glassesManager.mwdatConfigReport
+        let modeColor: Color = (report.mode == .developer || report.mode == .production) ? Theme.success : Theme.danger
+        let teamColor: Color = (report.teamIDState == .placeholder || report.teamIDState == .invalid) ? Theme.danger : .secondary
+        let issueColor: Color = report.mode == .invalidPlaceholder ? Theme.danger : Theme.warning
+
+        return Section {
+            HStack {
+                Text("Chế độ")
+                Spacer()
+                Text(report.uiModeLabel)
+                    .font(.footnote)
+                    .foregroundColor(modeColor)
+                    .multilineTextAlignment(.trailing)
+            }
+            HStack {
+                Text("URL Scheme")
+                Spacer()
+                Text(report.appLinkURLScheme.isEmpty ? "Chưa đặt" : report.appLinkURLScheme)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack {
+                Text("Bundle ID")
+                Spacer()
+                Text(report.bundleIdentifier.isEmpty ? "Chưa đặt" : report.bundleIdentifier)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            HStack {
+                Text("Team ID")
+                Spacer()
+                Text(report.uiTeamIDLabel)
+                    .font(.footnote)
+                    .foregroundColor(teamColor)
+            }
+
+            if !report.issues.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(report.issues.enumerated()), id: \.offset) { _, issue in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(issueColor)
+                            Text(issue)
+                                .font(.caption)
+                                .foregroundColor(issueColor)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Text("Cấu hình Meta DAT")
+        } footer: {
+            Text("Ẩn hoàn toàn ClientToken và mã Team ID để bảo mật. Bản Developer Mode dùng MetaAppID = 0 và không cần ClientToken.")
         }
     }
 
@@ -313,13 +376,13 @@ struct GlassesSettingsView: View {
         isRegistering = true
         errorMessage = nil
 
-        Task {
+        Task { @MainActor in
             do {
                 try await glassesManager.register()
                 isRegistering = false
             } catch {
                 isRegistering = false
-                errorMessage = error.localizedDescription
+                errorMessage = glassesManager.localizedRegistrationErrorMessage(for: error)
             }
         }
     }

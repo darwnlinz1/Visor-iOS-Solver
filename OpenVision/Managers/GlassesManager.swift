@@ -99,6 +99,10 @@ final class GlassesManager: ObservableObject {
     /// Every glasses feature is off until the app is started again.
     @Published private(set) var sdkUnavailableReason: String?
 
+    /// Redacted snapshot of Bundle.main's MWDAT Info.plist configuration for Settings & diagnostics.
+    @Published var mwdatConfigReport: MWDATConfigurationReport =
+        MWDATConfigurationValidator.inspect(infoDictionary: Bundle.main.infoDictionary)
+
     /// What the wearer sees when a glasses feature is used without a configured SDK.
     static var sdkUnavailableMessage: String {
         "SDK kính chưa khởi tạo được: \(WearablesBootstrap.configureError ?? "không rõ lỗi")"
@@ -190,6 +194,53 @@ final class GlassesManager: ObservableObject {
 
     // MARK: - Registration
 
+    /// Surface errors returned when Meta AI redirects back via the custom URL scheme.
+    func handleURLCallbackError(_ error: Error) {
+        dumpSDKLogs(since: 15)
+        let mapped = localizedRegistrationErrorMessage(for: error)
+        errorMessage = "Lỗi phản hồi từ Meta AI: \(mapped)"
+        print("[GlassesManager] URL callback error: \(error) — \(mapped)")
+    }
+
+    /// Map Meta DAT registration / callback errors to actionable Vietnamese guidance without leaking secrets.
+    func localizedRegistrationErrorMessage(for error: Error) -> String {
+        if let registrationError = error as? RegistrationError {
+            switch registrationError {
+            case .configurationInvalid:
+                return configurationInvalidGuidance(technicalDetail: registrationError.localizedDescription)
+            case .metaAINotInstalled:
+                return "Chưa cài app Meta AI trên iPhone (hoặc thiếu cấu hình fb-viewapp). Cài Meta AI V292+ rồi thử lại."
+            case .networkUnavailable:
+                return "Không có kết nối mạng. Kiểm tra Wi-Fi/4G trên iPhone rồi thử đăng ký lại."
+            case .timeout:
+                return "Quá thời gian chờ đăng ký với Meta AI. Mở app Meta AI, kiểm tra kính đã kết nối rồi thử lại."
+            case .alreadyRegistered:
+                return "Ứng dụng đã đăng ký với Meta AI. Nếu cần làm mới, bấm Huỷ đăng ký rồi đăng ký lại."
+            case .unknown:
+                return "Đăng ký thất bại vì lỗi không xác định (\(registrationError.localizedDescription)). Kiểm tra Meta AI đã bật Developer Mode rồi thử lại."
+            default:
+                return "Đăng ký kính thất bại: \(registrationError.localizedDescription)"
+            }
+        }
+
+        let detail = error.localizedDescription
+        if detail.localizedCaseInsensitiveContains("configuration is invalid") {
+            return configurationInvalidGuidance(technicalDetail: detail)
+        }
+        return "Lỗi đăng ký kính: \(detail)"
+    }
+
+    private func configurationInvalidGuidance(technicalDetail: String) -> String {
+        var parts: [String] = [
+            "Cấu hình Meta Wearables không hợp lệ hoặc chưa đầy đủ (\(technicalDetail))."
+        ]
+        if !mwdatConfigReport.issues.isEmpty {
+            parts.append("Chi tiết Info.plist: " + mwdatConfigReport.issues.joined(separator: " "))
+        }
+        parts.append("Kiểm tra: (1) Bật Developer Mode trong Meta AI (tránh bật/tắt lại không cần thiết vì sẽ gỡ thành phần trên kính); (2) Chỉ 1 app Developer Mode được đăng ký cùng lúc; (3) Meta AI V292+ và firmware kính V128+.")
+        return parts.joined(separator: " ")
+    }
+
     /// Register app with Meta AI
     func register() async throws {
         print("[GlassesManager] Starting registration")
@@ -204,8 +255,16 @@ final class GlassesManager: ObservableObject {
             break
         }
 
-        try await wearables.startRegistration()
-        print("[GlassesManager] Registration initiated, waiting for Meta AI callback")
+        do {
+            try await wearables.startRegistration()
+            print("[GlassesManager] Registration initiated, waiting for Meta AI callback")
+        } catch {
+            dumpSDKLogs(since: 15)
+            let mapped = localizedRegistrationErrorMessage(for: error)
+            errorMessage = mapped
+            print("[GlassesManager] Registration error: \(error) — \(mapped)")
+            throw error
+        }
     }
 
     /// Unregister app from Meta AI
@@ -278,9 +337,11 @@ final class GlassesManager: ObservableObject {
         if let device = wearables.deviceForIdentifier(deviceId) {
             print("[GlassesManager] Device \(device.nameOrId()): type=\(device.deviceType()) link=\(device.linkState) compatibility=\(device.compatibility())")
             if device.compatibility() == .deviceUpdateRequired {
-                report("Kính cần cập nhật firmware — cập nhật trong app Meta AI")
+                report("Kính cần cập nhật firmware (V128+) — cập nhật trong app Meta AI (V292+)")
+                return nil
             } else if device.compatibility() == .sdkUpdateRequired {
-                report("Kính mới hơn phiên bản SDK của app")
+                report("Kính mới hơn phiên bản SDK của app — cần cập nhật OpenVision (DAT 1.0.1 hỗ trợ kính V128+ và Meta AI V292+)")
+                return nil
             }
         }
 
@@ -314,8 +375,22 @@ final class GlassesManager: ObservableObject {
             sessionErrorTask = Task { @MainActor [weak self] in
                 for await error in errorStream {
                     print("[GlassesManager] Device session error: \(error) — \(error.description)")
-                    if reportErrors, UIApplication.shared.applicationState == .active {
-                        self?.errorMessage = "Lỗi phiên kính: \(error.description)"
+                    switch error {
+                    case .dwaOutOfStuRange:
+                        // DAT 1.0 spec: non-blocking compatibility warning — log only, do not alert.
+                        NSLog("[GlassesManager] Non-blocking session warning (dwaOutOfStuRange): %@", error.description)
+                    case .datAppOnTheGlassesUpdateRequired:
+                        if reportErrors, UIApplication.shared.applicationState == .active {
+                            self?.errorMessage = "Thành phần kết nối trên kính cần cập nhật. Vào Cài đặt → Kính → Cài/cập nhật thành phần trên kính (qua app Meta AI)."
+                        }
+                    case .insufficientSDKVersion:
+                        if reportErrors, UIApplication.shared.applicationState == .active {
+                            self?.errorMessage = "Phiên bản SDK của app cũ hơn firmware kính hiện tại. Cần cập nhật OpenVision."
+                        }
+                    default:
+                        if reportErrors, UIApplication.shared.applicationState == .active {
+                            self?.errorMessage = "Lỗi phiên kính: \(error.description)"
+                        }
                     }
                 }
             }
