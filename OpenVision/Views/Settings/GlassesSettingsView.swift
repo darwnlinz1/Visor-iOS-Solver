@@ -260,8 +260,8 @@ struct GlassesSettingsView: View {
         Section {
             Toggle(isOn: $settingsManager.settings.fullResolutionPhotos) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Ảnh độ phân giải đầy đủ (~12 MP)")
-                    Text(settingsManager.settings.fullResolutionPhotos ? "Rất chậm qua Bluetooth, 30–60 giây" : "Nhanh, ~1–2 giây (khuyên dùng)")
+                    Text("Ảnh độ phân giải tối đa (~12 MP)")
+                    Text(settingsManager.settings.fullResolutionPhotos ? "Mặc định: ảnh 12 MP nét nhất cho chữ nhỏ & công thức" : "Chụp nhanh từ luồng video (~1–2 giây)")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

@@ -10,13 +10,24 @@ import Foundation
 import UIKit
 import AVFoundation
 
-/// Real-time transport & model status emitted by `GeminiLiveService` for live UI progress reporting.
+/// Real-time transport & model status emitted by `GeminiLiveService` for live UI + spoken progress.
 enum GeminiLiveStatus: Equatable, Sendable {
     case preparingImage
     case uploading(progress: Double, kilobytes: Int)
     case waitingForModel(model: String, keyLabel: String)
     case streaming(model: String)
-    case retrying(reason: String)
+    case retrying(reason: String, spokenCue: String)
+}
+
+/// Machine-readable cause of the final failure so the app NEVER blames the user's network
+/// when the real problem was an invalid API key, HTTP 429 quota, HTTP 503 overload, or 404 model error.
+enum GeminiFailureKind: Equatable, Sendable {
+    case rateLimited
+    case serverOverloaded
+    case badAPIKey
+    case modelUnavailable
+    case network
+    case blockedOrInvalid
 }
 
 private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
@@ -60,6 +71,7 @@ final class GeminiLiveService: ObservableObject {
     @Published var isProcessing: Bool = false
     @Published var isModelSpeaking: Bool = false
     @Published var lastError: String?
+    @Published private(set) var lastFailureKind: GeminiFailureKind?
 
     /// Diagnostics for Debug → "Câu trả lời thô" inspector (PLAN.md §4.7).
     @Published private(set) var lastRawReply: String = ""
@@ -197,6 +209,7 @@ final class GeminiLiveService: ObservableObject {
         isProcessing = true
         processingChangedCallback?(true)
         lastError = nil
+        lastFailureKind = nil
 
         let task = Task<Void, Error> { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
@@ -287,6 +300,7 @@ final class GeminiLiveService: ObservableObject {
         var networkFailures = 0
         var healedSignatures = false
         var lastErrorMessage = "Không nhận được phản hồi từ Gemini API"
+        var finalFailureKind: GeminiFailureKind = .network
 
         retryLoop: while attempt < maxAttempts && Date().timeIntervalSince(started) < Self.overallDeadline {
             guard generation == requestGeneration, !Task.isCancelled else {
@@ -313,6 +327,7 @@ final class GeminiLiveService: ObservableObject {
             switch outcome {
             case .success(let rawText, let signature, let finishReason):
                 lastUsedModel = model
+                lastFailureKind = nil
                 let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
                 AppLog.info(.gemini, "\(model) answered (\(rawText.count) chars, finish=\(finishReason ?? "none")) in \(elapsed)s")
                 return TurnResult(rawText: rawText, sentImage: prepared, historyCopyTask: historyCopyTask,
@@ -323,29 +338,56 @@ final class GeminiLiveService: ObservableObject {
                 throw CancellationError()
 
             case .rateLimited(let retryAfter):
-                AppLog.warning(.gemini, "\(model) quota exhausted for \(keyLabel) — rotating")
+                AppLog.warning(.gemini, "\(model) quota exhausted (429) for \(keyLabel) — rotating key first")
                 coolDown(model: model, key: key, for: retryAfter ?? 60)
-                lastErrorMessage = "Gemini quota exhausted (429)"
-                onStatusUpdate?(.retrying(reason: "Hết hạn mức (429) — đang đổi API key/model khác…"))
+                lastErrorMessage = "Gemini API hết hạn mức (HTTP 429) trên \(model) (\(keyLabel))"
+                finalFailureKind = .rateLimited
+                let cue = Self.rotationNotice(
+                    code: "429",
+                    currentModel: model,
+                    currentKeyNumber: candidate.keyNumber,
+                    next: peekNextCandidate(keys: allKeys),
+                    speaksVietnamese: SolverIntent.speaksVietnamese
+                )
+                onStatusUpdate?(.retrying(reason: cue.screen, spokenCue: cue.spoken))
                 if allCandidatesCoolingDown(keys: allKeys) {
                     await backoff(attempt: attempt)
                 }
 
             case .badKey(let message):
-                AppLog.warning(.gemini, "\(keyLabel) rejected (\(message)) — dropping for an hour")
+                AppLog.warning(.gemini, "\(keyLabel) rejected by Google (\(message)) — dropping for an hour")
                 coolDown(model: nil, key: key, for: 3600)
-                lastErrorMessage = message
-                onStatusUpdate?(.retrying(reason: "API \(keyLabel) không hợp lệ — đang đổi key khác…"))
+                lastErrorMessage = "API \(keyLabel) bị Google từ chối: \(message)"
+                finalFailureKind = .badAPIKey
+                if let next = peekNextCandidate(keys: allKeys) {
+                    let screen = "API key \(candidate.keyNumber) bị từ chối — đổi sang key \(next.keyNumber)"
+                    let spoken = SolverIntent.speaksVietnamese
+                        ? "API key \(candidate.keyNumber) không hợp lệ, đang đổi sang key \(next.keyNumber)."
+                        : "API key \(candidate.keyNumber) was rejected, switching to key \(next.keyNumber)."
+                    onStatusUpdate?(.retrying(reason: screen, spokenCue: spoken))
+                } else {
+                    break retryLoop
+                }
 
             case .modelUnavailable(let message):
-                AppLog.warning(.gemini, "\(model) unavailable (\(message)) — falling back to next model")
+                AppLog.warning(.gemini, "\(model) unavailable (404: \(message)) — falling back to next model")
                 coolDown(model: model, key: nil, for: 3600)
-                lastErrorMessage = message
-                onStatusUpdate?(.retrying(reason: "\(model) không khả dụng — chuyển sang model dự phòng…"))
+                lastErrorMessage = "Model \(model) không khả dụng (404): \(message)"
+                finalFailureKind = .modelUnavailable
+                if let next = peekNextCandidate(keys: allKeys) {
+                    let screen = "\(model) không khả dụng (404) — hạ xuống \(next.model)"
+                    let spoken = SolverIntent.speaksVietnamese
+                        ? "Model \(Self.shortModelLabel(model)) không khả dụng, đang hạ xuống model \(Self.shortModelLabel(next.model))."
+                        : "Model \(Self.shortModelLabel(model)) is unavailable, falling back to model \(Self.shortModelLabel(next.model))."
+                    onStatusUpdate?(.retrying(reason: screen, spokenCue: spoken))
+                } else {
+                    break retryLoop
+                }
 
             case .unsupportedField(let capability, let message):
                 guard downgrade(capability) else {
                     lastErrorMessage = message
+                    finalFailureKind = .blockedOrInvalid
                     break retryLoop
                 }
                 AppLog.info(.gemini, "Model rejected \(capability) — retrying without it")
@@ -354,6 +396,7 @@ final class GeminiLiveService: ObservableObject {
             case .staleSignature(let message):
                 guard !healedSignatures else {
                     lastErrorMessage = message
+                    finalFailureKind = .blockedOrInvalid
                     break retryLoop
                 }
                 healedSignatures = true
@@ -366,49 +409,61 @@ final class GeminiLiveService: ObservableObject {
                 attempt -= 1
 
             case .serverError(let message):
-                AppLog.warning(.gemini, "Server error from \(model): \(message)")
+                AppLog.warning(.gemini, "Server error from \(model) (\(keyLabel)): \(message)")
                 lastErrorMessage = message
+                finalFailureKind = .serverOverloaded
+                // Key-first fallback policy: cool down ONLY this (model, key) so we exhaust every API key
+                // on the primary model (3.5) before dropping down to the fallback model (3.1).
                 let isOverloaded = message.contains("503")
                     || message.localizedCaseInsensitiveContains("high demand")
                     || message.localizedCaseInsensitiveContains("unavailable")
                     || message.localizedCaseInsensitiveContains("overloaded")
-                if isOverloaded {
-                    coolDown(model: model, key: nil, for: 30)
-                    let hasFallback = !allCandidatesCoolingDown(keys: allKeys)
-                    onStatusUpdate?(.retrying(reason: hasFallback
-                        ? "\(model) đang quá tải (503) — chuyển sang model dự phòng…"
-                        : "Máy chủ Gemini quá tải (503) — đang thử lại…"))
-                    if !hasFallback {
-                        await backoff(attempt: attempt)
-                    }
-                } else {
-                    onStatusUpdate?(.retrying(reason: "Lỗi máy chủ Gemini — đang thử lại…"))
+                let cooldownSeconds: TimeInterval = isOverloaded ? 30 : 15
+                coolDown(model: model, key: key, for: cooldownSeconds)
+                let code = isOverloaded ? "503" : "5xx"
+                let cue = Self.rotationNotice(
+                    code: code,
+                    currentModel: model,
+                    currentKeyNumber: candidate.keyNumber,
+                    next: peekNextCandidate(keys: allKeys),
+                    speaksVietnamese: SolverIntent.speaksVietnamese
+                )
+                onStatusUpdate?(.retrying(reason: cue.screen, spokenCue: cue.spoken))
+                if allCandidatesCoolingDown(keys: allKeys) {
                     await backoff(attempt: attempt)
                 }
 
             case .network(let message, let partial, let signature, let finishReason):
                 if !AnswerFormat.parse(partial).sections.isEmpty {
                     lastUsedModel = model
+                    lastFailureKind = nil
                     AppLog.warning(.gemini, "Stream dropped after \(partial.count) chars (\(message)) — using partial answer")
                     return TurnResult(rawText: partial, sentImage: prepared, historyCopyTask: historyCopyTask,
                                       signature: signature, finishReason: finishReason)
                 }
                 lastErrorMessage = message
+                finalFailureKind = .network
                 networkFailures += 1
                 if networkFailures > Self.maxNetworkRetries { break retryLoop }
-                onStatusUpdate?(.retrying(reason: "Mạng chập chờn — đang thử kết nối lại (\(networkFailures)/\(Self.maxNetworkRetries))…"))
+                let screen = "Mạng chập chờn — đang thử kết nối lại (\(networkFailures)/\(Self.maxNetworkRetries))…"
+                let spoken = SolverIntent.speaksVietnamese
+                    ? "Mạng đang chập chờn, đang thử kết nối lại."
+                    : "The network dropped, retrying connection."
+                onStatusUpdate?(.retrying(reason: screen, spokenCue: spoken))
                 await backoff(attempt: networkFailures)
 
             case .fatal(let message):
                 lastErrorMessage = message
+                finalFailureKind = .blockedOrInvalid
                 break retryLoop
             }
         }
 
         historyCopyTask?.cancel()
         let elapsed = String(format: "%.1f", Date().timeIntervalSince(started))
-        AppLog.error(.gemini, "Giving up after \(attempt) attempt(s), \(elapsed)s: \(lastErrorMessage)")
+        AppLog.error(.gemini, "Giving up after \(attempt) attempt(s), \(elapsed)s [kind=\(finalFailureKind)]: \(lastErrorMessage)")
         self.lastError = lastErrorMessage
+        self.lastFailureKind = finalFailureKind
         throw AIBackendError.requestFailed(lastErrorMessage)
     }
 
@@ -769,6 +824,59 @@ final class GeminiLiveService: ObservableObject {
 
     private func cooldownKey(_ model: String?, _ key: String?) -> String {
         "\(model ?? "*")|\(key ?? "*")"
+    }
+
+    private func peekNextCandidate(keys: [String]) -> (model: String, keyNumber: Int)? {
+        let now = Date()
+        let total = keys.count
+        guard total > 0 else { return nil }
+        for model in Self.modelChain {
+            for i in 0..<total {
+                let idx = (currentKeyIndex + i) % total
+                if !isCoolingDown(model: model, key: keys[idx], now: now) {
+                    return (model, idx + 1)
+                }
+            }
+        }
+        return nil
+    }
+
+    nonisolated static func shortModelLabel(_ model: String) -> String {
+        if model.contains("3.5") { return "3.5" }
+        if model.contains("3.1") { return "3.1" }
+        if model.contains("2.5") { return "2.5" }
+        return model.replacingOccurrences(of: "gemini-", with: "")
+    }
+
+    nonisolated static func rotationNotice(
+        code: String,
+        currentModel: String,
+        currentKeyNumber: Int,
+        next: (model: String, keyNumber: Int)?,
+        speaksVietnamese: Bool
+    ) -> (screen: String, spoken: String) {
+        let curShort = shortModelLabel(currentModel)
+        if let next {
+            if next.model == currentModel {
+                let screen = "\(currentModel) · key \(currentKeyNumber) lỗi \(code) — đổi sang key \(next.keyNumber)"
+                let spoken = speaksVietnamese
+                    ? "Model \(curShort) key \(currentKeyNumber) bị lỗi \(code), đang chuyển sang key \(next.keyNumber)."
+                    : "Model \(curShort) key \(currentKeyNumber) returned \(code), switching to key \(next.keyNumber)."
+                return (screen, spoken)
+            } else {
+                let nextShort = shortModelLabel(next.model)
+                let screen = "Hết key cho \(currentModel) (\(code)) — hạ xuống \(next.model) (key \(next.keyNumber))"
+                let spoken = speaksVietnamese
+                    ? "Hết key cho model \(curShort), đang hạ xuống model \(nextShort)."
+                    : "All keys for model \(curShort) hit \(code), falling back to model \(nextShort)."
+                return (screen, spoken)
+            }
+        }
+        let screen = "Tất cả API key đều gặp lỗi \(code) — đang chờ thử lại…"
+        let spoken = speaksVietnamese
+            ? "Tất cả API key đang bị lỗi \(code), đang thử lại."
+            : "All API keys hit \(code), retrying."
+        return (screen, spoken)
     }
 
     private func nextCandidate(keys: [String]) -> (model: String, key: String, keyNumber: Int) {

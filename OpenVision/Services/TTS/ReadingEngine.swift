@@ -48,6 +48,7 @@ final class ReadingEngine: ObservableObject {
     private let synthesizer: SpeechSynthesizing
     private var machine = ReadingMachine()
     private var autoContinueTask: Task<Void, Never>?
+    private var pendingLeadIn: String?
 
     init(synthesizer: SpeechSynthesizing = TTSService.shared) {
         self.synthesizer = synthesizer
@@ -126,10 +127,11 @@ final class ReadingEngine: ObservableObject {
 
     // MARK: - Plan lifecycle
 
-    func start(plan: ReadingPlan, startingAt index: Int = 0) {
+    func start(plan: ReadingPlan, startingAt index: Int = 0, leadIn: String? = nil) {
         spokenLog.removeAll()
         currentPieceText = ""
         currentWordRange = nil
+        pendingLeadIn = leadIn
         let cfg = Self.config(from: SettingsManager.shared.settings)
         AppLog.info(.reading, "Start plan type=\(plan.answerType.rawValue) lang=\(plan.languageCode) segments=\(plan.segments.count) complete=\(plan.isComplete) startAt=\(index)")
         if !plan.segments.isEmpty {
@@ -206,8 +208,9 @@ final class ReadingEngine: ObservableObject {
         syncAndRun(machine.repeatCurrent())
     }
 
-    func restartFromBeginning() {
+    func restartFromBeginning(leadIn: String? = nil) {
         AppLog.info(.reading, "Restart from beginning")
+        pendingLeadIn = leadIn
         machine.updateConfig(Self.config(from: SettingsManager.shared.settings))
         onWillStartSpeaking?()
         syncAndRun(machine.restartFromBeginning())
@@ -227,6 +230,7 @@ final class ReadingEngine: ObservableObject {
 
     func stop() {
         AppLog.info(.reading, "Stop reading (plan preserved)")
+        pendingLeadIn = nil
         syncAndRun(machine.stop())
     }
 
@@ -297,6 +301,10 @@ final class ReadingEngine: ObservableObject {
         for effect in effects {
             switch effect {
             case .speak(let utterance):
+                if let announcement = pendingLeadIn {
+                    pendingLeadIn = nil
+                    (synthesizer as? TTSService)?.speakStatusCue(announcement, interruptCurrent: false)
+                }
                 currentPieceText = utterance.text
                 currentWordRange = nil
                 spokenLog.append(SpokenPieceLog(

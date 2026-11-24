@@ -52,6 +52,10 @@ struct AppSettings: Codable, Equatable {
     /// Play activation chime on wake word detection
     var playActivationSound: Bool = true
 
+    /// Announce real-time capture, upload, 503/429 key/model rotation, and AI-ready status
+    /// aloud over the glasses / phone speaker (mirrors the phone screen activity card).
+    var spokenStatusUpdates: Bool = true
+
     /// Conversation timeout in seconds (auto-end after silence)
     var conversationTimeout: TimeInterval = 30
 
@@ -92,9 +96,9 @@ struct AppSettings: Codable, Equatable {
     /// Also route the touchpad to the app — only if button presses never arrive (a known SDK
     /// quirk); while on, the temple touchpad no longer controls music/volume.
     var captureButtonIncludeTouchpad: Bool = false
-    /// Photos taken through the SDK: full sensor resolution (~12 MP, 30-60 s over Bluetooth) or
-    /// fast stream still (~1-2 s, default per PLAN.md T7.4).
-    var fullResolutionPhotos: Bool = false
+    /// Photos taken through the SDK: full sensor resolution (~12 MP, highest sharpness — default)
+    /// or fast stream still (~1–2 s).
+    var fullResolutionPhotos: Bool = true
 
     // MARK: - Voice output (Apple system voices, one per language)
 

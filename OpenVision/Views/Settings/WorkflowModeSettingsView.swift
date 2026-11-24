@@ -156,6 +156,15 @@ struct WorkflowModeSettingsView: View {
 
     private var musicCoexistenceSection: some View {
         Section {
+            Toggle(isOn: $settingsManager.settings.spokenStatusUpdates) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Thông báo tiến trình qua loa kính")
+                    Text("Đọc ngắn khi chụp xong, đang tải lên 50%, chờ AI, lỗi 503/429 đổi key hoặc hạ model")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Toggle(isOn: $settingsManager.settings.pauseWakeWordDuringMusic) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Không giữ mic kính khi đang nghe nhạc")
@@ -165,9 +174,9 @@ struct WorkflowModeSettingsView: View {
                 }
             }
         } header: {
-            Text("Âm thanh & Nghe nhạc trên kính")
+            Text("Âm thanh & Thông báo trên kính")
         } footer: {
-            Text("Khi bật, lúc nhạc đang phát app sẽ nhả kênh mic Bluetooth HFP lúc rảnh. Bạn vẫn nhấn 1 lần nút kính để giải bài / hỏi, và nhấn 2 lần để đọc lại câu trả lời cũ bình thường.")
+            Text("Mọi trạng thái trên màn hình điện thoại (chụp xong, upload, đổi API key, AI phản hồi) đều được đọc gọn qua loa kính. Khi đang nghe nhạc, app nhả mic HFP lúc rảnh để không phát tiếng bíp.")
         }
     }
 

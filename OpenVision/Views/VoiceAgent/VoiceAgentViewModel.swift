@@ -8,6 +8,7 @@ import UIKit
 import ImageIO
 import SwiftUI
 import Speech
+import AVFoundation
 
 /// Pre-captured photo context for Visor "Capture First, Ask Later" workflow
 struct CapturedPhotoContext {
@@ -72,6 +73,38 @@ enum SolverIntent {
         TTSService.containsVietnamese(prompt)
             ? "Mạng đang chậm nên mình chưa nhận được câu trả lời. Bạn hỏi lại giúp mình nhé."
             : "The connection is slow and I didn't get an answer. Please ask again."
+    }
+
+    @MainActor
+    static func failureMessage(for prompt: String, error: Error, kind: GeminiFailureKind?) -> String {
+        if case AIBackendError.notConfigured = error {
+            return missingKeyMessage(for: prompt)
+        }
+        let vi = TTSService.containsVietnamese(prompt) || (TTSService.isLanguageNeutral(prompt) && speaksVietnamese)
+        switch kind {
+        case .badAPIKey:
+            return vi
+                ? "API key Google Gemini không hợp lệ hoặc đã bị khóa. Bạn kiểm tra lại key trong phần Cài đặt nhé."
+                : "Your Google Gemini API key is invalid or revoked. Please check your key in Settings."
+        case .rateLimited:
+            return vi
+                ? "Tất cả API key Gemini đều đã hết hạn mức lỗi 429. Bạn đợi một lát hoặc thêm key mới nhé."
+                : "All Gemini API keys hit the 429 quota limit. Please wait a moment or add another key."
+        case .serverOverloaded:
+            return vi
+                ? "Máy chủ Google Gemini đang quá tải lỗi 503 ở tất cả các key và model. Bạn thử lại sau vài giây nhé."
+                : "Google Gemini servers are overloaded with 503 errors across all keys and models. Please try again shortly."
+        case .modelUnavailable:
+            return vi
+                ? "Model Gemini tạm không khả dụng trên API key này. Bạn kiểm tra lại quyền model trong Google AI Studio nhé."
+                : "The Gemini model is unavailable on this API key. Please check model access in Google AI Studio."
+        case .blockedOrInvalid:
+            return vi
+                ? "Google Gemini không xử lý được yêu cầu này. Bạn thử chụp lại rõ hơn hoặc hỏi lại nhé."
+                : "Google Gemini could not process this request. Please try taking a clearer photo or asking again."
+        case .network, .none:
+            return networkFailureMessage(for: prompt)
+        }
     }
 
     @MainActor
@@ -374,7 +407,7 @@ final class RecentPhotoScanner: NSObject, ObservableObject, PHPhotoLibraryChange
 
 enum PhotoPayload {
     static let uploadMaxDimension = 3072
-    static let uploadQuality: CGFloat = 0.85
+    static let uploadQuality: CGFloat = 0.90
     static let historyMaxDimension: CGFloat = 1536
 
     static func isJPEG(_ data: Data) -> Bool {
@@ -621,7 +654,13 @@ final class VoiceAgentViewModel: ObservableObject {
     private var echoSettleTask: Task<Void, Never>?
     private var activityClearTask: Task<Void, Never>?
     private var statusClearTask: Task<Void, Never>?
+    private var wakeWordStartTask: Task<Void, Never>?
     private var isRepeatingViaGlasses = false
+    private var isSpeakingStatusCue = false
+    private var didAnnouncePhotoTransferHalfway = false
+    private var didAnnounceUploadHalfway = false
+    private var didAnnounceUploadDoneWaitingAI = false
+    private var lastStatusCueSpokenAt: Date = .distantPast
     private var activeBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private var historyAwaitingReply = false
@@ -707,6 +746,80 @@ final class VoiceAgentViewModel: ObservableObject {
         UIApplication.shared.endBackgroundTask(id)
     }
 
+    private func resetTurnSpokenMilestones() {
+        didAnnouncePhotoTransferHalfway = false
+        didAnnounceUploadHalfway = false
+        didAnnounceUploadDoneWaitingAI = false
+    }
+
+    /// Announces real-time glasses / upload / 503-429 key-rotation status aloud over the glasses speaker.
+    /// Never talks over an active ReadingEngine answer and never writes into ConversationManager history.
+    private func speakStatusCue(_ text: String, important: Bool = false) {
+        guard settingsManager.settings.spokenStatusUpdates else { return }
+        guard !readingEngine.isActive, !didStartStreamingReading else { return }
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        let now = Date()
+        if !important && now.timeIntervalSince(lastStatusCueSpokenAt) < 1.4 {
+            return
+        }
+        lastStatusCueSpokenAt = now
+        AppLog.info(.tts, "Spoken status cue: \(clean)")
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard !self.readingEngine.isActive, !self.didStartStreamingReading else { return }
+            await AudioSessionManager.shared.ensurePlaybackRouteAsync(
+                preferGlasses: self.settingsManager.settings.preferGlassesMic
+            )
+            guard !self.readingEngine.isActive, !self.didStartStreamingReading else { return }
+            self.voiceCommandService.isBargeInPaused = true
+            self.isSpeakingStatusCue = true
+            self.ttsService.speakStatusCue(clean, interruptCurrent: true)
+        }
+    }
+
+    /// Speaks a short status cue and waits for it to finish before opening the microphone (General mode).
+    private func speakStatusCueAndWait(_ text: String) async {
+        guard settingsManager.settings.spokenStatusUpdates else { return }
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        AppLog.info(.tts, "Spoken status cue (sync): \(clean)")
+        await AudioSessionManager.shared.ensurePlaybackRouteAsync(
+            preferGlasses: settingsManager.settings.preferGlassesMic
+        )
+        voiceCommandService.isBargeInPaused = true
+        isSpeakingStatusCue = true
+        lastStatusCueSpokenAt = Date()
+        ttsService.speakStatusCue(clean, interruptCurrent: true)
+        let deadline = Date().addingTimeInterval(3.5)
+        while ttsService.isSpeaking && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 80_000_000)
+        }
+        isSpeakingStatusCue = false
+        try? await Task.sleep(nanoseconds: 250_000_000)
+    }
+
+    private func ensureWakeWordListeningIfEnabled() {
+        voiceCommandService.syncAuthorizationStatus()
+        guard settingsManager.settings.wakeWordEnabled else { return }
+        guard voiceCommandService.authorizationStatus == .authorized else { return }
+        guard !shouldDeferWakeWordForMusic else {
+            AppLog.info(.voice, "Wake-word auto-listen deferred while music is playing")
+            return
+        }
+        if !voiceCommandService.isListening {
+            startWakeWordListening()
+        } else if !voiceCommandService.isRecognitionHealthy {
+            AppLog.warning(.voice, "Wake-word recognizer unhealthy — restarting cleanly")
+            voiceCommandService.stopListening()
+            startWakeWordListening()
+        } else if !isSessionActive && !readingEngine.isActive && !gemini.isProcessing && !ttsService.isSpeaking
+                    && voiceCommandService.state != .idle {
+            AppLog.info(.voice, "Returning wake-word recognizer from \(voiceCommandService.state) back to .idle")
+            voiceCommandService.exitConversationMode()
+        }
+    }
+
     // MARK: - View lifecycle
 
     func onAppear() {
@@ -725,14 +838,12 @@ final class VoiceAgentViewModel: ObservableObject {
                 errorMessage = "Quyền Ảnh đang ở chế độ Giới hạn. Chọn Toàn bộ ảnh trong Cài đặt iOS."
             }
         }
-        if voiceCommandService.authorizationStatus == .authorized && !voiceCommandService.isListening {
-            startWakeWordListening()
-        }
+        ensureWakeWordListeningIfEnabled()
     }
 
     func onDisappear() {
-        // Keep audio/reading alive if user briefly opens History or Settings while reading.
-        if !isSessionActive && !readingEngine.isActive {
+        // Preserve wake-word auto-listening across tab switches (History / Settings) unless disabled or music is playing.
+        if !isSessionActive && !readingEngine.isActive && (!settingsManager.settings.wakeWordEnabled || shouldDeferWakeWordForMusic) {
             voiceCommandService.stopListening()
         }
     }
@@ -742,9 +853,19 @@ final class VoiceAgentViewModel: ObservableObject {
     func ttsSpeakingChanged(_ isSpeaking: Bool) {
         if isSpeaking {
             echoSettleTask?.cancel()
-            agentState = .speaking
             voiceCommandService.isBargeInPaused = true
+            if !isSpeakingStatusCue && !isCapturingFromButton && !gemini.isProcessing {
+                agentState = .speaking
+            }
         } else {
+            if isSpeakingStatusCue {
+                isSpeakingStatusCue = false
+                if isCapturingFromButton || gemini.isProcessing || readingEngine.isActive {
+                    return
+                }
+                scheduleEchoSettleAndResume()
+                return
+            }
             // N8: DO NOT re-open barge-in here immediately! `scheduleEchoSettleAndResume()` waits >= 350ms.
             MetricsCollector.shared.markSpokeDone()
             if !readingEngine.isActive {
@@ -826,8 +947,21 @@ final class VoiceAgentViewModel: ObservableObject {
                     self.setLiveActivity(nil)
                 }
                 self.endBackgroundWork()
-                if !self.voiceCommandService.isListening || self.shouldDeferWakeWordForMusic {
-                    if self.voiceCommandService.isListening && self.shouldDeferWakeWordForMusic {
+                if self.settingsManager.settings.wakeWordEnabled && !self.shouldDeferWakeWordForMusic {
+                    // Crucial fix: exit `.processing` state after Study button solve / double-press repeat /
+                    // typed prompt so wake-word listening ALWAYS resumes automatically!
+                    if self.voiceCommandService.isListening {
+                        if self.voiceCommandService.state != .idle {
+                            self.voiceCommandService.exitConversationMode()
+                        } else if !self.voiceCommandService.isRecognitionHealthy {
+                            self.voiceCommandService.stopListening()
+                            self.startWakeWordListening()
+                        }
+                    } else if self.voiceCommandService.authorizationStatus == .authorized {
+                        self.startWakeWordListening()
+                    }
+                } else {
+                    if self.voiceCommandService.isListening {
                         self.voiceCommandService.stopListening()
                     }
                     await AudioSessionManager.shared.deactivateSessionAsync()
@@ -848,25 +982,20 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     /// Called by `VoiceAgentView` when the app moves to background/foreground so idle wake-word
-    /// listening never holds Bluetooth HFP open while the user pauses/plays music with phone in pocket.
+    /// listening releases Bluetooth HFP ONLY when music is actually playing (or wake word is off),
+    /// and automatically recovers whenever the app returns to foreground.
     func handleScenePhaseChanged(_ phase: ScenePhase) {
         switch phase {
         case .background:
-            let isIdle = !isSessionActive && !readingEngine.isActive && !ttsService.isSpeaking && !isRecording
-            if isIdle && (!settingsManager.settings.wakeWordEnabled || settingsManager.settings.pauseWakeWordDuringMusic) {
+            let isIdle = !isSessionActive && !readingEngine.isActive && !ttsService.isSpeaking && !isRecording && !isCapturingFromButton
+            if isIdle && (!settingsManager.settings.wakeWordEnabled || shouldDeferWakeWordForMusic) {
                 if voiceCommandService.isListening {
                     voiceCommandService.stopListening()
                 }
                 Task { await AudioSessionManager.shared.deactivateSessionAsync() }
             }
         case .active:
-            if settingsManager.settings.wakeWordEnabled
-                && voiceCommandService.authorizationStatus == .authorized
-                && !voiceCommandService.isListening
-                && !isSessionActive
-                && !shouldDeferWakeWordForMusic {
-                startWakeWordListening()
-            }
+            ensureWakeWordListeningIfEnabled()
         default:
             break
         }
@@ -942,7 +1071,12 @@ final class VoiceAgentViewModel: ObservableObject {
         if wasListening { voiceCommandService.stopListening() }
         _ = await AudioSessionManager.shared.configurePreferredRouteAsync(preferGlasses: wantsGlasses)
         if wasListening {
-            try? voiceCommandService.startListening()
+            do {
+                try voiceCommandService.startListening()
+            } catch {
+                AppLog.warning(.voice, "startListening after route switch failed (\(error.localizedDescription)) — scheduling auto-listen retry")
+                startWakeWordListening()
+            }
         }
     }
 
@@ -969,13 +1103,18 @@ final class VoiceAgentViewModel: ObservableObject {
         activeReplyAssembler = nil
         didStartStreamingReading = false
         isRepeatingViaGlasses = false
+        isSpeakingStatusCue = false
         isSessionActive = false
         agentState = .idle
         setLiveActivity(nil)
         endBackgroundWork()
 
         if settingsManager.settings.wakeWordEnabled && !shouldDeferWakeWordForMusic {
-            voiceCommandService.exitConversationMode()
+            if voiceCommandService.isListening {
+                voiceCommandService.exitConversationMode()
+            } else {
+                startWakeWordListening()
+            }
         } else {
             voiceCommandService.stopListening()
             Task { await AudioSessionManager.shared.deactivateSessionAsync() }
@@ -993,13 +1132,20 @@ final class VoiceAgentViewModel: ObservableObject {
         activeReplyAssembler = nil
         didStartStreamingReading = false
         isRepeatingViaGlasses = false
+        isSpeakingStatusCue = false
         Task { await gemini.interrupt() }
 
         isSessionActive = false
         agentState = .idle
         setLiveActivity(nil)
         endBackgroundWork()
-        if !settingsManager.settings.wakeWordEnabled || shouldDeferWakeWordForMusic {
+        if settingsManager.settings.wakeWordEnabled && !shouldDeferWakeWordForMusic {
+            if voiceCommandService.isListening && voiceCommandService.state != .idle {
+                voiceCommandService.exitConversationMode()
+            } else if !voiceCommandService.isListening {
+                startWakeWordListening()
+            }
+        } else {
             voiceCommandService.stopListening()
             Task { await AudioSessionManager.shared.deactivateSessionAsync() }
         }
@@ -1016,6 +1162,7 @@ final class VoiceAgentViewModel: ObservableObject {
         activePhotoContext = nil
         currentTranscriptPhotoData = nil
         isRepeatingViaGlasses = false
+        isSpeakingStatusCue = false
         errorMessage = nil
         statusMessage = nil
         setLiveActivity(nil)
@@ -1216,11 +1363,17 @@ final class VoiceAgentViewModel: ObservableObject {
         AudioSessionManager.shared.onRouteChange = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                // Only re-apply HFP mic routing when a voice session or wake-word mic is actually active;
-                // never seize Bluetooth HFP back while idle (preserves A2DP stereo music).
-                guard self.isSessionActive || self.voiceCommandService.isListening else { return }
-                AppLog.info(.audio, "Audio route changed - reapplying preferred route without restart")
-                await self.configureAudioForGlassesAsync(forceRestart: false)
+                if self.isSessionActive || self.voiceCommandService.isListening {
+                    AppLog.info(.audio, "Audio route changed - reapplying preferred route")
+                    await self.configureAudioForGlassesAsync(forceRestart: false)
+                    if self.voiceCommandService.isListening && !self.voiceCommandService.isRecognitionHealthy {
+                        self.voiceCommandService.stopListening()
+                        self.startWakeWordListening()
+                    }
+                } else if self.settingsManager.settings.wakeWordEnabled && !self.shouldDeferWakeWordForMusic {
+                    // Glasses connected after app launch — automatically start wake-word listening!
+                    self.ensureWakeWordListeningIfEnabled()
+                }
             }
         }
 
@@ -1262,6 +1415,10 @@ final class VoiceAgentViewModel: ObservableObject {
     private func setupAIServiceCallbacks() {
         ttsService.onSpeechEnded = { [weak self] in
             guard let self else { return }
+            if self.isSpeakingStatusCue && (self.isCapturingFromButton || self.gemini.isProcessing) {
+                self.isSpeakingStatusCue = false
+                return
+            }
             if !self.readingEngine.isActive {
                 self.scheduleEchoSettleAndResume()
             }
@@ -1277,6 +1434,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 // Wait until we have at least one complete section to begin speaking.
                 guard !partial.sections.isEmpty else { return }
                 // Blueprint lesson 4: set .speaking + isBargeInPaused BEFORE queueing speech!
+                self.isSpeakingStatusCue = false
                 self.agentState = .speaking
                 self.voiceCommandService.isBargeInPaused = true
                 self.didStartStreamingReading = true
@@ -1291,7 +1449,10 @@ final class VoiceAgentViewModel: ObservableObject {
                 self.activePlanPhotoID = self.activePhotoContext?.id
                 self.aiTranscript = plan.segments.map(\.displayText).joined(separator: "\n")
                 MetricsCollector.shared.markFirstToken()
-                self.readingEngine.start(plan: plan)
+                let leadIn = self.settingsManager.settings.spokenStatusUpdates
+                    ? (lang == "vi" ? "AI đã phản hồi." : "AI responded.")
+                    : nil
+                self.readingEngine.start(plan: plan, leadIn: leadIn)
                 if added.isEmpty { return }
                 return
             }
@@ -1336,9 +1497,13 @@ final class VoiceAgentViewModel: ObservableObject {
                 finalPlan = plan
                 if !plan.segments.isEmpty {
                     // Lesson 4: .speaking + isBargeInPaused BEFORE queueing speech!
+                    self.isSpeakingStatusCue = false
                     self.agentState = .speaking
                     self.voiceCommandService.isBargeInPaused = true
-                    self.readingEngine.start(plan: plan)
+                    let leadIn = self.settingsManager.settings.spokenStatusUpdates
+                        ? (lang == "vi" ? "AI đã phản hồi." : "AI responded.")
+                        : nil
+                    self.readingEngine.start(plan: plan, leadIn: leadIn)
                 } else {
                     MetricsCollector.shared.abandonTurn()
                 }
@@ -1402,23 +1567,36 @@ final class VoiceAgentViewModel: ObservableObject {
                     detail: "\(kilobytes) KB",
                     progress: progress
                 ))
+                if progress >= 0.45 && progress < 0.95 && !self.didAnnounceUploadHalfway {
+                    self.didAnnounceUploadHalfway = true
+                    self.speakStatusCue(SolverIntent.speaksVietnamese ? "Đã tải lên 50 phần trăm." : "Upload 50 percent.")
+                }
             case .waitingForModel(let model, let keyLabel):
                 self.setLiveActivity(LiveActivity(
                     kind: .thinking,
                     title: "Gemini đang giải bài…",
                     detail: "\(model) · \(keyLabel)"
                 ))
-            case .retrying(let reason):
+                if !self.didAnnounceUploadDoneWaitingAI {
+                    self.didAnnounceUploadDoneWaitingAI = true
+                    let hasPhoto = self.currentTranscriptPhotoData != nil
+                    let cue = SolverIntent.speaksVietnamese
+                        ? (hasPhoto ? "Đã tải ảnh xong, đang đợi AI suy nghĩ." : "Đang đợi AI suy nghĩ.")
+                        : (hasPhoto ? "Upload complete, waiting for AI." : "Waiting for AI.")
+                    self.speakStatusCue(cue)
+                }
+            case .retrying(let reason, let spokenCue):
                 self.setLiveActivity(LiveActivity(
                     kind: .retrying,
                     title: "Đang tự động thử lại…",
                     detail: reason
                 ))
+                self.speakStatusCue(spokenCue, important: true)
             case .streaming(let model):
                 if !self.didStartStreamingReading {
                     self.setLiveActivity(LiveActivity(
                         kind: .thinking,
-                        title: "Đang nhận kết quả từ AI…",
+                        title: "AI đã phản hồi — đang chuẩn bị đọc…",
                         detail: model
                     ))
                 }
@@ -1438,22 +1616,66 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func startWakeWordListening() {
+        voiceCommandService.syncAuthorizationStatus()
         guard settingsManager.settings.wakeWordEnabled else { return }
-        guard voiceCommandService.authorizationStatus == .authorized else { return }
+        guard voiceCommandService.authorizationStatus == .authorized else {
+            AppLog.info(.voice, "Wake-word start skipped — speech auth=\(voiceCommandService.authorizationStatus.rawValue)")
+            return
+        }
         if shouldDeferWakeWordForMusic {
             AppLog.info(.audio, "Music is playing — deferring idle wake-word mic so Ray-Ban stays in A2DP (use glasses button or tap Mic)")
             return
         }
+        guard wakeWordStartTask == nil else { return }
 
-        Task { @MainActor in
-            await configureAudioForGlassesAsync(forceRestart: false)
-            do {
-                try voiceCommandService.startListening()
-                isVoiceReady = true
-                AppLog.info(.voice, "Started wake word listening - READY")
-            } catch {
-                AppLog.error(.voice, "Failed to start listening: \(error.localizedDescription)")
-                errorMessage = error.localizedDescription
+        wakeWordStartTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.wakeWordStartTask = nil }
+
+            // Ensure microphone permission is granted before touching AVAudioEngine on cold launch.
+            if AVAudioApplication.shared.recordPermission == .undetermined {
+                let granted = await AVAudioApplication.requestRecordPermission()
+                guard granted else {
+                    AppLog.warning(.voice, "Microphone permission denied — cannot start wake-word auto-listening")
+                    self.errorMessage = "Chưa cấp quyền Micro để tự động lắng nghe từ đánh thức."
+                    return
+                }
+            } else if AVAudioApplication.shared.recordPermission != .granted {
+                AppLog.warning(.voice, "Microphone permission not granted — wake-word auto-listening inactive")
+                return
+            }
+
+            // Cold-start retry loop: Bluetooth HFP on Ray-Ban Meta often takes 0.5–1.5s to settle after launch.
+            let retryDelaysNs: [UInt64] = [0, 700_000_000, 1_500_000_000]
+            var lastError: Error?
+            for (attempt, delayNs) in retryDelaysNs.enumerated() {
+                if delayNs > 0 {
+                    try? await Task.sleep(nanoseconds: delayNs)
+                }
+                guard !Task.isCancelled, self.settingsManager.settings.wakeWordEnabled, !self.shouldDeferWakeWordForMusic else {
+                    return
+                }
+                if self.voiceCommandService.isListening && self.voiceCommandService.isRecognitionHealthy {
+                    self.isVoiceReady = true
+                    return
+                }
+                await self.configureAudioForGlassesAsync(forceRestart: attempt > 0)
+                do {
+                    try self.voiceCommandService.startListening()
+                    self.isVoiceReady = true
+                    if self.errorMessage == VoiceCommandError.audioEngineUnavailable.errorDescription {
+                        self.errorMessage = nil
+                    }
+                    AppLog.info(.voice, "Started wake word auto-listening - READY (attempt \(attempt + 1), route=\(AudioSessionManager.shared.currentRouteDescription))")
+                    return
+                } catch {
+                    lastError = error
+                    AppLog.warning(.voice, "Wake-word start attempt \(attempt + 1) failed: \(error.localizedDescription)")
+                }
+            }
+            if let lastError {
+                AppLog.error(.voice, "Failed to start wake-word listening after retries: \(lastError.localizedDescription)")
+                self.errorMessage = lastError.localizedDescription
             }
         }
     }
@@ -1549,6 +1771,8 @@ final class VoiceAgentViewModel: ObservableObject {
 
         currentTranscriptPhotoData = photo
         ConversationManager.shared.addUserMessage(command, photoData: photo)
+        didAnnounceUploadHalfway = false
+        didAnnounceUploadDoneWaitingAI = false
 
         do {
             try await gemini.sendRESTMessage(command, imageData: photo)
@@ -1563,15 +1787,11 @@ final class VoiceAgentViewModel: ObservableObject {
             endBackgroundWork()
             return
         }
-        AppLog.error(.gemini, "Send failed: \(error.localizedDescription)")
+        let failureKind = gemini.lastFailureKind
+        AppLog.error(.gemini, "Send failed [kind=\(String(describing: failureKind))]: \(error.localizedDescription)")
         MetricsCollector.shared.abandonTurn()
 
-        let spokenError: String
-        if case AIBackendError.notConfigured = error {
-            spokenError = SolverIntent.missingKeyMessage(for: command)
-        } else {
-            spokenError = SolverIntent.networkFailureMessage(for: command)
-        }
+        let spokenError = SolverIntent.failureMessage(for: command, error: error, kind: failureKind)
         // Close the open user turn in ConversationManager so a failed turn never stays open
         // and mis-attaches a future turn's thinking spinner onto an old photo!
         if historyAwaitingReply {
@@ -1580,15 +1800,25 @@ final class VoiceAgentViewModel: ObservableObject {
         }
         errorMessage = spokenError
         aiTranscript = spokenError
+        let cardTitle: String
+        switch failureKind {
+        case .badAPIKey: cardTitle = "Lỗi API key Google Gemini"
+        case .rateLimited: cardTitle = "Hết hạn mức API (HTTP 429)"
+        case .serverOverloaded: cardTitle = "Máy chủ Google quá tải (HTTP 503)"
+        case .modelUnavailable: cardTitle = "Model không khả dụng (HTTP 404)"
+        case .blockedOrInvalid: cardTitle = "Gemini từ chối yêu cầu"
+        case .network, .none: cardTitle = "Lỗi kết nối mạng tới Gemini"
+        }
         setLiveActivity(LiveActivity(
             kind: .error,
-            title: "Chưa nhận được phản hồi từ Gemini",
+            title: cardTitle,
             detail: error.localizedDescription
-        ), autoClearAfter: 8.0)
+        ), autoClearAfter: 10.0)
 
-        let shouldSpeak = (isSessionActive || activeTurnID != nil) && !ttsService.isSpeaking
+        let shouldSpeak = (isSessionActive || activeTurnID != nil) && (!ttsService.isSpeaking || isSpeakingStatusCue)
         activeTurnID = nil
         if shouldSpeak {
+            isSpeakingStatusCue = false
             Task { @MainActor in
                 await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                     preferGlasses: settingsManager.settings.preferGlassesMic
@@ -1700,11 +1930,16 @@ final class VoiceAgentViewModel: ObservableObject {
 
     private func captureForAgent() async -> Data? {
         HapticFeedback.light()
+        resetTurnSpokenMilestones()
         setLiveActivity(LiveActivity(
             kind: .capturing,
             title: "AI yêu cầu chụp ảnh từ kính…",
-            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP" : "Chế độ nhanh"
+            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP nét nhất" : "Chế độ nhanh"
         ))
+        speakStatusCue(
+            SolverIntent.speaksVietnamese ? "Đang chụp ảnh từ kính." : "Capturing photo from glasses.",
+            important: true
+        )
         let data = await acquireGlassesPhoto(freshSince: nil)
         if let data {
             let source = glassesManager.lastPhotoSource ?? "camera-roll"
@@ -1712,6 +1947,10 @@ final class VoiceAgentViewModel: ObservableObject {
             currentTranscriptPhotoData = data
             ConversationManager.shared.attachPhotoToLatestUserMessage(data)
             HapticFeedback.success()
+            speakStatusCue(
+                SolverIntent.speaksVietnamese ? "Đã chụp ảnh xong, đang gửi lên Gemini." : "Photo captured, sending to Gemini.",
+                important: true
+            )
             AppLog.info(.photo, "Agent capture: got photo (\(data.count) bytes, source=\(source))")
         } else {
             HapticFeedback.error()
@@ -1729,14 +1968,21 @@ final class VoiceAgentViewModel: ObservableObject {
         HapticFeedback.light()
         AppLog.info(.photo, "Manual photo snap requested from glasses")
         let captureRequestedAt = Date()
+        resetTurnSpokenMilestones()
         errorMessage = nil
         activePhotoContext = nil
         currentTranscriptPhotoData = nil
         setLiveActivity(LiveActivity(
             kind: .capturing,
             title: "Kính đang chụp ảnh…",
-            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP" : "Chế độ nhanh"
+            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP nét nhất" : "Chế độ nhanh"
         ))
+        speakStatusCue(
+            SolverIntent.speaksVietnamese
+                ? (settingsManager.settings.fullResolutionPhotos ? "Đang chụp ảnh độ nét cao." : "Đang chụp ảnh.")
+                : "Capturing photo.",
+            important: true
+        )
         let data = await acquireGlassesPhoto(freshSince: captureRequestedAt)
 
         if let data {
@@ -1749,6 +1995,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 title: "Đã nhận ảnh từ kính",
                 detail: "Nguồn: \(source) · \(max(1, data.count / 1024)) KB"
             ), autoClearAfter: 3.0)
+            speakStatusCue(SolverIntent.speaksVietnamese ? "Đã chụp ảnh xong." : "Photo captured.", important: true)
             AppLog.info(.photo, "Manual photo context cached (\(data.count) bytes, source=\(source))")
         } else {
             HapticFeedback.error()
@@ -1759,6 +2006,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 title: "Chưa nhận được ảnh từ kính",
                 detail: "Kiểm tra kết nối kính và thử chụp lại"
             ), autoClearAfter: 6.0)
+            isSpeakingStatusCue = false
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: settingsManager.settings.preferGlassesMic
             )
@@ -1791,6 +2039,10 @@ final class VoiceAgentViewModel: ObservableObject {
                     detail: "\(receivedKB) / \(totalKB) KB",
                     progress: fraction
                 ))
+                if fraction >= 0.45 && fraction < 0.95 && !self.didAnnouncePhotoTransferHalfway {
+                    self.didAnnouncePhotoTransferHalfway = true
+                    self.speakStatusCue(SolverIntent.speaksVietnamese ? "Đang tải ảnh từ kính, 50 phần trăm." : "Transferring photo, 50 percent.")
+                }
             } else {
                 self.setLiveActivity(LiveActivity(
                     kind: .capturing,
@@ -1880,8 +2132,15 @@ final class VoiceAgentViewModel: ObservableObject {
         setLiveActivity(LiveActivity(
             kind: .capturing,
             title: "Kính đang chụp ảnh…",
-            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP" : "Chế độ nhanh"
+            detail: settingsManager.settings.fullResolutionPhotos ? "Chế độ 12 MP nét nhất" : "Chế độ nhanh"
         ))
+        resetTurnSpokenMilestones()
+        speakStatusCue(
+            SolverIntent.speaksVietnamese
+                ? (settingsManager.settings.fullResolutionPhotos ? "Đang chụp ảnh độ nét cao." : "Đang chụp ảnh.")
+                : (settingsManager.settings.fullResolutionPhotos ? "Capturing high resolution photo." : "Capturing photo."),
+            important: true
+        )
         let data = await acquireGlassesPhoto(freshSince: captureRequestedAt)
 
         guard let data else {
@@ -1892,6 +2151,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 title: "Chưa nhận được ảnh từ kính",
                 detail: "Kiểm tra kết nối kính và bấm nút chụp lại"
             ), autoClearAfter: 6.0)
+            isSpeakingStatusCue = false
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: settingsManager.settings.preferGlassesMic
             )
@@ -1927,17 +2187,24 @@ final class VoiceAgentViewModel: ObservableObject {
             await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                 preferGlasses: settingsManager.settings.preferGlassesMic
             )
+            speakStatusCue(
+                SolverIntent.speaksVietnamese ? "Đã chụp ảnh xong, đang tải lên Gemini." : "Photo received, uploading to Gemini.",
+                important: true
+            )
             await sendCommand(question, allowRepeat: true)
 
         case .captureAndListen:
-            // General mode: photo is cached; route audio and play the chime BEFORE entering `.conversationMode`
-            // so the chime never leaks into Silero VAD or SFSpeechRecognizer.
+            // General mode: photo is cached; announce completion and wait for it to finish BEFORE entering
+            // `.conversationMode` so speech never leaks into Silero VAD or SFSpeechRecognizer.
             errorMessage = nil
             setLiveActivity(LiveActivity(
                 kind: .listening,
                 title: "Đã nhận ảnh — Đang nghe lệnh…",
                 detail: "Hãy nói yêu cầu của bạn với ảnh vừa chụp"
             ))
+            await speakStatusCueAndWait(
+                SolverIntent.speaksVietnamese ? "Đã chụp ảnh xong, mời bạn nói lệnh." : "Photo captured, go ahead."
+            )
             await configureAudioForGlassesAsync()
             if settingsManager.settings.playActivationSound {
                 soundService.playWakeWordSound()
@@ -1951,6 +2218,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 title: "Đã lưu ảnh vào bộ nhớ tạm",
                 detail: "Nguồn: \(source) · \(max(1, data.count / 1024)) KB"
             ), autoClearAfter: 3.0)
+            speakStatusCue(SolverIntent.speaksVietnamese ? "Đã chụp ảnh xong." : "Photo captured.", important: true)
             endBackgroundWork()
             AppLog.info(.photo, "Photo cached in RAM silently for upcoming agent call")
 
@@ -1979,16 +2247,20 @@ final class VoiceAgentViewModel: ObservableObject {
         if readingEngine.plan != nil {
             beginBackgroundWork(name: "OpenVision.RepeatAnswer")
             isRepeatingViaGlasses = true
+            isSpeakingStatusCue = false
             setLiveActivity(LiveActivity(
                 kind: .repeating,
                 title: "Đang đọc lại câu trả lời trước",
                 detail: "Kích hoạt từ bấm 2 lần trên kính"
             ))
+            let leadIn = settingsManager.settings.spokenStatusUpdates
+                ? (SolverIntent.speaksVietnamese ? "Đọc lại câu trả lời trước." : "Repeating the previous answer.")
+                : nil
             Task { @MainActor in
                 await AudioSessionManager.shared.ensurePlaybackRouteAsync(
                     preferGlasses: settingsManager.settings.preferGlassesMic
                 )
-                self.readingEngine.restartFromBeginning()
+                self.readingEngine.restartFromBeginning(leadIn: leadIn)
             }
             return
         }

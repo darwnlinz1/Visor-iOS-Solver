@@ -291,7 +291,10 @@ final class BlueprintGeminiE2ETests: XCTestCase {
     }
 
     func testServerOverloadBacksOffAndRetries() async throws {
-        GeminiStub.enqueue(.status(503, body: #"{"error":{"code":503,"status":"UNAVAILABLE","message":"This model is currently experiencing high demand."}}"#))
+        // Key-first fallback: exhaust ALL 3 keys on primary model (3.5) on HTTP 503 before dropping to model 3.1!
+        for _ in 0..<3 {
+            GeminiStub.enqueue(.status(503, body: #"{"error":{"code":503,"status":"UNAVAILABLE","message":"This model is currently experiencing high demand."}}"#))
+        }
         GeminiStub.enqueue(.stream(answer))
         var finalText: String?
         var statuses: [GeminiLiveStatus] = []
@@ -299,9 +302,14 @@ final class BlueprintGeminiE2ETests: XCTestCase {
         service.onStatusUpdate = { statuses.append($0) }
         try await service.sendRESTMessage("giải câu này", imageData: nil)
         XCTAssertEqual(finalText, answer)
-        XCTAssertEqual(GeminiStub.captured.count, 2)
-        XCTAssertTrue(GeminiStub.captured[1].url.path.contains("/\(GeminiLiveService.modelChain[1]):"),
-                      "HTTP 503 high-demand should fail over immediately to the fallback model")
+        XCTAssertEqual(GeminiStub.captured.count, 4)
+        XCTAssertTrue(GeminiStub.captured[0].url.path.contains("/\(GeminiLiveService.modelChain[0]):"))
+        XCTAssertTrue(GeminiStub.captured[1].url.path.contains("/\(GeminiLiveService.modelChain[0]):"))
+        XCTAssertTrue(GeminiStub.captured[2].url.path.contains("/\(GeminiLiveService.modelChain[0]):"))
+        XCTAssertEqual(Set(GeminiStub.captured.prefix(3).map { $0.apiKey }).count, 3,
+                       "HTTP 503 must try every API key on the primary model before dropping to the fallback model")
+        XCTAssertTrue(GeminiStub.captured[3].url.path.contains("/\(GeminiLiveService.modelChain[1]):"),
+                      "After all keys hit 503 on the primary model, must fall back to model 3.1")
         XCTAssertTrue(statuses.contains { if case .retrying = $0 { return true }; return false })
     }
 

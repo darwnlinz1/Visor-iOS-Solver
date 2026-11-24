@@ -140,7 +140,13 @@ final class VoiceCommandService: ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var lastRecognizerRestart = Date.distantPast
     private var wakeWordRestartScheduled = false
+    private var consecutiveRestartFailures = 0
     private let minRestartInterval: TimeInterval = 0.6
+
+    /// True when the audio tap, audio engine, and live speech recognition task are all actively running.
+    var isRecognitionHealthy: Bool {
+        isListening && recognitionTask != nil && (audioEngine?.isRunning ?? false)
+    }
 
     // MARK: - Timers
 
@@ -205,16 +211,39 @@ final class VoiceCommandService: ObservableObject {
         "oke vision", "oke vi dơn", "oke vi giừn"
     ]
 
+    private static func normalizeForWakeWordMatching(_ text: String) -> String {
+        let stripped = text.lowercased().replacingOccurrences(
+            of: #"[,\.\!\?;:–—\-]+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        return stripped
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func stripWakeWord(from text: String, defaultWakeWord: String) -> String {
         var variations = wakeWordVariations
         let def = defaultWakeWord.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !def.isEmpty && !variations.contains(def) { variations.append(def) }
         variations.sort { $0.count > $1.count }
 
+        let trimChars = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.!?;:-"))
         for v in variations {
             if let r = text.range(of: v, options: .caseInsensitive) {
                 if text.distance(from: text.startIndex, to: r.lowerBound) <= 15 {
-                    return String(text[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+                    return String(text[r.upperBound...]).trimmingCharacters(in: trimChars)
+                }
+            }
+        }
+        // Fallback: handle punctuation inserted inside the wake word by SFSpeechRecognizer (e.g. "Ok, Vision, giải bài này").
+        let words = text.split(whereSeparator: { $0.isWhitespace })
+        if !words.isEmpty {
+            let maxPrefixWords = min(words.count, 5)
+            for count in stride(from: maxPrefixWords, through: 1, by: -1) {
+                let prefix = normalizeForWakeWordMatching(words.prefix(count).joined(separator: " "))
+                if variations.contains(where: { prefix.hasSuffix($0) }) {
+                    return words.dropFirst(count).joined(separator: " ").trimmingCharacters(in: trimChars)
                 }
             }
         }
@@ -224,7 +253,12 @@ final class VoiceCommandService: ObservableObject {
     // MARK: - Initialization
 
     private init() {
+        authorizationStatus = SFSpeechRecognizer.authorizationStatus()
         setupSpeechDetector()
+    }
+
+    func syncAuthorizationStatus() {
+        authorizationStatus = SFSpeechRecognizer.authorizationStatus()
     }
 
     private func setupSpeechDetector() {
@@ -354,8 +388,9 @@ final class VoiceCommandService: ObservableObject {
         }
 
         isListening = true
+        consecutiveRestartFailures = 0
         VoiceCaptureTracker.shared.set(true)
-        AppLog.info(.voice, "Started listening - audio engine running")
+        AppLog.info(.voice, "Started listening - audio engine running (state=\(state), wakeWordEnabled=\(isWakeWordEnabled))")
     }
 
     /// Configures partial results, on-device recognition (T8.1), dynamic taskHint (T8.2), and contextual phrases.
@@ -430,16 +465,28 @@ final class VoiceCommandService: ObservableObject {
         scheduleWakeWordRestart()
     }
 
-    private func scheduleWakeWordRestart() {
+    private func scheduleWakeWordRestart(delayOverride: TimeInterval? = nil) {
         guard !wakeWordRestartScheduled else { return }
         wakeWordRestartScheduled = true
-        let delay = max(0, minRestartInterval - Date().timeIntervalSince(lastRecognizerRestart))
+        let delay = delayOverride ?? max(0, minRestartInterval - Date().timeIntervalSince(lastRecognizerRestart))
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.wakeWordRestartScheduled = false
             guard self.isListening, self.needsAlwaysOnRecognizer() else { return }
             self.lastRecognizerRestart = Date()
             self.restartRecognition()
+        }
+    }
+
+    private func handleRestartFailure(_ reason: String) {
+        consecutiveRestartFailures += 1
+        AppLog.warning(.voice, "Recognition restart failure #\(consecutiveRestartFailures): \(reason)")
+        if consecutiveRestartFailures <= 5 && isListening && needsAlwaysOnRecognizer() {
+            let delay = min(3.0, 0.8 * Double(consecutiveRestartFailures))
+            scheduleWakeWordRestart(delayOverride: delay)
+        } else {
+            AppLog.error(.voice, "Too many recognition restart failures — resetting listening state so caller can recover")
+            stopListening()
         }
     }
 
@@ -512,7 +559,10 @@ final class VoiceCommandService: ObservableObject {
 
         configureRecognitionRequest(recognitionRequest)
 
-        guard let audioEngine = audioEngine else { return }
+        guard let audioEngine = audioEngine else {
+            handleRestartFailure("audioEngine is nil")
+            return
+        }
 
         if !audioEngine.isRunning {
             audioEngine.prepare()
@@ -521,6 +571,9 @@ final class VoiceCommandService: ObservableObject {
                 AppLog.info(.voice, "Engine had stopped (route change) — restarted in place")
             } catch {
                 AppLog.error(.voice, "Engine restart failed: \(error.localizedDescription)")
+                self.recognitionRequest = nil
+                handleRestartFailure("audioEngine.start threw: \(error.localizedDescription)")
+                return
             }
         }
 
@@ -529,8 +582,8 @@ final class VoiceCommandService: ObservableObject {
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
         guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
-            AppLog.warning(.voice, "Input unavailable on reinstall — skipping tap")
             self.recognitionRequest = nil
+            handleRestartFailure("input format unavailable (\(recordingFormat.sampleRate)Hz/\(recordingFormat.channelCount)ch)")
             return
         }
 
@@ -549,9 +602,11 @@ final class VoiceCommandService: ObservableObject {
         }) {
             AppLog.error(.voice, "installTap (reinstall) failed: \(reason)")
             self.recognitionRequest = nil
+            handleRestartFailure("installTap exception: \(reason)")
             return
         }
 
+        consecutiveRestartFailures = 0
         recognitionGeneration += 1
         let generation = recognitionGeneration
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
@@ -727,13 +782,18 @@ final class VoiceCommandService: ObservableObject {
         guard bypassCooldown || !wakeWordCooldownActive else { return false }
 
         let lowercased = text.lowercased()
+        let normalized = Self.normalizeForWakeWordMatching(text)
         var variations = Self.wakeWordVariations
         let wakeWordLower = wakeWord.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let wakeWordNorm = Self.normalizeForWakeWordMatching(wakeWord)
         if !wakeWordLower.isEmpty && !variations.contains(wakeWordLower) {
             variations.insert(wakeWordLower, at: 0)
         }
+        if !wakeWordNorm.isEmpty && !variations.contains(wakeWordNorm) {
+            variations.insert(wakeWordNorm, at: 0)
+        }
 
-        let detected = variations.contains { lowercased.contains($0) }
+        let detected = variations.contains { lowercased.contains($0) || normalized.contains($0) }
         if detected {
             AppLog.debug(.voice, "Detected wake word in: '\(text)'", sensitive: true)
         }

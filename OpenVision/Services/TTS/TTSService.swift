@@ -279,6 +279,38 @@ final class TTSService: NSObject, ObservableObject, SpeechSynthesizing {
         }
     }
 
+    /// Speaks a short workflow status cue (e.g. "Đã chụp ảnh xong", "Đang đổi sang key 2")
+    /// without altering conversation history or math reading pipelines.
+    func speakStatusCue(_ text: String, interruptCurrent: Bool = true) {
+        if interruptCurrent { stop() }
+        let cleaned = Self.cleanSpokenAudio(text)
+        guard !cleaned.isEmpty else { return }
+        let vietnamese = Self.containsVietnamese(cleaned) || SolverIntent.speaksVietnamese
+        let settings = SettingsManager.shared.settings
+        let rate = min(max(settings.clampedSpeechRate + 0.04, 0.50), 0.58)
+        let utterance = AVSpeechUtterance(string: cleaned)
+        utterance.voice = voice(vietnamese: vietnamese)
+        utterance.rate = rate
+        utterance.pitchMultiplier = 1.0
+        utterance.volume = 1.0
+        if activeUtterances.isEmpty {
+            utterance.preUtteranceDelay = Self.bluetoothLeadIn
+        }
+        utterance.postUtteranceDelay = 0.15
+        let id = ObjectIdentifier(utterance)
+        let wasIdle = !isSpeaking
+        let shouldArmWatchdog = queuedUtterances.isEmpty
+        activeUtterances.insert(id)
+        queuedUtterances.append((id: id, preDelay: utterance.preUtteranceDelay))
+        isSpeaking = true
+        isPaused = false
+        if wasIdle { onSpeechStarted?() }
+        if shouldArmWatchdog {
+            armStartWatchdog(for: id, preDelay: utterance.preUtteranceDelay)
+        }
+        synthesizer.speak(utterance)
+    }
+
     // MARK: - ReadingEngine per-piece playback (T5.1)
 
     func speakPiece(_ scheduled: ScheduledUtterance) {
@@ -451,7 +483,9 @@ extension TTSService: AVSpeechSynthesizerDelegate {
         Task { @MainActor in
             self.cancelWatchdog(for: id)
             self.startedUtterances.insert(id)
-            MetricsCollector.shared.markFirstAudio()
+            if self.pieceUtterances.contains(id) {
+                MetricsCollector.shared.markFirstAudio()
+            }
             if !self.isSpeaking {
                 self.isSpeaking = true
                 self.onSpeechStarted?()
@@ -460,8 +494,10 @@ extension TTSService: AVSpeechSynthesizerDelegate {
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        let id = ObjectIdentifier(utterance)
         let spoken = utterance.speechString
         Task { @MainActor in
+            guard self.pieceUtterances.contains(id) else { return }
             self.onWordRange?(characterRange, spoken)
         }
     }

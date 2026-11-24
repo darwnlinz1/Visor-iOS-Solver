@@ -6,6 +6,7 @@ import SwiftUI
 
 struct VoiceSettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
+    @ObservedObject private var voiceCommandService = VoiceCommandService.shared
 
     var body: some View {
         Form {
@@ -13,8 +14,8 @@ struct VoiceSettingsView: View {
             Section {
                 Toggle(isOn: $settingsManager.settings.wakeWordEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Từ đánh thức")
-                        Text("Chỉ nghe sau khi bạn gọi tên")
+                        Text("Tự động lắng nghe từ đánh thức")
+                        Text("Tự bật micro nghe tên gọi ngay khi mở app và sau mỗi lượt trả lời")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -24,11 +25,22 @@ struct VoiceSettingsView: View {
                     TextField("Ok Vision", text: $settingsManager.settings.wakeWord)
                         .autocorrectionDisabled()
                         .onSubmit { sanitizeWakeWord() }
+
+                    HStack {
+                        Text("Trạng thái micro nghe")
+                        Spacer()
+                        Circle()
+                            .fill(voiceCommandService.isRecognitionHealthy ? Theme.success : Theme.warning)
+                            .frame(width: 8, height: 8)
+                        Text(wakeWordStatusText)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             } header: {
                 Text("Gọi trợ lý")
             } footer: {
-                Text("Nói \"\(settingsManager.settings.wakeWord)\" rồi hỏi tự do, tiếng Việt hay tiếng Anh. Khi đang đọc bài, nói \"\(settingsManager.settings.wakeWord) tạm dừng / chậm lại / đọc lại câu 3\" để điều khiển.")
+                Text("Nói \"\(settingsManager.settings.wakeWord)\" (hoặc \"Ô kê vi dơn\" / \"Hey Vision\") rồi hỏi tự do bằng tiếng Việt hoặc tiếng Anh. Khi đang đọc bài, nói \"\(settingsManager.settings.wakeWord) tạm dừng / chậm lại / đọc lại câu 3\" để điều khiển.")
             }
 
             // Listening
@@ -71,6 +83,15 @@ struct VoiceSettingsView: View {
 
             // Feedback
             Section {
+                Toggle(isOn: $settingsManager.settings.spokenStatusUpdates) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Thông báo tiến trình qua loa")
+                        Text("Đọc ngắn khi chụp xong, tải ảnh lên, đổi key/model 503–429 và khi AI phản hồi")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 Toggle(isOn: $settingsManager.settings.playActivationSound) {
                     Text("Âm báo khi gọi trợ lý")
                 }
@@ -81,6 +102,16 @@ struct VoiceSettingsView: View {
         .navigationTitle("Nghe & Từ đánh thức")
         .navigationBarTitleDisplayMode(.inline)
         .onDisappear { sanitizeWakeWord() }
+    }
+
+    private var wakeWordStatusText: String {
+        if voiceCommandService.isRecognitionHealthy {
+            return AudioSessionManager.shared.isBluetoothHFPInputActive ? "Đang nghe (Mic kính)" : "Đang nghe (Mic iPhone)"
+        }
+        if settingsManager.settings.pauseWakeWordDuringMusic && AudioSessionManager.shared.isOtherAudioPlaying {
+            return "Tạm nhả mic vì đang phát nhạc"
+        }
+        return voiceCommandService.authorizationStatus == .authorized ? "Đang chờ kích hoạt…" : "Chưa cấp quyền giọng nói"
     }
 
     private func sanitizeWakeWord() {
