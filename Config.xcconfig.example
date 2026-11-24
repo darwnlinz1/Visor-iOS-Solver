@@ -1,21 +1,27 @@
 // Reybain Build Configuration
-// Copy this file to Config.xcconfig and fill in your values
+// Copy this file to Config.xcconfig and customize if needed.
+//
+// Developer Mode (local Xcode / sideloaded IPA builds):
+//   Leave META_APP_ID = 0 and keep CLIENT_TOKEN and DEVELOPMENT_TEAM empty so the Meta
+//   Wearables DAT SDK (MWDATCore 1.0.1+) uses Developer Mode cleanly instead of rejecting
+//   the build for "Partial attestation configuration detected".
+//
+// Production / Wearables Developer Center release builds:
+//   Fill in ALL THREE values (DEVELOPMENT_TEAM, META_APP_ID, and CLIENT_TOKEN).
 
-// Your Apple Developer Team ID
-DEVELOPMENT_TEAM = YOUR_TEAM_ID
+// Your Apple Developer Team ID (leave empty for unsigned Developer Mode IPA builds)
+DEVELOPMENT_TEAM =
 
 // Bundle identifier for the app
 PRODUCT_BUNDLE_IDENTIFIER = com.reybain.app
 
-// Meta App ID from https://developer.meta.com
-// Required for glasses registration
-META_APP_ID = YOUR_META_APP_ID
+// Meta App ID from https://developer.meta.com ("0" enables Meta AI Developer Mode)
+META_APP_ID = 0
 
-// Client Token from Meta Developer Console (FULL FORMAT REQUIRED)
-// Format: AR|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN
-// Example: AR|1234567890|abcdef123456
-CLIENT_TOKEN = AR|YOUR_META_APP_ID|YOUR_CLIENT_TOKEN
+// Client Token from Meta Developer Console (leave empty for Developer Mode;
+// required together with DEVELOPMENT_TEAM + real META_APP_ID for production attestation)
+// Format: AR|<META_APP_ID>|<CLIENT_TOKEN>
+CLIENT_TOKEN =
 
 // URL scheme for Meta AI app callback
-// Must match bundle identifier (replace dots with hyphens if needed)
 APP_LINK_URL_SCHEME = reybain

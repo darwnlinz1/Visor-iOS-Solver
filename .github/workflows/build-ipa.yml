@@ -57,6 +57,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
             DEVELOPMENT_TEAM= \
+            META_APP_ID=0 \
+            CLIENT_TOKEN= \
           | xcbeautify --renderer github-actions
 
       - name: Package IPA
@@ -73,6 +75,17 @@ jobs:
             echo "::error::Payload/Reybain.app/Reybain binary missing"
             exit 1
           fi
+          python3 - <<'PY'
+          import plistlib, pathlib, sys
+          p = plistlib.loads(pathlib.Path("Payload/Reybain.app/Info.plist").read_bytes())
+          mwdat = p.get("MWDAT", {})
+          print("MWDAT Info.plist:", mwdat)
+          if mwdat.get("AppLinkURLScheme") != "reybain://":
+              sys.exit(f"Invalid MWDAT.AppLinkURLScheme: {mwdat.get('AppLinkURLScheme')!r}")
+          # Prevent MWDATCore 1.0.1 partial-attestation rejection (ClientToken/MetaAppID set while TeamID empty)
+          if mwdat.get("TeamID", "") == "" and (mwdat.get("ClientToken", "") != "" or mwdat.get("MetaAppID") not in ("0", "")):
+              sys.exit(f"Partial MWDAT attestation config would fail registration: {mwdat!r}")
+          PY
           zip -r -y Reybain.ipa Payload
           ls -lh Reybain.ipa
 

@@ -546,7 +546,7 @@ struct TroubleshootingView: View {
 
                 TroubleshootingItem(
                     title: "Đăng ký thất bại",
-                    solution: "Bật Developer Mode trong app Meta AI rồi thử lại."
+                    solution: "Bật Developer Mode trong app Meta AI (Cài đặt → Thông tin ứng dụng → chạm số phiên bản 5 lần). Nếu trước đó bạn từng đăng ký app cũ (như OpenVision), hãy hủy kết nối app cũ trong Meta AI → Kết nối ứng dụng → Developer Mode rồi thử đăng ký lại Reybain."
                 )
                 .reybainSettingsRow()
             }
