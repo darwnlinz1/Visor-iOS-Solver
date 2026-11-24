@@ -238,6 +238,196 @@ final class MWDATConfigurationTests: XCTestCase {
         XCTAssertFalse(MWDATConfigurationValidator.isMetaWearablesCallbackURL(emptyQueryURL))
     }
 
+    func testDeveloperAndProductionRejectHTTPAndHTTPSAsCustomURLSchemes() {
+        for webScheme in ["http", "https", "HTTP", "HTTPS"] {
+            let devReport = MWDATConfigurationValidator.inspect(
+                infoDictionary: makeInfoDictionary(
+                    metaAppID: "0",
+                    clientToken: "",
+                    teamID: "",
+                    appLinkURLScheme: "\(webScheme)://",
+                    urlSchemes: [webScheme]
+                )
+            )
+            XCTAssertEqual(devReport.mode, .invalidFormat, "Dev mode must reject \(webScheme)://")
+            XCTAssertTrue(devReport.hasBlockingIssues)
+
+            let prodReport = MWDATConfigurationValidator.inspect(
+                infoDictionary: makeInfoDictionary(
+                    metaAppID: "123456789",
+                    clientToken: "AR|123456789|valid_tok",
+                    teamID: "AB12CD34EF",
+                    appLinkURLScheme: "\(webScheme)://",
+                    urlSchemes: [webScheme]
+                )
+            )
+            XCTAssertEqual(prodReport.mode, .invalidFormat, "Prod mode must reject \(webScheme)://")
+            XCTAssertTrue(prodReport.hasBlockingIssues)
+        }
+    }
+
+    func testStrictHTTPSUniversalLinkValidation() {
+        let validLinks = [
+            "https://example.com/dat",
+            "https://example.com:8443/dat?v=1",
+            "HTTPS://openvision.example.com/callback",
+            "https://[::1]/dat",
+        ]
+        for link in validLinks {
+            let report = MWDATConfigurationValidator.inspect(
+                infoDictionary: makeInfoDictionary(
+                    metaAppID: "123456789",
+                    clientToken: "AR|123456789|valid_tok",
+                    teamID: "AB12CD34EF",
+                    appLinkURLScheme: link
+                )
+            )
+            XCTAssertEqual(report.mode, .production, "Expected valid Universal Link: \(link)")
+            XCTAssertFalse(report.hasBlockingIssues, "Unexpected issues for \(link): \(report.issues)")
+        }
+
+        let invalidLinks = [
+            "https://user@/dat",
+            "https://user:pass@example.com/dat",
+            "https://:443/dat",
+            "https://example.com:0/dat",
+            "https://example.com:99999/dat",
+            "https://example.com:abc/dat",
+            "https://example.com:/dat",
+            "https://;rm",
+            "https://foo|bar",
+            "https://[::1/dat",
+        ]
+        for link in invalidLinks {
+            let report = MWDATConfigurationValidator.inspect(
+                infoDictionary: makeInfoDictionary(
+                    metaAppID: "123456789",
+                    clientToken: "AR|123456789|valid_tok",
+                    teamID: "AB12CD34EF",
+                    appLinkURLScheme: link
+                )
+            )
+            XCTAssertEqual(report.mode, .invalidFormat, "Expected invalid Universal Link: \(link)")
+            XCTAssertTrue(report.hasBlockingIssues)
+        }
+    }
+
+    func testLeadingTrailingWhitespaceAndEmptyFirstURLSchemeRejected() {
+        let wsMeta = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(metaAppID: " 0\n")
+        )
+        XCTAssertEqual(wsMeta.mode, .invalidFormat)
+        XCTAssertEqual(wsMeta.metaAppIDState, .invalid)
+        XCTAssertTrue(wsMeta.hasBlockingIssues)
+
+        let wsBundle = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(bundleID: " com.yourcompany.openvision ")
+        )
+        XCTAssertTrue(wsBundle.hasBlockingIssues)
+
+        let wsAppLink = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(appLinkURLScheme: " openvision://\n")
+        )
+        XCTAssertEqual(wsAppLink.mode, .invalidFormat)
+        XCTAssertTrue(wsAppLink.hasBlockingIssues)
+
+        let wsScheme = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(urlSchemes: [" openvision\n"])
+        )
+        XCTAssertEqual(wsScheme.mode, .invalidFormat)
+        XCTAssertTrue(wsScheme.hasBlockingIssues)
+
+        let emptyFirstScheme = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(urlSchemes: ["", "openvision"])
+        )
+        XCTAssertEqual(emptyFirstScheme.mode, .invalidFormat)
+        XCTAssertTrue(emptyFirstScheme.hasBlockingIssues)
+
+        let wsTeam = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(teamID: " Q9W8E7R6T5\n")
+        )
+        XCTAssertEqual(wsTeam.mode, .invalidFormat)
+        XCTAssertEqual(wsTeam.teamIDState, .invalid)
+        XCTAssertFalse(wsTeam.logSummary.contains("Q9W8E7R6T5"))
+
+        let wsToken = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(
+                metaAppID: "123456789",
+                clientToken: " AR|123456789|SECRET_WS_VAL\n",
+                teamID: "AB12CD34EF",
+                appLinkURLScheme: "https://example.com/dat"
+            )
+        )
+        XCTAssertEqual(wsToken.mode, .invalidFormat)
+        XCTAssertEqual(wsToken.clientTokenState, .invalid)
+        XCTAssertFalse(wsToken.logSummary.contains("SECRET_WS_VAL"))
+    }
+
+    func testNonStringMetaAppIDClassifiedAsInvalidNotMissing() {
+        var info = makeInfoDictionary()
+        var mwdat = info["MWDAT"] as! [String: Any]
+        mwdat["MetaAppID"] = 0
+        info["MWDAT"] = mwdat
+
+        let nonStringReport = MWDATConfigurationValidator.inspect(infoDictionary: info)
+        XCTAssertEqual(nonStringReport.metaAppIDState, .invalid)
+        XCTAssertEqual(nonStringReport.mode, .invalidFormat)
+        XCTAssertTrue(nonStringReport.hasBlockingIssues)
+
+        let missingReport = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(metaAppID: nil)
+        )
+        XCTAssertEqual(missingReport.metaAppIDState, .missing)
+        XCTAssertEqual(missingReport.mode, .invalidFormat)
+        XCTAssertTrue(missingReport.hasBlockingIssues)
+    }
+
+    func testUITeamIDLabelDistinguishesMissingVsEmptyInDeveloperMode() {
+        let omittedReport = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(metaAppID: "0", clientToken: "", teamID: nil)
+        )
+        XCTAssertEqual(omittedReport.teamIDState, .missing)
+        XCTAssertEqual(omittedReport.uiTeamIDLabel, "Đã bỏ qua (Developer Mode)")
+
+        let emptyReport = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(metaAppID: "0", clientToken: "", teamID: "")
+        )
+        XCTAssertEqual(emptyReport.teamIDState, .empty)
+        XCTAssertEqual(emptyReport.uiTeamIDLabel, "Trống (Developer Mode)")
+
+        let configuredReport = MWDATConfigurationValidator.inspect(
+            infoDictionary: makeInfoDictionary(metaAppID: "0", clientToken: "", teamID: "AB12CD34EF")
+        )
+        XCTAssertEqual(configuredReport.teamIDState, .configured)
+        XCTAssertEqual(configuredReport.uiTeamIDLabel, "Đã đặt")
+    }
+
+    func testShouldForwardToWearablesSDKAndRedactedURLSummary() {
+        let registered = ["openvision"]
+
+        let withAction = URL(string: "openvision://callback?metaWearablesAction=register&secret=TOP_SECRET_VAL")!
+        let universalWithAction = URL(string: "https://example.com/dat?metaWearablesAction=permission&token=SECRET_2")!
+        let registeredNoAction = URL(string: "openvision://callback?error=user_cancelled&code=42")!
+        let unrelatedScheme = URL(string: "otherapp://callback?secret=TOP_SECRET_VAL")!
+        let unrelatedWeb = URL(string: "https://example.com/page?token=SECRET_3")!
+
+        XCTAssertTrue(MWDATConfigurationValidator.shouldForwardToWearablesSDK(withAction, registeredSchemes: registered))
+        XCTAssertTrue(MWDATConfigurationValidator.shouldForwardToWearablesSDK(universalWithAction, registeredSchemes: registered))
+        XCTAssertTrue(MWDATConfigurationValidator.shouldForwardToWearablesSDK(registeredNoAction, registeredSchemes: registered))
+        XCTAssertFalse(MWDATConfigurationValidator.shouldForwardToWearablesSDK(unrelatedScheme, registeredSchemes: registered))
+        XCTAssertFalse(MWDATConfigurationValidator.shouldForwardToWearablesSDK(unrelatedWeb, registeredSchemes: ["openvision", "https"]))
+
+        let summary = MWDATConfigurationValidator.redactedURLSummary(withAction)
+        XCTAssertEqual(summary, "scheme=openvision, hasMetaWearablesAction=true, queryKeys=[metaWearablesAction,secret]")
+        XCTAssertFalse(summary.contains("TOP_SECRET_VAL"))
+        XCTAssertFalse(summary.contains("register"))
+
+        let errorSummary = MWDATConfigurationValidator.redactedURLSummary(registeredNoAction)
+        XCTAssertEqual(errorSummary, "scheme=openvision, hasMetaWearablesAction=false, queryKeys=[code,error]")
+        XCTAssertFalse(errorSummary.contains("user_cancelled"))
+        XCTAssertFalse(errorSummary.contains("42"))
+    }
+
     func testHostAppBundleHasValidNonPlaceholderMWDATConfiguration() {
         // OpenVisionTests uses TEST_HOST = OpenVision.app, so Bundle.main is the built app bundle.
         guard let info = Bundle.main.infoDictionary, info["MWDAT"] != nil else {
