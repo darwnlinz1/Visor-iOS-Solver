@@ -19,7 +19,11 @@ REQUIRED=(
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 unzip -q "$IPA" -d "$work"
-binary="$(find "$work/Payload" -maxdepth 2 -type f -name OpenVision | head -n 1)"
+if [ -f "$work/Payload/OpenVision.app/OpenVision" ]; then
+  binary="$work/Payload/OpenVision.app/OpenVision"
+else
+  binary="$(find "$work/Payload" -maxdepth 2 -type f -name OpenVision | sed -n '1p')"
+fi
 if [ -z "$binary" ]; then
   echo "::error::OpenVision binary not found inside $IPA"
   exit 1
@@ -30,7 +34,7 @@ haystack="$work/haystack.txt"
 
 missing=0
 for symbol in "${REQUIRED[@]}"; do
-  if grep -q "$symbol" "$haystack"; then
+  if LC_ALL=C grep -a -F -q "$symbol" "$haystack"; then
     echo "✓ $symbol"
   else
     echo "::error::$symbol not found in the IPA binary"

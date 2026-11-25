@@ -212,20 +212,27 @@ final class GlassesManager: ObservableObject {
                 return "Chưa cài app Meta AI trên iPhone (hoặc thiếu cấu hình fb-viewapp). Cài Meta AI V292+ rồi thử lại."
             case .networkUnavailable:
                 return "Không có kết nối mạng. Kiểm tra Wi-Fi/4G trên iPhone rồi thử đăng ký lại."
-            case .timeout:
-                return "Quá thời gian chờ đăng ký với Meta AI. Mở app Meta AI, kiểm tra kính đã kết nối rồi thử lại."
             case .alreadyRegistered:
                 return "Ứng dụng đã đăng ký với Meta AI. Nếu cần làm mới, bấm Huỷ đăng ký rồi đăng ký lại."
             case .unknown:
                 return "Đăng ký thất bại vì lỗi không xác định (\(registrationError.localizedDescription)). Kiểm tra Meta AI đã bật Developer Mode rồi thử lại."
             default:
-                return "Đăng ký kính thất bại: \(registrationError.localizedDescription)"
+                let detail = registrationError.localizedDescription
+                if detail.localizedCaseInsensitiveContains("timed out")
+                    || detail.localizedCaseInsensitiveContains("timeout") {
+                    return "Quá thời gian chờ đăng ký với Meta AI. Mở app Meta AI, kiểm tra kính đã kết nối rồi thử lại."
+                }
+                return "Đăng ký kính thất bại: \(detail)"
             }
         }
 
         let detail = error.localizedDescription
         if detail.localizedCaseInsensitiveContains("configuration is invalid") {
             return configurationInvalidGuidance(technicalDetail: detail)
+        }
+        if detail.localizedCaseInsensitiveContains("timed out")
+            || detail.localizedCaseInsensitiveContains("timeout") {
+            return "Quá thời gian chờ đăng ký với Meta AI. Mở app Meta AI, kiểm tra kính đã kết nối rồi thử lại."
         }
         return "Lỗi đăng ký kính: \(detail)"
     }
